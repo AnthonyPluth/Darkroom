@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Final
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Select, and_, exists, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
@@ -22,7 +22,7 @@ from darkroom.domain.managed_upload import Report
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, paths
 from darkroom.storage.models import (DedupeDecision, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedBackfillItem, ManagedImportIntent,
-                                     ManagedImportReceipt, MediaItem, Person, PixelCopy, TakeoutEntry, known_contents)
+                                     ManagedImportReceipt, ManagedPixelSource, MediaItem, Person, PixelCopy, TakeoutEntry, known_contents)
 from darkroom.storage.paths import Photos
 
 ON: Final = "on"
@@ -35,6 +35,7 @@ NEAR_TIERS: Final = (2, 3, 4)
 RETRIED: Final = ("pending", "mismatch")
 CHUNK: Final = 1024 * 1024
 LIVE_SECONDS: Final = 1.0
+MOVED: Final = "moved"
 STUCK_SECONDS: Final = 24 * 3600.0
 REASONS: Final[dict[str, str]] = {
     "missing": "the file is not a plain file in the person's folder any more",
@@ -94,14 +95,13 @@ def exceptions(opened: Session, person_id: int) -> dict[str, list[int]]:
     return dict(found)
 
 
-def settled(opened: Session, person: Person) -> tuple[set[int], set[int]]:
-    rows = opened.execute(select(ManagedBackfillItem.item_id, ManagedBackfillItem.reason).where(ManagedBackfillItem.person_id == person.id)).all()
-    return {item_id for item_id, reason in rows if reason not in RETRIED}, {item_id for item_id, reason in rows if reason in RETRIED}
-
-
 def note(opened: Session, person: Person, item_id: int, reason: str | None, now: float, version_id: int | None = None, receipt_id: int | None = None) -> None:
     opened.commit()
     db.write_lock(opened)
+    item = opened.get(MediaItem, item_id, populate_existing=True)
+    if item is None or item.person_id != person.id:
+        opened.commit()
+        return
     row = opened.execute(select(ManagedBackfillItem).where(ManagedBackfillItem.item_id == item_id)).scalar_one_or_none()
     outcome = "mapped" if version_id is not None else "exception"
     if row is None:
@@ -154,6 +154,10 @@ def pixels(opened: Session, settings: config.Settings, item: MediaItem, version_
         return "pixel_refused"
     opened.commit()
     return None
+
+
+class Moved(RuntimeError):
+    pass
 
 
 class Backfill:
@@ -236,7 +240,7 @@ class Backfill:
         current = self.opened.get(MediaItem, item.id, populate_existing=True)
         if found is None and (current is None or (current.person_id, current.path, current.sha1, current.bytes) != (self.person.id, item.path, item.sha1, item.bytes)):
             self.opened.commit()
-            return None
+            raise Moved("the photo changed while the backfill ran")
         if found is None:
             key = f"{KEY}{item.id}"
             row = ManagedImportReceipt(intent_id=intent.id, resource_key=key, compound_key=key, source_sha1=item.sha1, expected_bytes=item.bytes,
@@ -249,7 +253,7 @@ class Backfill:
 
     def takeout(self, item: MediaItem) -> None:
         reason = self.takeout_problem(item)
-        if reason is not None:
+        if reason is not None and reason != MOVED:
             self.exception(item, reason)
 
     def sent(self, item: MediaItem, intent: ManagedImportIntent, name: str) -> tuple[str | int, Report | None]:
@@ -269,6 +273,8 @@ class Backfill:
                 return "changed", None
             try:
                 receipt_id = self.receipt(intent, item, handle)
+            except Moved:
+                return MOVED, None
             except (exiftool.Missing, exiftool.Unreadable, OSError):
                 return "pending", None
             if receipt_id is None:
@@ -313,15 +319,16 @@ class Backfill:
     def convert_deferred(self) -> None:
         if not self.settings.pixel_immich_source:
             return
+        unconverted = exists(select(PixelCopy.id).where(PixelCopy.item_id == ManagedBackfillItem.item_id,
+                                                        ~exists(select(ManagedPixelSource.id).where(ManagedPixelSource.copy_id == PixelCopy.id))))
         rows = self.opened.execute(select(ManagedBackfillItem).where(ManagedBackfillItem.person_id == self.person.id, ManagedBackfillItem.outcome == "mapped",
-                                                                    ManagedBackfillItem.version_id.is_not(None),
+                                                                    ManagedBackfillItem.version_id.is_not(None), unconverted,
                                                                     or_(ManagedBackfillItem.reason.is_(None), ManagedBackfillItem.reason == "pixel_refused"))
                                    .order_by(ManagedBackfillItem.item_id)).scalars().all()
         for row in rows:
             item_id, version_id, receipt_id, before = row.item_id, row.version_id, row.receipt_id, row.reason
-            copies = self.opened.execute(select(PixelCopy.id).where(PixelCopy.item_id == item_id)).scalars().all()
             item = self.opened.get(MediaItem, item_id)
-            if item is None or version_id is None or all(pixel_source.converted(self.opened, copy_id) for copy_id in copies):
+            if item is None or version_id is None:
                 continue
             refused = pixels(self.opened, self.settings, item, version_id, self.now, self.report)
             if refused != before:
@@ -331,15 +338,16 @@ class Backfill:
 
     def run(self, limit: int) -> Summary:
         self.convert_deferred()
-        done, retried = settled(self.opened, self.person)
-        phones = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", known_contents(),
-                                                             MediaItem.path.startswith(f"{self.person.slug}/originals/{IMMICH_FOLDER}/"))
-                                     .order_by(MediaItem.id)).scalars().all()
-        takeouts = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "takeout", known_contents(),
-                                                               MediaItem.path.startswith(f"{self.person.slug}/google-only/"))
-                                       .order_by(MediaItem.id)).scalars().all()
-        waiting = sorted((item for item in [*phones, *takeouts] if item.id not in done), key=lambda item: (item.id in retried, item.id))[:limit]
+        row = ManagedBackfillItem
+        unsettled = ~exists(select(row.id).where(row.item_id == MediaItem.id, or_(row.reason.is_(None), row.reason.not_in(RETRIED))))
+        retried = exists(select(row.id).where(row.item_id == MediaItem.id, row.reason.in_(RETRIED)))
+        google_only = and_(MediaItem.source == "takeout", MediaItem.path.startswith(f"{self.person.slug}/google-only/"))
+        phones = and_(MediaItem.source == "phone", MediaItem.path.startswith(f"{self.person.slug}/originals/{IMMICH_FOLDER}/"))
+        waiting = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, known_contents(), or_(phones, google_only), unsettled)
+                                      .order_by(retried, MediaItem.id).limit(limit)).scalars().all()
         pending = [item for item in waiting if item.source == "takeout"]
+        takeouts = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, known_contents(), google_only)
+                                       .order_by(MediaItem.id)).scalars().all() if pending else []
         halves = live_halves(self.opened, self.person, takeouts, pending) if pending else set()
         near = same_shots(self.opened, self.person, pending)
         for item in waiting:

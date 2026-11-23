@@ -380,7 +380,10 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
             return
         with db.session(engine) as opened:
             done = immich_reconcile.reconcile_all(opened, current, at, client, immich_reconcile.PixelFolderQueue())
-            backfilled = backfill.run_all(opened, current, Photos(current.photos_root), at, client)
+            refused = share.problem(opened)
+            backfilled = backfill.Summary() if refused is not None else backfill.run_all(opened, current, share_photos, at, client)
+        if refused is not None:
+            monitoring.log("Immich backfill not run: the share check failed", reason=refused)
         monitoring.log("immich reconcile finished", people=len(done), stored=sum(report.stored for report in done.values()), backfilled=backfilled.mapped)
 
     def send_pushes(at: float) -> None:

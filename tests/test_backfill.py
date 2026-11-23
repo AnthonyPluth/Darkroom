@@ -5,7 +5,7 @@ import uuid
 from pathlib import PurePosixPath
 from unittest import mock
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from darkroom.domain import backfill, managed_metadata, xmp
 from darkroom.domain.ingest import place
@@ -310,6 +310,37 @@ class BackfillTests(unittest.TestCase):
                 self.assertIn("1 photo of jo could not be backfilled", stuck.message)
                 self.assertEqual(world.backfill(at=NOW + 3 * 86400).mapped, 1)
                 self.assertEqual(world.report(), {})
+
+    def test_a_folder_or_photo_root_that_is_not_there_leaves_the_photo_pending_until_it_is_back(self):
+        for name, folder in (("person folder", ("jo",)), ("photo root", ())):
+            with self.subTest(name):
+                world = BackfillWorld(self)
+                world.run_managed(single_photo, parts=1)
+                gone = world.root.joinpath(*folder)
+                aside = gone.with_name(f"{gone.name}-unmounted")
+                gone.rename(aside)
+                if not folder:
+                    gone.mkdir()
+                world.backfill()
+                self.assertEqual((world.report(), world.uploads()), ({"pending": ["IMG_5001.JPG"]}, []))
+                if not folder:
+                    gone.rmdir()
+                aside.rename(gone)
+                self.assertEqual(world.backfill(at=NOW + 200).mapped, 1)
+                self.assertEqual(world.report(), {})
+
+    def test_a_photo_taken_back_while_the_run_reads_it_is_left_alone_and_the_run_goes_on(self):
+        world = BackfillWorld(self)
+        world.run_managed(single_photo, parts=1)
+        item_id, real = world.google_only_item("IMG_5001.JPG").id, backfill.sha1_of
+
+        def taken_back(handle):
+            with world.engine.begin() as connection:
+                connection.execute(delete(MediaItem).where(MediaItem.id == item_id))
+            return real(handle)
+        with mock.patch.object(backfill, "sha1_of", taken_back):
+            summary = world.backfill()
+        self.assertEqual((dict(summary.exceptions), world.uploads(), world.count(ManagedBackfillItem), world.count(ManagedImportReceipt)), ({}, [], 0, 0))
 
     def test_a_changed_file_is_reported_and_not_uploaded(self):
         world = BackfillWorld(self)

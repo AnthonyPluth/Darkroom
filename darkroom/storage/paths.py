@@ -1733,9 +1733,17 @@ def open_inbox_file(photos: Photos, path: Path) -> BinaryIO:
     return os.fdopen(fd, "rb")
 
 
+class LibraryUnavailable(OSError):
+    pass
+
+
 def open_library_file(photos: Photos, person: str, relative: str) -> BinaryIO:
     parts = library_parts(photos, person, relative, (("google-only",),))
-    with pinned_folder(photos, parts[:-1]) as folder:
+    with contextlib.ExitStack() as stack:
+        try:
+            folder = stack.enter_context(pinned_folder(photos, parts[:-1]))
+        except FileNotFoundError as error:
+            raise LibraryUnavailable(errno.ENOENT, "a folder on the way to the file is not there") from error
         fd = open_entry(parts[-1], folder, os.O_RDONLY)
     if not plain_file(os.fstat(fd)):
         os.close(fd)
