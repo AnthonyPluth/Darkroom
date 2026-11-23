@@ -1,27 +1,31 @@
 import contextlib
 import dataclasses
+import io
 import json
 import os
 import sqlite3
+import threading
 import unittest
 import zipfile
 from pathlib import Path
 from typing import get_args
 from unittest import mock
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 
-from darkroom.domain import dedupe, exports
+from darkroom.domain import dedupe, exports, media
 from darkroom.domain.ingest import metadata, part_ingest, part_reader, place, run
 from darkroom.server import contract
 from darkroom.storage import db, paths
+from darkroom.providers import exiftool
 from darkroom.storage.models import (
-    INGEST_REFUSALS, Alert, DedupeDecision, DuplicateRemoval, Event, Export, ExportPart, MediaItem, Person, ReviewItem, TakeoutEntry,
+    INGEST_FAILURES, INGEST_REFUSALS, Alert, DedupeDecision, DuplicateRemoval, Event, Export, ExportPart, MediaItem, Person, ReviewItem, TakeoutEntry,
 )
 from tests.import_world import DAY, NOW, World, tree
 from tests.shared import on_postgres, write_elsewhere
 from tests.privacy import no_leaks
+from tests.fixtures import media as fixtures
 from tests.takeout_fixtures import GOOGLE_PHOTOS, TakeoutBuilder
 
 PREFIX = f"{GOOGLE_PHOTOS}/"
@@ -1126,14 +1130,15 @@ class QueueingTests(unittest.TestCase):
         self.assertEqual(self.run_queued(NOW + 6), [(export.id, 1), (export.id, 2), (export.id, 3)])
         self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["ingested"] * 3)
 
-    def test_an_explicit_import_request_requeues_a_refused_part_with_the_failed_ones(self):
+    def test_an_explicit_import_request_requeues_only_the_failed_parts_and_leaves_a_refused_part_refused(self):
         export = self.world.create(self.world.scenario, status="downloaded")
         self.fail_every_part()
         found = self.world.part(export, 2)
-        found.ingest_state = "refused"
+        found.ingest_state, found.ingest_refusal = "refused", "not_a_zip"
         self.world.opened.commit()
         self.request(export, NOW + 5)
-        self.assertEqual([(self.world.part(export, n).ingest_state, self.world.part(export, n).ingest_queued_at) for n in (1, 2, 3)], [("queued", NOW + 5)] * 3)
+        self.assertEqual([(self.world.part(export, n).ingest_state, self.world.part(export, n).ingest_queued_at, self.world.part(export, n).ingest_refusal)
+                          for n in (1, 2, 3)], [("queued", NOW + 5, None), ("refused", NOW, "not_a_zip"), ("queued", NOW + 5, None)])
 
     def refused_part(self, status):
         export = self.world.create(self.world.scenario, status=status)
@@ -1148,7 +1153,7 @@ class QueueingTests(unittest.TestCase):
         self.world.opened.expire_all()
         return [exports.kept_reason(self.world.part(export, n)) for n in (1, 2, 3)]
 
-    def test_a_refused_part_is_requeued_by_an_explicit_request_and_its_refusal_stays_recorded(self):
+    def test_a_refused_part_is_not_requeued_by_an_explicit_request_and_its_refusal_stays_recorded(self):
         export, zipped, kept = self.refused_part("downloaded")
         zipped.write_bytes(kept)
         self.assertEqual(self.run_queued(), [(export.id, 1), (export.id, 3)])
@@ -1156,28 +1161,30 @@ class QueueingTests(unittest.TestCase):
         self.assertEqual(self.kept_reasons(export)[1], "not_a_zip")
         self.request(export, NOW + 5)
         self.assertEqual((self.world.part(export, 2).ingest_state, self.world.part(export, 2).ingest_queued_at, self.world.part(export, 2).ingest_refusal),
-                         ("queued", NOW + 5, None))
-        self.assertEqual(self.kept_reasons(export), [None, None, None])
-        self.assertEqual(self.run_queued(NOW + 6), [(export.id, 2)])
-        self.assertEqual(self.kept_reasons(export), [None, None, None])
-        self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["ingested"] * 3)
+                         ("refused", NOW, "not_a_zip"))
+        self.assertEqual(self.kept_reasons(export), [None, "not_a_zip", None])
+        self.assertEqual(self.run_queued(NOW + 6), [])
+        self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["ingested", "refused", "ingested"])
         refused = self.world.opened.execute(select(Event).where(Event.type == "export_part_refused")).scalars().all()
         self.assertEqual([row.subject for row in refused], [f"export {export.id}"])
 
-    def test_a_refused_part_of_an_export_still_downloading_is_requeued_and_nothing_else_changes(self):
+    def test_a_refused_part_of_an_export_still_downloading_is_not_requeued_and_nothing_changes(self):
         export, zipped, kept = self.refused_part("downloading")
         zipped.write_bytes(kept)
-        self.request(export, NOW + 5)
+        with self.assertRaises(run.NotReady):
+            run.request_import(self.world.opened, export.id, self.world.photos, NOW + 5)
+        self.world.opened.rollback()
         self.world.opened.expire_all()
         found = self.world.opened.get(Export, export.id)
         self.assertEqual((found.status, found.stage, run.latest_run(self.world.opened, export.id)), ("downloading", None, None))
-        self.assertEqual([self.world.part(export, n).ingest_state for n in (1, 2, 3)], ["queued", "queued", "queued"])
-        self.assertEqual(self.run_queued(NOW + 6), [(export.id, 1), (export.id, 2), (export.id, 3)])
+        self.assertEqual([(self.world.part(export, n).ingest_state, self.world.part(export, n).ingest_refusal) for n in (1, 2, 3)],
+                         [("queued", None), ("refused", "not_a_zip"), ("queued", None)])
+        self.assertEqual(self.run_queued(NOW + 6), [(export.id, 1), (export.id, 3)])
 
-    def test_a_refused_part_that_is_still_unreadable_is_refused_again_and_keeps_the_file(self):
+    def test_a_refused_part_keeps_its_refusal_and_its_file_after_an_explicit_request(self):
         export, zipped, _ = self.refused_part("downloaded")
         self.request(export, NOW + 5)
-        self.assertEqual((self.world.part(export, 2).ingest_refusal, self.kept_reasons(export)[1]), (None, None))
+        self.assertEqual((self.world.part(export, 2).ingest_refusal, self.kept_reasons(export)[1]), ("not_a_zip", "not_a_zip"))
         self.run_queued(NOW + 6)
         self.assertEqual((self.world.part(export, 2).ingest_state, self.world.part(export, 2).ingest_refusal), ("refused", "not_a_zip"))
         self.assertEqual(self.kept_reasons(export)[1], "not_a_zip")
@@ -1268,6 +1275,224 @@ class PrivacyTests(unittest.TestCase):
             self.assertFalse(any(canary in f"{row.subject} {row.message}" for canary in (*names, text)))
         done = world.opened.execute(select(Event).where(Event.type == "export_part_ingested")).scalars().all()
         self.assertEqual([row.detail.startswith("part ") for row in done], [True, True])
+
+
+class FailureReasonTests(unittest.TestCase):
+    CANARY_PATH = "/photos/jo/Takeout/Google Photos/Canary Trip 4417/IMG_canary_4417.JPG"
+
+    def setUp(self):
+        self.world = PartWorld(self)
+
+    def run_queued(self, at=NOW):
+        self.world.opened.expire_all()
+        return part_ingest.run_queued(self.world.opened, self.world.settings, at, self.world.tools)
+
+    def fail_with(self, error):
+        with mock.patch.object(part_ingest, "ingest_part", side_effect=error):
+            self.run_queued()
+
+    def view(self, export):
+        self.world.opened.expire_all()
+        return exports.as_dict(self.world.opened, self.world.opened.get(Export, export.id), NOW)
+
+    def reasons(self, export):
+        self.world.opened.expire_all()
+        return [(part.ingest_state, part.ingest_failure, part.ingest_failure_type) for part in exports.parts_of(self.world.opened, export.id)]
+
+    def test_each_error_gets_a_fixed_code_from_its_class(self):
+        cases = [(FileNotFoundError(self.CANARY_PATH), "files"), (paths.ChangedWhileCopied(self.CANARY_PATH), "files"),
+                 (OperationalError(self.CANARY_PATH, {}, Exception()), "database"), (exiftool.Unreadable(self.CANARY_PATH), "metadata"),
+                 (exiftool.Missing(), "metadata"), (exiftool.WriteFailed(self.CANARY_PATH), "metadata"), (place.PlaceFailed(self.CANARY_PATH), "placing"),
+                 (MemoryError(), "memory"), (ValueError(self.CANARY_PATH), "unexpected"), (RuntimeError(), "unexpected")]
+        for error, code in cases:
+            with self.subTest(error=type(error).__name__):
+                self.assertEqual(part_ingest.failure_code(error), code)
+                self.assertIn(code, INGEST_FAILURES)
+                self.assertEqual(part_ingest.failure_type(error), type(error).__name__)
+
+    def test_an_error_class_whose_name_is_not_a_plain_identifier_is_recorded_as_exception(self):
+        for name in ("IMG_canary 4417.JPG", "/photos/jo/canary", "Ünïcode", "E" * 65, ""):
+            with self.subTest(name=name):
+                self.assertEqual(part_ingest.failure_type(type(name, (Exception,), {})()), "Exception")
+        self.assertEqual(part_ingest.failure_type(type("E" * 64, (Exception,), {})()), "E" * 64)
+
+    def test_a_failed_part_stores_and_shows_only_the_code_and_class_name(self):
+        export = self.world.create(self.world.scenario)
+        with no_leaks(self, self.CANARY_PATH, "IMG_canary_4417", "Canary Trip 4417", database=self.world.engine):
+            self.fail_with(FileNotFoundError(2, "No such file", self.CANARY_PATH))
+        self.assertEqual(self.reasons(export), [("failed", "files", "FileNotFoundError")] * 3)
+        shown = self.view(export)
+        self.assertEqual([part["import_failure"] for part in shown["parts"]], [{"code": "files", "error": "FileNotFoundError"}] * 3)
+        self.assertTrue(shown["import_retry_allowed"])
+        self.assertNotIn("canary", json.dumps(shown).lower())
+
+    def test_a_requeued_part_loses_its_reason_and_an_ingested_one_has_none(self):
+        export = self.world.create(self.world.scenario, status="downloaded")
+        self.fail_with(OSError("disk"))
+        run.request_import(self.world.opened, export.id, self.world.photos, NOW + 5)
+        self.world.opened.commit()
+        self.assertEqual(self.reasons(export), [("queued", None, None)] * 3)
+        shown = self.view(export)
+        self.assertEqual([part["import_failure"] for part in shown["parts"]], [None] * 3)
+        self.assertFalse(shown["import_retry_allowed"])
+        self.assertEqual(self.run_queued(NOW + 6), [(export.id, 1), (export.id, 2), (export.id, 3)])
+        self.assertEqual(self.reasons(export), [("ingested", None, None)] * 3)
+
+    def test_a_reason_left_on_a_part_that_is_not_failed_is_cleared_when_it_ingests_and_never_shown(self):
+        export = self.world.create(self.world.scenario)
+        part = self.world.part(export, 1)
+        part.ingest_failure, part.ingest_failure_type = "files", "OSError"
+        self.world.opened.commit()
+        self.assertIsNone(self.view(export)["parts"][0]["import_failure"])
+        self.world.ingest(export, 1)
+        self.assertEqual(self.reasons(export)[0], ("ingested", None, None))
+
+    def test_a_part_failed_before_reasons_were_stored_shows_none(self):
+        export = self.world.create(self.world.scenario)
+        self.fail_with(OSError("disk"))
+        for number in (1, 2, 3):
+            self.world.part(export, number).ingest_failure, self.world.part(export, number).ingest_failure_type = None, None
+        self.world.opened.commit()
+        shown = self.view(export)
+        self.assertEqual([part["import_failure"] for part in shown["parts"]], [None] * 3)
+        self.assertTrue(shown["import_retry_allowed"])
+
+    def test_retry_import_is_offered_only_when_a_part_failed_or_a_downloaded_export_failed_to_import(self):
+        export = self.world.create(self.world.scenario)
+        self.assertFalse(self.view(export)["import_retry_allowed"])
+        part = self.world.part(export, 2)
+        part.ingest_state = "refused"
+        self.world.opened.commit()
+        self.assertFalse(self.view(export)["import_retry_allowed"])
+        part.ingest_state = "failed"
+        self.world.opened.commit()
+        for status, allowed in (("downloading", True), ("downloaded", True), ("unpacking", True), ("importing", True), ("imported", False), ("expired", False),
+                                ("announced", False)):
+            with self.subTest(status=status):
+                self.world.opened.get(Export, export.id).status = status
+                self.world.opened.commit()
+                self.assertEqual(self.view(export)["import_retry_allowed"], allowed)
+        found = self.world.opened.get(Export, export.id)
+        found.status = "failed"
+        self.world.opened.commit()
+        self.assertTrue(self.view(export)["import_retry_allowed"])
+        found.inbox_dir = None
+        self.world.opened.commit()
+        self.assertFalse(self.view(export)["import_retry_allowed"])
+
+
+class ParallelFingerprintTests(unittest.TestCase):
+    def photos(self, world):
+        def build(builder):
+            world.scenario(builder)
+            for seed in range(6):
+                picture = io.BytesIO()
+                fixtures.photo(seed, fixtures.PHONE_SIZES[seed % len(fixtures.PHONE_SIZES)]).save(picture, format="JPEG", quality=80)
+                builder.photo(f"PXL_{seed}.JPG", data=picture.getvalue(), gps=(44.0 + seed, 11.0), part=seed % 3)
+        return build
+
+    def ingested_with(self, workers):
+        world = PartWorld(self)
+        export = world.create(self.photos(world))
+        with mock.patch.object(part_ingest, "fingerprint_workers", return_value=workers):
+            world.ingest_all(export)
+        world.opened.expire_all()
+        entries = [(row.part_number, row.name, row.outcome, row.sha1, row.phash, row.captured_utc, row.captured_local, row.width, row.height,
+                    row.duration_ms, row.make, row.model, row.is_video, row.is_edited, row.done_at)
+                   for row in world.opened.execute(select(TakeoutEntry).order_by(TakeoutEntry.id)).scalars()]
+        items = [(row.id, row.person_id, row.source, row.path, row.sha1, row.bytes, row.phash, row.dhash, row.captured_utc, row.captured_local,
+                  row.offset_minutes, row.time_source, row.width, row.height, row.lat, row.lon, row.gps_source)
+                 for row in world.opened.execute(select(MediaItem).order_by(MediaItem.id)).scalars()]
+        decisions = [(row.id, row.source_path, row.person_id, row.tier, row.reason, row.decided_by, row.matched_item_id, row.takeout_item_id)
+                     for row in world.opened.execute(select(DedupeDecision).order_by(DedupeDecision.id)).scalars()]
+        return world.state(), entries, items, decisions
+
+    def test_four_workers_give_the_one_thread_ledger_items_decisions_and_files_in_the_same_order(self):
+        serial, parallel = self.ingested_with(1), self.ingested_with(4)
+        self.assertEqual(parallel, serial)
+        self.assertEqual(sum(1 for entry in serial[1] if entry[1].endswith(".JPG") and "PXL_" in entry[1] and entry[4] is not None), 6)
+
+    def test_the_workers_are_capped_at_four_and_at_the_machines_cores(self):
+        for cores, workers in ((1, 1), (2, 2), (4, 4), (16, 4), (None, 1)):
+            with self.subTest(cores=cores), mock.patch.object(part_ingest.os, "cpu_count", return_value=cores):
+                self.assertEqual(part_ingest.fingerprint_workers(), workers)
+
+    def test_at_most_four_files_are_decoded_at_once(self):
+        world = PartWorld(self)
+        export = world.create(self.photos(world))
+        busy, high = [0], [0]
+        real = media.perceptual_hashes
+        guard = threading.Lock()
+
+        def counted(*args, **kwargs):
+            with guard:
+                busy[0] += 1
+                high[0] = max(high[0], busy[0])
+            try:
+                return real(*args, **kwargs)
+            finally:
+                with guard:
+                    busy[0] -= 1
+
+        with mock.patch.object(part_ingest.os, "cpu_count", return_value=16), mock.patch.object(media, "perceptual_hashes", side_effect=counted):
+            world.ingest_all(export)
+        self.assertGreaterEqual(high[0], 1)
+        self.assertLessEqual(high[0], part_ingest.FINGERPRINT_WORKERS)
+
+    def test_a_file_that_fails_while_fingerprinted_fails_alone_as_on_one_thread(self):
+        real = media.perceptual_hashes
+
+        def broken(path, named=None, *args, **kwargs):
+            if named is not None and named.name == "IMG_2001.JPG":
+                raise RuntimeError("IMG_2001.JPG-is-private")
+            return real(path, named, *args, **kwargs)
+
+        seen = []
+        for workers in (1, 4):
+            world = PartWorld(self)
+            export = world.create(world.scenario)
+            with (mock.patch.object(part_ingest, "fingerprint_workers", return_value=workers), mock.patch.object(media, "perceptual_hashes", side_effect=broken),
+                  no_leaks(self, "IMG_2001.JPG-is-private", database=world.engine)):
+                report = world.ingest(export, 1)
+            failed = [(row.subject, row.detail) for row in world.opened.execute(select(Event).where(Event.type == "import_item_failed")).scalars()]
+            part = world.part(export, 1)
+            seen.append((report.ingested, world.outcomes(), failed, part.ingest_state, part.failed_items, part.entries_done))
+        self.assertEqual(seen[1], seen[0])
+        ingested, outcomes, failed, state, failed_items, _ = seen[0]
+        self.assertEqual((ingested, state, failed_items), (True, "ingested", 1))
+        self.assertEqual(outcomes["Photos from 2019/IMG_2001.JPG"], "failed")
+        self.assertEqual((outcomes["Photos from 2019/IMG_1001.JPG"], outcomes["Photos from 2019/IMG_1002.JPG"]), ("skipped", "skipped"))
+        self.assertEqual(failed, [("export 1", "metadata: RuntimeError")])
+
+
+class ExactProgressTests(unittest.TestCase):
+    ITEMS = 137
+
+    def test_the_count_shown_is_every_finished_item_after_each_one_and_never_more(self):
+        world = PartWorld(self)
+
+        def build(builder):
+            for number in range(self.ITEMS):
+                data = builder.image_bytes(".JPG")
+                world.original("jo", f"IMG_{5000 + number}.JPG", data)
+                builder.photo(f"IMG_{5000 + number}.JPG", data=data, form=None, part=0)
+
+        export = world.create(build, parts=1)
+        seen = []
+
+        def hook():
+            part = world.part(export, 1)
+            finished = world.opened.execute(select(func.count()).where(TakeoutEntry.export_id == export.id, TakeoutEntry.part_number == 1,
+                                                                       TakeoutEntry.outcome != "listed")).scalar_one()
+            seen.append((part.entries_done, finished))
+
+        with mock.patch.object(part_ingest, "COMMIT_HOOK", hook):
+            world.ingest(export, 1)
+        self.assertEqual([shown for shown, finished in seen if shown != finished], [])
+        self.assertEqual(sorted({shown for shown, _ in seen} - {0}), list(range(1, self.ITEMS + 1)))
+        part = world.part(export, 1)
+        self.assertEqual((part.ingest_state, part.entries, part.entries_done), ("ingested", self.ITEMS, self.ITEMS))
+        self.assertEqual(set(world.outcomes().values()), {"skipped"})
 
 
 if __name__ == "__main__":

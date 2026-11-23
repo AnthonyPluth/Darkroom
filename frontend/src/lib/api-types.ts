@@ -178,6 +178,7 @@ export interface ExportPartDetail {
   held_waiting_export: number;
   failed_items: number;
   kept_reason: "failed_item" | "missing" | "not_plain" | "empty" | "not_a_zip" | "damaged" | "symlink_entry" | "outside" | "file_and_folder" | "device_entry" | "unreadable_entry" | "name_too_long" | "duplicate_name" | "too_many_entries" | "too_large" | "zip_bomb" | "sidecars_too_big" | "size_lies" | "listing_differs" | "bytes_differ" | null;
+  import_failure: ImportFailure | null;
   freed: boolean;
   bytes_freed: number;
 }
@@ -230,6 +231,7 @@ export interface ExportView {
   bytes_freed: number;
   retry_allowed: boolean;
   retry_refusal: string | null;
+  import_retry_allowed: boolean;
 }
 
 export interface Exports {
@@ -250,10 +252,18 @@ export interface Health {
 
 export type HeartbeatBody = Record<string, never>;
 
+export interface ImportFailure {
+  code: "files" | "database" | "metadata" | "placing" | "memory" | "unexpected";
+  error: string;
+}
+
 export interface ImportQueued {
   export_id: number;
   status: string;
   stage: string | null;
+  per_part: boolean;
+  parts_requeued: number;
+  run_requeued: boolean;
 }
 
 export interface ImportReply {

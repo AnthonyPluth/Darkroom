@@ -2,8 +2,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0050"
-down_revision = "0049"
+revision = "0051"
+down_revision = "0050"
 branch_labels = None
 depends_on = None
 
@@ -98,7 +98,7 @@ def downgrade() -> None:
     kinded = "kind" in {column["name"] for column in found.get_columns(TABLE)}
     intents = sa.table(TABLE, sa.column("id"), sa.column("kind"))
     if kinded and connection.execute(sa.select(intents.c.id).where(intents.c.kind == "backfill").limit(1)).first() is not None:
-        raise RuntimeError("Immich backfill receipts are kept; roll the schema forward instead of downgrading past 0050")
+        raise RuntimeError("Immich backfill receipts are kept; roll the schema forward instead of downgrading past 0051")
     if "managed_backfill_items" in found.get_table_names():
         op.drop_table("managed_backfill_items")
     if kinded and connection.dialect.name == "postgresql":

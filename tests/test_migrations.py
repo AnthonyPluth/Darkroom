@@ -615,11 +615,11 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT id, status, stage FROM exports").all(), [(1, "downloaded", "queued")])
         db.migrate(self.engine)
 
-    def test_0050_managed_backfill_keeps_every_intent_receipt_and_origin_as_an_import_and_can_be_undone(self):
+    def test_0051_managed_backfill_keeps_every_intent_receipt_and_origin_as_an_import_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
-            command.upgrade(config, "0049")
+            command.upgrade(config, "0050")
             seed_pixel_source_parents(connection)
             connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
             connection.exec_driver_sql("INSERT INTO managed_import_intents (id, person_id, owner_id, export_id, resource_manifest, created_at) VALUES (1, 1, 'owner-a', 1, ' { } ', -0.125)")
@@ -647,16 +647,48 @@ class MigrationTests(unittest.TestCase):
                                            f"VALUES (3, 1, 'owner-a', NULL, '{kind}', ' {{ }} ', 2.0)")
         with self.assertRaises(RuntimeError), self.engine.begin() as connection:
             config.attributes["connection"] = connection
-            command.downgrade(config, "0049")
+            command.downgrade(config, "0050")
         with self.engine.begin() as connection:
             connection.exec_driver_sql("DELETE FROM managed_import_intents WHERE kind = 'backfill'")
             config.attributes["connection"] = connection
-            command.downgrade(config, "0049")
+            command.downgrade(config, "0050")
         self.assertNotIn("managed_backfill_items", inspect(self.engine).get_table_names())
         self.assertNotIn("kind", {column["name"] for column in inspect(self.engine).get_columns("managed_import_intents")})
         self.assertNotIn("managed_backfill", {column["name"] for column in inspect(self.engine).get_columns("people")})
         with self.engine.connect() as connection:
             self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+        db.migrate(self.engine)
+
+    def test_0050_parts_start_without_a_failure_reason_only_fixed_codes_and_short_names_are_stored_and_it_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0049")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status) VALUES (1, 1, 'initial', 'downloading')")
+            connection.exec_driver_sql("INSERT INTO export_parts (id, export_id, number, status, ingest_state, bytes, ingest_refusal) VALUES (1, 1, 1, 'done', 'failed', 5000000000, NULL)")
+            connection.exec_driver_sql("INSERT INTO export_parts (id, export_id, number, status, ingest_state, ingest_refusal) VALUES (2, 1, 2, 'done', 'refused', 'not_a_zip')")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT id, ingest_state, bytes, ingest_refusal, ingest_failure, ingest_failure_type FROM export_parts ORDER BY id").all(),
+                             [(1, "failed", 5000000000, None, None, None), (2, "refused", None, "not_a_zip", None, None)])
+            for code in ("files", "database", "metadata", "placing", "memory", "unexpected"):
+                connection.exec_driver_sql(f"UPDATE export_parts SET ingest_failure = '{code}', ingest_failure_type = '{'E' * 64}' WHERE id = 1")
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("UPDATE export_parts SET ingest_failure = 'Photos from 2019/IMG_1.JPG' WHERE id = 1")
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql(f"UPDATE export_parts SET ingest_failure_type = '{'E' * 65}' WHERE id = 1")
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("UPDATE export_parts SET ingest_failure_type = '' WHERE id = 1")
+            self.assertEqual(connection.exec_driver_sql("SELECT ingest_failure, ingest_failure_type FROM export_parts WHERE id = 1").one(), ("unexpected", "E" * 64))
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0049")
+        self.assertFalse({"ingest_failure", "ingest_failure_type"} & {column["name"] for column in inspect(self.engine).get_columns("export_parts")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT id, ingest_state, bytes, ingest_refusal FROM export_parts ORDER BY id").all(),
+                             [(1, "failed", 5000000000, None), (2, "refused", None, "not_a_zip")])
         db.migrate(self.engine)
 
     def test_0049_person_managed_imports_starts_off_keeps_every_person_and_can_be_undone(self):

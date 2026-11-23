@@ -1,23 +1,26 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import zipfile
 from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from darkroom import config, dates, monitoring
 from darkroom.domain import alerts, dedupe, events, managed_ingest, media, pixel_folder, takeout_copies
 from darkroom.domain.ingest import metadata, pairing, part_pairing, part_reader, place, run, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
+from darkroom.providers import exiftool
 from darkroom.storage import db, paths
-from darkroom.storage.models import DedupeDecision, Export, ExportPart, MediaItem, Person, TakeoutEntry, TakeoutSidecar
+from darkroom.storage.models import INGEST_FAILURE_TYPE_LIMIT, DedupeDecision, Export, ExportPart, MediaItem, Person, TakeoutEntry, TakeoutSidecar
 from darkroom.storage.paths import Photos
 
 COMMIT_HOOK: Callable[[], None] | None = None
@@ -38,6 +41,12 @@ FAILED: Final = part_pairing.FAILED
 RECORDED: Final = "recorded"
 HELD: Final = (WAITING_SIDECAR, WAITING_EXPORT)
 FINISHED_EXPORTS: Final = frozenset({"imported", "failed", "expired"})
+UNNAMED_FAILURE: Final = "Exception"
+FINGERPRINT_WORKERS: Final = 4
+
+
+def fingerprint_workers() -> int:
+    return min(FINGERPRINT_WORKERS, os.cpu_count() or 1)
 
 
 @dataclass
@@ -109,12 +118,31 @@ def run_queued(opened: Session, settings: config.Settings, now: float, tools: ru
     return ran
 
 
+def failure_code(error: BaseException) -> str:
+    if isinstance(error, OSError):
+        return "files"
+    if isinstance(error, SQLAlchemyError):
+        return "database"
+    if isinstance(error, (exiftool.Missing, exiftool.Unreadable, exiftool.WriteFailed)):
+        return "metadata"
+    if isinstance(error, place.PlaceFailed):
+        return "placing"
+    if isinstance(error, MemoryError):
+        return "memory"
+    return "unexpected"
+
+
+def failure_type(error: BaseException) -> str:
+    name = type(error).__name__
+    return name if name.isascii() and name.isidentifier() and len(name) <= INGEST_FAILURE_TYPE_LIMIT else UNNAMED_FAILURE
+
+
 def failed(opened: Session, settings: config.Settings, export_id: int, number: int, error: Exception, now: float, tools: run.Tools) -> None:
     opened.rollback()
     export, part = opened.get(Export, export_id), part_of(opened, export_id, number)
     if part is not None:
-        part.ingest_state = FAILED_PART
-    events.record(opened, now, "export_part_ingest_failed", f"export {export_id}", f"part {number}: {type(error).__name__}")
+        part.ingest_state, part.ingest_failure, part.ingest_failure_type = FAILED_PART, failure_code(error), failure_type(error)
+    events.record(opened, now, "export_part_ingest_failed", f"export {export_id}", f"part {number}: {failure_type(error)}")
     alerts.open_alert(opened, settings, f"part:failed:{export_id}:{number}", "failure", f"export {export_id}",
                       alerts.failure(f"Ingesting part {number} of export {export_id}"), None, now, notifier=tools.notifier,
                       about=alerts.NOBODY if export is None else alerts.account(export.account_id))
@@ -158,6 +186,7 @@ class Ingest:
         self.sweep_placements()
         stack.callback(self.sweep_placements)
         stack.callback(self.close_archive)
+        self.pool = stack.enter_context(ThreadPoolExecutor(max_workers=fingerprint_workers(), thread_name_prefix="fingerprint"))
 
     def commit(self) -> None:
         if COMMIT_HOOK is not None:
@@ -180,6 +209,12 @@ class Ingest:
     def fail(self, entry: TakeoutEntry, stage: str, error: BaseException) -> None:
         entry.outcome, entry.done_at, entry.metadata_pending = FAILED, self.now, False
         run.item_failed(self.opened, self.export, stage, error, self.now)
+        self.progress()
+
+    def progress(self) -> None:
+        query = select(TakeoutEntry.outcome, func.count()).where(TakeoutEntry.export_id == self.export.id, TakeoutEntry.part_number == self.part.number
+                                                                 ).group_by(TakeoutEntry.outcome)
+        counted(self.part, Counter({outcome: count for outcome, count in self.opened.execute(query).all()}))
 
     def sweep_placements(self) -> None:
         paths.sweep_placements(self.photos, self.person.slug, unpack.staging_name(self.export))
@@ -267,25 +302,39 @@ class Ingest:
             except Exception as error:
                 self.fail(target.entry, "metadata", error)
         found: dict[int, MediaItem] = {}
-        with paths.pinned_inbox_files(self.photos, [source for _, source in sources]) as pinned:
+        with (paths.pinned_inbox_files(self.photos, [source for _, source in sources]) as pinned,
+              self.decoding({(pinned[source], Path(target.entry.name)) for target, source in sources if source in pinned}) as decoded):
             tags = self.tools.read(list(pinned.values())) if pinned else {}
+            ready = decoded()
             for target, source in sources:
                 try:
-                    found[target.entry.id] = self.fields_from(target, pinned.get(source), tags)
+                    found[target.entry.id] = self.fields_from(target, pinned.get(source), tags, ready)
                 except Exception as error:
                     self.fail(target.entry, "metadata", error)
         self.measured.update(found)
         self.used.update({entry_id: target.sidecar_id for target in targets if (entry_id := target.entry.id) in found})
         return found
 
-    def fields_from(self, target: Target, opened_path: Path | None, tags: dict[Path, dict[str, object]]) -> MediaItem:
+    @contextlib.contextmanager
+    def decoding(self, files: set[tuple[Path, Path]]) -> Iterator[Callable[[], dict[tuple[Path, Path], media.Decoded]]]:
+        futures: dict[tuple[Path, Path], Future[media.Decoded]] = {file: self.pool.submit(media.decode, *file) for file in sorted(files)}
+        try:
+            yield lambda: {file: future.result() for file, future in futures.items()}
+        finally:
+            for future in futures.values():
+                future.cancel()
+            wait(futures.values())
+
+    def fields_from(self, target: Target, opened_path: Path | None, tags: dict[Path, dict[str, object]],
+                    decoded: Mapping[tuple[Path, Path], media.Decoded]) -> MediaItem:
         entry = target.entry
         if opened_path is None:
             raise paths.LinkRefused("the scratch file is a link or not a plain file")
         text = self.texts.get(target.sidecar_id) if target.sidecar_id is not None else None
         parsed = None if text is None else sidecar.parse(text)
         item = TakeoutItem(Path(entry.name), entry.sha1 or "", (), None)
-        fields = metadata.candidate(item, tags.get(opened_path, {}), parsed, self.person.id, run.UNPLACED, self.now, self.export.id, opened_path)
+        fields = metadata.candidate(item, tags.get(opened_path, {}), parsed, self.person.id, run.UNPLACED, self.now, self.export.id, opened_path,
+                                    decoded.get((opened_path, Path(entry.name))))
         if entry.sha1 is not None and fields.sha1 != entry.sha1:
             raise place.PlaceFailed("the file changed since it was read")
         entry.phash, entry.captured_utc, entry.captured_local = fields.phash, fields.captured_utc, fields.captured_local
@@ -312,6 +361,7 @@ class Ingest:
         self.measure([Target(rows[entry_id], chosen[entry_id].entry_id) for entry_id in sorted(sources)])
         self.commit()
         result = part_pairing.pair_part(self.media_rows(), self.sidecar_rows(), self.part.number, self.index)
+        self.progress()
         self.commit()
         states = self.states()
         ready = [entry for entry in result.ready if states.get(entry.part_number) in (INGESTING, INGESTED)]
@@ -373,6 +423,7 @@ class Ingest:
         if decision.matched_item_id is not None and seen is not None:
             pixel_folder.seen_again(self.opened, self.export.account_id, decision.matched_item_id, decision.person_id, seen)
         entry.outcome, entry.metadata_pending, entry.done_at = SKIPPED, False, self.now
+        self.progress()
         self.commit()
 
     def light_fields(self, entry: TakeoutEntry, settled: bool = False) -> MediaItem:
@@ -445,6 +496,7 @@ class Ingest:
         if row.tier == 5:
             entry.item_id = row.takeout_item_id
         entry.decision_id, entry.done_at = row.id, self.now
+        self.progress()
         self.commit()
 
     def fill(self, entry: TakeoutEntry) -> None:
@@ -479,10 +531,7 @@ class Ingest:
         parts = self.opened.execute(select(ExportPart).where(ExportPart.export_id == self.export.id)).scalars()
         for part in parts:
             if part.number == self.part.number or part.ingest_state == INGESTED:
-                found = counts.get(part.number, Counter())
-                part.entries_done = sum(count for outcome, count in found.items() if outcome != LISTED)
-                part.held = sum(found[outcome] for outcome in HELD)
-                part.failed_items = found[FAILED]
+                counted(part, counts.get(part.number, Counter()))
 
     def changed_since_queued(self) -> set[int]:
         query = select(TakeoutEntry.decision_id).where(TakeoutEntry.export_id == self.export.id, TakeoutEntry.decision_id.is_not(None),
@@ -505,7 +554,7 @@ class Ingest:
         if resumed:
             self.changed |= self.changed_since_queued()
         rescanned = run.rescan_people(self.opened, self.settings, sorted(self.changed), self.export, self.now, self.tools)
-        self.part.ingest_state, self.part.ingested_at = INGESTED, self.now
+        self.part.ingest_state, self.part.ingested_at, self.part.ingest_failure, self.part.ingest_failure_type = INGESTED, self.now, None, None
         events.record(self.opened, self.now, "export_part_ingested", f"export {self.export.id}",
                       f"part {self.part.number}: {self.part.entries_done} entries, {self.part.held} held, {self.part.failed_items} failed")
         self.commit()
@@ -513,6 +562,12 @@ class Ingest:
                        failed=self.part.failed_items)
         return PartIngest(ingested=True, placed=found[PLACED], review=found[REVIEW], skipped=found[SKIPPED], held=self.part.held,
                           failed=self.part.failed_items, rescanned=rescanned)
+
+
+def counted(part: ExportPart, found: Counter[str]) -> None:
+    part.entries_done = sum(count for outcome, count in found.items() if outcome != LISTED)
+    part.held = sum(found[outcome] for outcome in HELD)
+    part.failed_items = found[FAILED]
 
 
 def ingest_part(opened: Session, settings: config.Settings, export: Export, part: ExportPart, now: float, tools: run.Tools | None = None) -> PartIngest:
@@ -527,7 +582,7 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
         person = run.owner_person(opened, export, claim=True)
         managed_ingest.begin(opened, export, person, now)
         resumed = part.ingest_state == INGESTING
-        part.ingest_state, part.ingest_refusal = INGESTING, None
+        part.ingest_state, part.ingest_refusal, part.ingest_failure, part.ingest_failure_type = INGESTING, None, None, None
         opened.commit()
         photos = Photos(settings.photos_root)
         with contextlib.ExitStack() as stack:
