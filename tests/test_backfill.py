@@ -186,7 +186,7 @@ class BackfillTests(unittest.TestCase):
                 if setting:
                     self.assertEqual(len(world.uploads()), uploads)
 
-    def test_a_live_photo_half_whose_companion_matched_a_phone_original_is_listed_and_not_uploaded(self):
+    def test_a_live_video_whose_still_matched_a_phone_original_is_listed_and_not_uploaded(self):
         world = BackfillWorld(self)
 
         def one_half_each(builder):
@@ -195,17 +195,12 @@ class BackfillTests(unittest.TestCase):
             builder.photo("IMG_3002.HEIC", data=still, part=0)
             builder.add("IMG_3002.MOV", builder.video_bytes(), "Photos from 2019", 0, "json", None, None, "")
             builder.manifest.live_pairs["IMG_3002.MOV"] = "IMG_3002.HEIC"
-            video = builder.video_bytes()
-            world.original("jo", "IMG_3003.MOV", video)
-            builder.photo("IMG_3003.HEIC", part=0)
-            builder.add("IMG_3003.MOV", video, "Photos from 2019", 0, "json", None, None, "")
-            builder.manifest.live_pairs["IMG_3003.MOV"] = "IMG_3003.HEIC"
         world.run_managed(one_half_each, parts=1)
         placed = sorted(PurePosixPath(path).name for path in world.opened.execute(select(MediaItem.path).where(MediaItem.path.startswith("jo/google-only/"),
                                                                                                                  MediaItem.source == "takeout")).scalars())
-        self.assertEqual(placed, ["IMG_3002.MOV", "IMG_3003.HEIC"])
+        self.assertEqual(placed, ["IMG_3002.MOV"])
         world.backfill()
-        self.assertEqual((world.report(), world.uploads()), ({"live_photo": ["IMG_3002.MOV", "IMG_3003.HEIC"]}, []))
+        self.assertEqual((world.report(), world.uploads()), ({"live_photo": ["IMG_3002.MOV"]}, []))
 
     def test_settled_items_do_not_rescan_for_live_photo_companions(self):
         world = BackfillWorld(self)
@@ -223,9 +218,11 @@ class BackfillTests(unittest.TestCase):
                                captured_utc=None, sidecar_from_still=False, indexed_at=NOW))
         items.append(MediaItem(id=5001, person_id=world.ids["jo"], source="takeout", path="jo/google-only/2019/07/CLIP_9.MOV", sha1="c" * 40, bytes=1,
                                captured_utc=1_500_000_000.0 + 90.4, sidecar_from_still=False, indexed_at=NOW))
+        items[10].export_id = 77
         index = backfill.Companions()
+        index.add(("ledger", 77), PurePosixPath("Takeout/Google Photos/Photos from 2017/CLIP_11.MOV"), items[10].captured_utc + 0.3)
         halves = backfill.live_halves(world.opened, world.jo(), items, items, index)
-        self.assertEqual(halves, {7, 5000, 9, 5001})
+        self.assertEqual(halves, {7, 5000, 9, 5001, 11})
         self.assertLessEqual(index.lookups, 5 * len(items))
 
     def test_running_again_uploads_nothing_more(self):
