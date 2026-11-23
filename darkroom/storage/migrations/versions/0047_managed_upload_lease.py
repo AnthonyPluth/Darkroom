@@ -17,8 +17,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    found = sa.inspect(op.get_bind())
-    present = {column["name"] for column in found.get_columns("managed_import_receipts")} if "managed_import_receipts" in found.get_table_names() else set()
+    connection = op.get_bind()
+    if connection.dialect.name == "postgresql":
+        connection.execute(sa.text("LOCK TABLE managed_import_receipts IN ACCESS EXCLUSIVE MODE"))
+    else:
+        connection.execute(sa.text("UPDATE managed_import_receipts SET id = id WHERE 1 = 0"))
+    present = {column["name"] for column in sa.inspect(connection).get_columns("managed_import_receipts")}
     for column in COLUMNS:
         if column in present:
             op.execute(f"ALTER TABLE managed_import_receipts DROP COLUMN {column}")
