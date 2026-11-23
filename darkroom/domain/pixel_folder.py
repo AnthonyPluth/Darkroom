@@ -214,8 +214,9 @@ def about_copy(row: PixelCopy) -> ColumnElement[bool]:
 
 def held(opened: Session, row: PixelCopy, now: float, reason: HoldReason) -> None:
     detail = f"copy {row.id}: {reason}"
-    last = opened.execute(select(Event.type, Event.detail).where(about_copy(row)).order_by(Event.id.desc()).limit(1)).first()
-    if last is None or tuple(last) != ("pixel_copy_source_held", detail):
+    last = opened.execute(select(Event.type, Event.detail, Event.time).where(about_copy(row)).order_by(Event.id.desc()).limit(1)).first()
+    repeat = last is not None and (last.type, last.detail) == ("pixel_copy_source_held", detail) and (row.placed_at is None or last.time > row.placed_at)
+    if not repeat:
         events.record(opened, now, "pixel_copy_source_held", f"pixel {row.pixel_id}", detail)
         monitoring.log("pixel copy held for its Immich source", copy=row.id, reason=reason)
 

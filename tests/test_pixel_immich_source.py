@@ -361,6 +361,37 @@ class PixelImmichSourceTests(unittest.TestCase):
         self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 20 + 3600, sends), 0)
         self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 20 + 25 * 3600, sends), 1)
 
+    def test_a_hold_with_the_same_reason_before_and_after_the_first_placement_alerts_after_a_day(self):
+        sends = lambda settings, title, message, link: "sent"
+        for reason in ("source_off", "source_unrecorded"):
+            with self.subTest(reason=reason):
+                self.setUp()
+                item, version_id, _ = self.managed()
+                self.queue(item, version_id)
+                verified = update(ManagedAssetVersion).where(ManagedAssetVersion.id == version_id)
+                if reason == "source_off":
+                    self.assertEqual(self.tend(readers=False, at=NOW).blocked, 1)
+                    self.assertEqual(self.tend(at=NOW + 10).placed, 1)
+                    self.match(item, self.jo_account, NOW + 15)
+                    self.assertEqual(self.tend(readers=False, at=NOW + 20).blocked, 1)
+                else:
+                    self.opened.execute(verified.values(state="trashed"))
+                    self.opened.commit()
+                    self.assertEqual(self.tend(at=NOW).blocked, 1)
+                    self.opened.execute(verified.values(state="bytes_verified"))
+                    self.opened.commit()
+                    self.assertEqual(self.tend(at=NOW + 10).placed, 1)
+                    self.match(item, self.jo_account, NOW + 15)
+                    self.opened.execute(verified.values(state="trashed"))
+                    self.opened.commit()
+                    self.assertEqual(self.tend(at=NOW + 20).blocked, 1)
+                row = self.copy(self.jo_pixel, item)
+                holds = self.opened.execute(select(Event.detail).where(Event.type == "pixel_copy_source_held", Event.detail.startswith(f"copy {row.id}: "))).scalars().all()
+                self.assertEqual(holds, [f"copy {row.id}: {reason}"] * 2)
+                key = f"pixel:source-held:{self.jo}:{int(NOW + 20)}"
+                pixel_folder.alert_held(self.opened, settings_from(), NOW + 20 + 25 * 3600, sends)
+                self.assertIsNotNone(self.opened.execute(select(Alert.id).where(Alert.key == key)).first())
+
     def test_a_local_write_failure_counts_as_failed_not_as_a_held_source(self):
         item, version_id, _ = self.managed()
         self.queue(item, version_id)
