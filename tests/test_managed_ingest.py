@@ -13,7 +13,7 @@ from sqlalchemy import select
 from darkroom.domain import managed_ingest, managed_metadata, managed_upload, review
 from darkroom.domain.ingest import cleanup, finish_export, part_free, place
 from darkroom.storage import secretbox
-from darkroom.storage.models import Alert, Export, ImportRun, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry
+from darkroom.storage.models import Alert, DedupeDecision, Export, ImportRun, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry
 from tests.fakes.immich import FakeAsset, FakePerson, extract
 from tests.import_world import DAY, NOW
 from tests.privacy import no_leaks
@@ -196,11 +196,24 @@ class UploadTests(unittest.TestCase):
     def test_keep_both_refuses_a_live_photo_half_and_records_no_receipt(self):
         world = ManagedWorld(self)
         export = world.opened.get(Export, world.run_managed(single("IMG_5014.JPG"), parts=1).id)
-        for hold_path, from_still in (("_inbox/jo/review/export-1/IMG_5015.MOV", False), ("_inbox/jo/review/export-1/IMG_5016.JPG", True)):
+        for hold_path, from_still, live in (("_inbox/jo/review/export-1/IMG_5015.MOV", False, False), ("_inbox/jo/review/export-1/IMG_5016.JPG", True, False),
+                                            ("_inbox/jo/review/export-1/IMG_5017.JPG", False, True)):
             with self.subTest(), self.assertRaisesRegex(managed_ingest.Refused, "Live Photo"):
                 managed_ingest.keep_for_immich(world.opened, world.photos, export, ReviewItem(id=90, decision_id=1, hold_path=hold_path, sidecar_from_still=from_still),
-                                               world.root / hold_path, "a" * 40, "IMG_5016.JPG", NOW, mock.Mock())
+                                               world.root / hold_path, "a" * 40, "IMG_5016.JPG", live, NOW, mock.Mock())
         self.assertEqual(world.count(ManagedImportReceipt), 1)
+
+    def test_both_halves_of_a_live_photo_are_live_and_a_raw_with_its_jpeg_or_a_plain_photo_is_not(self):
+        world = ManagedWorld(self)
+
+        def build(builder):
+            builder.live_photo("IMG_3001", part=0)
+            for name in ("IMG_6001.DNG", "IMG_6001.JPG", "IMG_6002.JPG"):
+                builder.photo(name, part=0)
+        export = world.opened.get(Export, world.run_managed(build, parts=1).id)
+        live = finish_export.live_decisions(world.opened, export)
+        rows = world.opened.execute(select(DedupeDecision).where(DedupeDecision.id.in_(live))).scalars()
+        self.assertEqual({short(row.source_path).removeprefix(PHOTOS) for row in rows}, {"IMG_3001.HEIC", "IMG_3001.MOV"})
 
     def test_a_refused_upload_keeps_every_source_and_the_export_waits_until_it_goes_through(self):
         world = ManagedWorld(self)

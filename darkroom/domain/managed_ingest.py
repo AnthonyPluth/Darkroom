@@ -172,13 +172,14 @@ class Uploads:
             self.pending += 1
 
 
-def keep_for_immich(opened: Session, photos: Photos, export: Export, review: ReviewItem, hold: Path, sha1: str, name: str, now: float, read: xmp.Reader) -> None:
+def keep_for_immich(opened: Session, photos: Photos, export: Export, review: ReviewItem, hold: Path, sha1: str, name: str, live: bool, now: float,
+                    read: xmp.Reader) -> None:
     intent = intent_of(opened, export)
     if intent is None:
         raise Refused("only a pair of an Immich-managed import is kept in Immich")
     if f"{KEPT}{review.id}" in receipts_of(opened, intent):
         return
-    if Path(review.hold_path or "").suffix.lower() in media.VIDEO_SUFFIXES or review.sidecar_from_still:
+    if live or Path(review.hold_path or "").suffix.lower() in media.VIDEO_SUFFIXES or review.sidecar_from_still:
         raise Refused("a Live Photo's halves are not uploaded to Immich yet, so the pair stays in review and its copy is kept")
     if not nameable(name):
         raise Refused("Immich does not take a file with this name, so the pair stays in review and its copy is kept")

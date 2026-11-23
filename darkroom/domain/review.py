@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import monitoring
 from darkroom.domain import accounts, dedupe, events, exports, managed_ingest, media, people, thumbs, xmp
-from darkroom.domain.ingest import cleanup, metadata, pairing, place, sidecar
+from darkroom.domain.ingest import cleanup, finish_export, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
 from darkroom.storage import paths
@@ -457,7 +457,8 @@ def keep_in_immich(opened: Session, photos: Photos, hit: Found, now: float, read
         raise WrongState("the held copy from the export is gone, so it cannot be kept")
     _, fields = kept_fields(opened, photos, hit, hold, person.id, now, read)
     try:
-        managed_ingest.keep_for_immich(opened, photos, hit.export, hit.review, hold, fields.sha1, Path(hit.decision.source_path or hold.name).name, now, read)
+        managed_ingest.keep_for_immich(opened, photos, hit.export, hit.review, hold, fields.sha1, Path(hit.decision.source_path or hold.name).name,
+                                       hit.decision.id in finish_export.live_decisions(opened, hit.export), now, read)
     except managed_ingest.Refused as refused:
         raise WrongState(str(refused)) from None
     return set(), [], ", to be uploaded to Immich"

@@ -294,9 +294,8 @@ class Finish(part_ingest.Ingest):
         self.commit()
 
     def items(self, canon: Canon) -> list[managed_ingest.Item]:
-        stills = {str(unit.item.live_pair_of) for unit in canon.units if unit.item.live_pair_of is not None}
-        return [managed_ingest.Item(unit.root, unit.path, self.text_of(unit.sidecar_id), unit.item.live_pair_of is not None or unit.path in stills,
-                                    unit.item.sidecar_from_still) for unit in canon.units]
+        live = live_roots(canon)
+        return [managed_ingest.Item(unit.root, unit.path, self.text_of(unit.sidecar_id), unit.root.id in live, unit.item.sidecar_from_still) for unit in canon.units]
 
     def send_to_immich(self) -> None:
         intent = managed_ingest.intent_of(self.opened, self.export)
@@ -330,6 +329,17 @@ class Finish(part_ingest.Ingest):
         monitoring.log("managed uploads", export=self.export.id, committed=uploads.committed, held=uploads.held, pending=uploads.pending)
         if uploads.pending:
             raise UploadsPending(f"{uploads.pending} uploads to Immich are not complete yet")
+
+
+def live_roots(canon: Canon) -> set[int]:
+    stills = {str(unit.item.live_pair_of) for unit in canon.units if unit.item.live_pair_of is not None}
+    return {unit.root.id for unit in canon.units if unit.item.live_pair_of is not None or unit.path in stills}
+
+
+def live_decisions(opened: Session, export: Export) -> set[int]:
+    canon = canonical(opened, export)
+    live = live_roots(canon)
+    return {unit.root.decision_id for unit in canon.units if unit.root.id in live and unit.root.decision_id is not None}
 
 
 def complete(opened: Session, export: Export) -> bool:
