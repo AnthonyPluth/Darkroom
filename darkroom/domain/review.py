@@ -16,7 +16,7 @@ from darkroom.domain.ingest import cleanup, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
 from darkroom.storage import paths
-from darkroom.storage.models import LEGACY_BLOCKED, DedupeDecision, Event, Export, GoogleAccount, MediaItem, Person, ReviewItem, User, known_contents
+from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Person, ReviewItem, User, known_contents
 from darkroom.storage.paths import Photos
 
 UNDO_WINDOW = cleanup.KEEP_FOR
@@ -165,18 +165,11 @@ def summary(opened: Session, review: ReviewItem, decision: DedupeDecision) -> di
     return {
         "id": review.id, "status": review.status, "decision_id": decision.id, "export_id": decision.export_id, "account_id": decision.account_id,
         "tier": decision.tier, "reason": decision.reason, "decided_at": decision.decided_at, "reversed": decision.reversed_at is not None,
-        "resolved_at": review.resolved_at, "undo_until": None if undo_refusal(opened, decision) else undo_until(review), "name": name_of(decision.source_path),
+        "resolved_at": review.resolved_at, "undo_until": undo_until(review), "name": name_of(decision.source_path),
         "library_name": None if matched is None else name_of(matched.path), "person_id": decision.person_id,
         "kept_item_id": None if kept is None else kept.id, "kept_person_id": None if kept is None else kept.person_id,
         "decided_by_person_id": decided_by(opened, review, kept),
     }
-
-
-def undo_refusal(opened: Session, decision: DedupeDecision) -> str | None:
-    export = opened.get(Export, decision.export_id)
-    if export is None or not place.legacy_blocked(opened, export):
-        return None
-    return "this pair was kept in Immich, and Darkroom never takes a photo back out of Immich" if place.managed_import(opened, export) else place.LEGACY_REFUSED
 
 
 def undoable_count(opened: Session, status: str | None, now: float) -> int:
@@ -480,7 +473,7 @@ def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: f
     if hit.decision.reversed_at is not None:
         raise WrongState("this pair's dedupe decision was reversed")
     changed = Changed(hit.export)
-    people, adopted, found_at = keep_in_immich(opened, photos, hit, now, read) if place.legacy_blocked(opened, hit.export) else keep_both(opened, photos, hit, now, effects, read, write)
+    people, adopted, found_at = keep_in_immich(opened, photos, hit, now, read) if place.managed_import(opened, hit.export) else keep_both(opened, photos, hit, now, effects, read, write)
     changed.people |= people
     hit.review.status, hit.review.resolved_at = ACTIONS[action], now
     opened.flush()
@@ -576,8 +569,8 @@ def undo(opened: Session, photos: Photos, review_id: int, now: float, effects: F
     hold = cleanup.hold_file(photos, hit.export, hit.review)
     if hold is None:
         raise WrongState("the held copy from the export is gone, so this decision can no longer be undone")
-    if (refusal := undo_refusal(opened, hit.decision)) is not None:
-        raise WrongState(refusal)
+    if place.managed_import(opened, hit.export):
+        raise WrongState("this pair was kept in Immich, and Darkroom never takes a photo back out of Immich")
     people, token = take_back(opened, photos, hit, hold, effects)
     changed = Changed(hit.export, people)
     hit.review.status, hit.review.resolved_at = "pending", None
@@ -642,8 +635,6 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
     export, current, target = reassign_checks(opened, item, person_id)
     if target.id == current.id:
         return item, Changed(export)
-    if {current.managed_imports, target.managed_imports} & set(LEGACY_BLOCKED):
-        raise WrongState(place.LEGACY_REFUSED)
     try:
         source = photos.google_only_file(item.path)
     except (paths.NotALibraryCopy, paths.OutsideRoot) as error:

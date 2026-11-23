@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import events, managed_ingest
-from darkroom.domain.ingest import unpack
+from darkroom.domain.ingest import place, unpack
 from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem, TakeoutEntry
 from darkroom.storage.paths import Photos
@@ -247,9 +247,6 @@ def clean_per_part(opened: Session, photos: Photos, export: Export, report: Clea
     try:
         if export.status != "imported":
             return
-        if managed_ingest.release_refusal(opened, export) is not None:
-            report.kept += 1
-            return
         if unsettled(opened, export) or unsafe_reviews(opened, photos, export, per_part=True) or held_unaccounted(opened, photos, export):
             report.kept += 1
             return
@@ -259,10 +256,9 @@ def clean_per_part(opened: Session, photos: Photos, export: Export, report: Clea
 
 
 def clean_export(opened: Session, photos: Photos, export: Export, now: float, report: CleanupReport) -> None:
-    refusal = managed_ingest.release_refusal(opened, export)
-    if refusal is not None:
+    if place.managed_import(opened, export):
         report.kept += 1
-        note_once(opened, now, "cleanup_kept", f"export {export.id}", refusal)
+        note_once(opened, now, "cleanup_kept", f"export {export.id}", managed_ingest.KEPT_ONLY)
         return
     done = latest_done_run(opened, export)
     if done is not None and done.failed > 0:

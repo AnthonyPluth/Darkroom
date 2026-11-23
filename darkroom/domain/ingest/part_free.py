@@ -14,11 +14,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import events, managed_ingest
+from darkroom.domain import events
 from darkroom.domain.ingest import cleanup, pairing, part_ingest, part_reader, run, unpack
 from darkroom.storage import db, paths
 from darkroom.storage.models import (
-    DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem, TakeoutEntry, TakeoutSidecar,
+    DedupeDecision, Event, Export, ExportPart, ImportRun, ManagedImportIntent, MediaItem, Person, ReviewItem, TakeoutEntry, TakeoutSidecar,
 )
 from darkroom.storage.paths import Identity, Photos
 
@@ -87,7 +87,7 @@ def in_export_folder(photos: Photos, person: Person, export: Export, part: Expor
 
 
 def managed(opened: Session, export: Export) -> bool:
-    return managed_ingest.held_back(opened, export)
+    return opened.execute(select(ManagedImportIntent.id).where(ManagedImportIntent.export_id == export.id).limit(1)).first() is not None
 
 
 def owner_action(photos: Photos) -> bool:

@@ -525,13 +525,7 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
         if part.ingest_state not in (QUEUED, INGESTING) or part.status != "done":
             raise run.NotReady("this part is not queued for ingest")
         person = run.owner_person(opened, export, claim=True)
-        try:
-            managed_ingest.begin(opened, settings, export, person, now)
-        except managed_ingest.Waiting as waiting:
-            opened.rollback()
-            if isinstance(waiting, managed_ingest.Stopped):
-                managed_ingest.stopped_alert(opened, settings, person, export, str(waiting), now, tools.notifier)
-            raise run.NotReady(str(waiting)) from None
+        managed_ingest.begin(opened, export, person, now)
         resumed = part.ingest_state == INGESTING
         part.ingest_state, part.ingest_refusal = INGESTING, None
         opened.commit()

@@ -626,7 +626,7 @@ class MigrationTests(unittest.TestCase):
         with self.engine.begin() as connection:
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
             self.assertEqual(connection.exec_driver_sql("SELECT slug, immich_user_id, managed_imports FROM people").all(), [("jo", "owner", None)])
-            connection.exec_driver_sql("UPDATE people SET managed_imports = 'pausing'")
+            connection.exec_driver_sql("UPDATE people SET managed_imports = 'on'")
             config.attributes["connection"] = connection
             command.downgrade(config, "0048")
         self.assertNotIn("managed_imports", {column["name"] for column in inspect(self.engine).get_columns("people")})

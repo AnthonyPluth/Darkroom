@@ -99,7 +99,7 @@ def before(export: Export, stage: str) -> bool:
 
 
 def lock_file(settings: config.Settings, account_id: int) -> Path:
-    return locks.import_account(settings.data_dir, account_id)
+    return settings.data_dir / "locks" / f"import-account-{account_id}.lock"
 
 
 @contextmanager
@@ -548,13 +548,6 @@ def import_export(opened: Session, settings: config.Settings, export: Export, no
         opened.refresh(export)
         if export.status == "imported":
             raise AlreadyImported("this export is already imported")
-        try:
-            managed_ingest.refuse_legacy(exports.owner_of(opened, export), managed_ingest.started(opened, export))
-        except managed_ingest.Waiting as waiting:
-            refused = current_run(opened, export, now)
-            opened.commit()
-            failed(opened, settings, export.id, refused.id, StageFailed(str(waiting)), now, tools or Tools())
-            return refused
         return run_stages(opened, settings, export, now, tools or Tools())
 
 
@@ -708,8 +701,6 @@ def request_import(opened: Session, export_id: int, photos: Photos | None = None
     export = opened.get(Export, export_id)
     if export is None:
         raise LookupError("no such export")
-    if (export.status == "imported" or route_of(opened, photos, export) == PER_PART) and place.legacy_blocked(opened, export) and not place.managed_import(opened, export):
-        raise NotReady(place.LEGACY_REFUSED)
     if export.status == "imported":
         return request_retry(opened, export, photos, utc_now().timestamp() if now is None else now)
     if (export.status == "downloading" and has_part_states(opened, export) and route_of(opened, photos, export) == PER_PART

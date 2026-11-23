@@ -8,40 +8,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, events, exports, immich_reconcile, legacy, managed_metadata, managed_upload, media, xmp
+from darkroom.domain import alerts, events, immich_reconcile, managed_metadata, managed_upload, media, xmp
 from darkroom.domain.ingest import place
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import immich
-from darkroom.storage import db, locks, paths
-from darkroom.storage.models import (
-    LEGACY_BLOCKED, MANAGED_IMPORTS, Alert, DedupeDecision, Export, ExportPart, GoogleAccount, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem,
-    TakeoutEntry,
-)
+from darkroom.storage import db, paths
+from darkroom.storage.models import Alert, DedupeDecision, Export, ExportPart, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry
 from darkroom.storage.paths import Photos
 
-PAUSING, ON, STOPPED = MANAGED_IMPORTS
-FINISHED: Final = ("imported", "failed", "expired")
+ON: Final = "on"
 STARTED_PARTS: Final = ("ingesting", "ingested", "failed")
 MANIFEST: Final = json.dumps({"schema": 1, "resource": "takeout_entry", "compound": "single"}, sort_keys=True)
 SETTLE_SECONDS: Final = 24 * 3600.0
 NOT_SETTLED: Final = "not_settled"
 TERMINAL: Final = (*managed_metadata.HELD_BEFORE_UPLOAD, "not_enriched", NOT_SETTLED)
 KEPT: Final = "review:"
-STOPPED_TEXT: Final = "this person's Immich-managed imports are stopped, so their new Takeout exports wait until they are on again"
-PAUSED_CLEANUP: Final = "cleanup is paused while this person's Immich-managed imports are on"
-GATE_OFF: Final = "cleanup of an Immich-managed import stays off until the owner records the restore rehearsal (#266)"
-
-
-class Waiting(RuntimeError):
-    pass
-
-
-class Stopped(Waiting):
-    pass
+KEPT_ONLY: Final = "cleanup of an Immich-managed import stays off until the owner records the restore rehearsal (#266)"
 
 
 class Refused(RuntimeError):
@@ -57,97 +43,26 @@ class Item:
     borrowed: bool
 
 
-def paused(person: Person | None) -> bool:
-    return person is not None and person.managed_imports is not None
-
-
 def intent_of(opened: Session, export: Export) -> ManagedImportIntent | None:
     return opened.execute(select(ManagedImportIntent).where(ManagedImportIntent.export_id == export.id).order_by(ManagedImportIntent.id).limit(1)).scalar_one_or_none()
-
-
-def held_back(opened: Session, export: Export) -> bool:
-    return intent_of(opened, export) is not None or paused(exports.owner_of(opened, export))
-
-
-def refuse_legacy(person: Person | None, started: bool = True) -> None:
-    state = None if person is None else person.managed_imports
-    if state in LEGACY_BLOCKED or (state == PAUSING and not started):
-        raise Stopped(place.LEGACY_REFUSED)
-
-
-def request(opened: Session, person: Person, on: bool, now: float) -> str | None:
-    db.write_lock(opened)
-    opened.refresh(person)
-    if on and (not immich.is_canonical_id(person.immich_user_id) or not person.immich_api_key_sealed):
-        raise Refused("this person has no Immich user and key, so their imports cannot go to Immich")
-    started = opened.execute(select(ManagedImportIntent.id).where(ManagedImportIntent.person_id == person.id).limit(1)).first() is not None
-    if on:
-        person.managed_imports = PAUSING if person.managed_imports in (None, PAUSING) else ON
-    else:
-        person.managed_imports = STOPPED if started else None
-    events.record(opened, now, "managed_imports_set", person.slug, person.managed_imports or "off")
-    return person.managed_imports
 
 
 def started(opened: Session, export: Export) -> bool:
     part = select(ExportPart.id).where(ExportPart.export_id == export.id, ExportPart.ingest_state.in_(STARTED_PARTS)).limit(1)
     decided = select(TakeoutEntry.id).where(TakeoutEntry.export_id == export.id, TakeoutEntry.decision_id.is_not(None)).limit(1)
-    return export.stage not in (None, "queued") or opened.execute(part).first() is not None or opened.execute(decided).first() is not None
+    return export.stage is not None or opened.execute(part).first() is not None or opened.execute(decided).first() is not None
 
 
-def legacy_in_flight(opened: Session, person: Person, export: Export) -> bool:
-    served = select(GoogleAccount.id).where(GoogleAccount.default_person_id == person.id)
-    owned = or_(Export.owner_person_id == person.id, and_(Export.owner_person_id.is_(None), Export.account_id.in_(served)))
-    others = opened.execute(select(Export).where(Export.id != export.id, Export.status.not_in(FINISHED), owned)).scalars().all()
-    return any(intent_of(opened, other) is None and started(opened, other) for other in others)
-
-
-def writer_locks(opened: Session, settings: config.Settings, person: Person, export: Export) -> list[contextlib.AbstractContextManager[None]]:
-    served = set(opened.execute(select(GoogleAccount.id).where(GoogleAccount.default_person_id == person.id)).scalars())
-    owned = set(opened.execute(select(Export.account_id).where(Export.owner_person_id == person.id)).scalars())
-    return [immich_reconcile.person_lock(settings, person), legacy.person_lock(settings, person),
-            *(locks.exclusive(locks.import_account(settings.data_dir, account)) for account in sorted((served | owned) - {export.account_id}))]
-
-
-def switch(opened: Session, settings: config.Settings, person: Person, export: Export, now: float) -> None:
-    if person.managed_imports == ON:
-        return
-    if person.managed_imports != PAUSING:
-        raise Stopped(STOPPED_TEXT)
-    try:
-        with contextlib.ExitStack() as held:
-            for lock in writer_locks(opened, settings, person, export):
-                held.enter_context(lock)
-            db.write_lock(opened)
-            opened.refresh(person)
-            if person.managed_imports == PAUSING and legacy_in_flight(opened, person, export):
-                opened.rollback()
-                raise Waiting("waiting for this person's import into the old folders to finish")
-            if person.managed_imports == PAUSING:
-                person.managed_imports = ON
-                events.record(opened, now, "managed_imports_on", person.slug, "the old folders' writers, the Immich reconcile and cleanup are paused")
-            opened.commit()
-    except (immich_reconcile.Busy, legacy.Busy, locks.Held):
-        raise Waiting("waiting for this person's Immich reconcile, legacy import or another account's import to finish") from None
-    if person.managed_imports != ON:
-        raise Stopped(STOPPED_TEXT)
-
-
-def begin(opened: Session, settings: config.Settings, export: Export, person: Person, now: float) -> ManagedImportIntent | None:
+def begin(opened: Session, export: Export, person: Person, now: float) -> ManagedImportIntent | None:
     intent = intent_of(opened, export)
-    if intent is None and (person.managed_imports is None or started(opened, export)):
-        refuse_legacy(person)
-        return None
-    switch(opened, settings, person, export, now)
-    if intent is None:
-        if not immich.is_canonical_id(person.immich_user_id):
-            raise Waiting("this person has no Immich user")
-        db.write_lock(opened)
-        intent = ManagedImportIntent(person_id=person.id, export_id=export.id, owner_id=str(person.immich_user_id), resource_manifest=MANIFEST, created_at=now)
-        opened.add(intent)
-        events.record(opened, now, "managed_import_started", f"export {export.id}", person.slug)
-        opened.commit()
-        monitoring.log("export imported to Immich-managed storage", export=export.id)
+    if intent is not None or person.managed_imports != ON or not immich.is_canonical_id(person.immich_user_id) or started(opened, export):
+        return intent
+    db.write_lock(opened)
+    intent = ManagedImportIntent(person_id=person.id, export_id=export.id, owner_id=str(person.immich_user_id), resource_manifest=MANIFEST, created_at=now)
+    opened.add(intent)
+    events.record(opened, now, "managed_import_started", f"export {export.id}", person.slug)
+    opened.commit()
+    monitoring.log("export imported to Immich-managed storage", export=export.id)
     return intent
 
 
@@ -258,14 +173,9 @@ class Uploads:
 
 
 def keep_for_immich(opened: Session, photos: Photos, export: Export, review: ReviewItem, hold: Path, sha1: str, name: str, now: float, read: xmp.Reader) -> None:
-    person = exports.owner_of(opened, export)
-    if person is None or not immich.is_canonical_id(person.immich_user_id):
-        raise Refused("this person has no Immich user, so the photo cannot be kept in Immich")
     intent = intent_of(opened, export)
     if intent is None:
-        intent = ManagedImportIntent(person_id=person.id, export_id=export.id, owner_id=str(person.immich_user_id), resource_manifest=MANIFEST, created_at=now)
-        opened.add(intent)
-        opened.flush()
+        raise Refused("only a pair of an Immich-managed import is kept in Immich")
     if f"{KEPT}{review.id}" in receipts_of(opened, intent):
         return
     if Path(review.hold_path or "").suffix.lower() in media.VIDEO_SUFFIXES or review.sidecar_from_still:
@@ -293,9 +203,6 @@ def send_one(opened: Session, settings: config.Settings, photos: Photos, receipt
     review = opened.get(ReviewItem, int(row.resource_key.removeprefix(KEPT)))
     decision = None if review is None else opened.get(DedupeDecision, review.decision_id)
     if intent is None or person is None or review is None or review.hold_path is None or decision is None:
-        return False
-    if person.managed_imports != ON:
-        kept_alert(opened, settings, person, review.id, STOPPED_TEXT, now)
         return False
     hold, name = photos.root / review.hold_path, Path(decision.source_path or review.hold_path).name
     reader = reader_of(settings, person, intent, client)
@@ -337,13 +244,6 @@ def once(opened: Session, settings: config.Settings, key: str, subject: str, mes
         alerts.open_alert(opened, settings, key, "failure", subject, alerts.Wording("Darkroom needs a look", message), None, now, notifier=notifier, about=about)
 
 
-def stopped_alert(opened: Session, settings: config.Settings, person: Person, export: Export, reason: str, now: float, notifier: alerts.Notifier | None) -> None:
-    db.write_lock(opened)
-    once(opened, settings, f"managed:stopped:{export.id}", person.slug, f"{person.name}'s new Takeout export {export.id} is not imported: {reason}. "
-         "Darkroom keeps the downloaded files.", now, notifier, alerts.person(person.id))
-    opened.commit()
-
-
 def gave_up(opened: Session, row: ManagedImportReceipt, now: float) -> bool:
     if row.metadata_hold != "mismatch" or row.bytes_verified_at is None or now - row.bytes_verified_at < SETTLE_SECONDS:
         return False
@@ -363,13 +263,7 @@ def alert(opened: Session, settings: config.Settings, export: Export, held: int,
     opened.commit()
 
 
-def release_refusal(opened: Session, export: Export) -> str | None:
-    if intent_of(opened, export) is not None:
-        return GATE_OFF
-    return PAUSED_CLEANUP if paused(exports.owner_of(opened, export)) else None
-
-
 def hold_pinned(opened: Session, review: ReviewItem) -> bool:
     decision = opened.get(DedupeDecision, review.decision_id)
     export = None if decision is None else opened.get(Export, decision.export_id)
-    return export is not None and held_back(opened, export)
+    return export is not None and place.managed_import(opened, export)

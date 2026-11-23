@@ -304,9 +304,6 @@ class Finish(part_ingest.Ingest):
             return
         self.sidecar_rows()
         due: dict[int, managed_ingest.Item] = {}
-        if self.person.managed_imports != managed_ingest.ON:
-            managed_ingest.stopped_alert(self.opened, self.settings, self.person, self.export, managed_ingest.STOPPED_TEXT, self.now, self.tools.notifier)
-            raise UploadsPending(managed_ingest.STOPPED_TEXT)
         try:
             reader = managed_ingest.reader_of(self.settings, self.person, intent, self.tools.immich)
             uploads = managed_ingest.Uploads(self.opened, self.photos, self.export, intent, reader, self.now)
@@ -419,12 +416,6 @@ def finish(opened: Session, settings: config.Settings, export: Export, now: floa
         if export.status == "expired" or not complete(opened, export):
             opened.rollback()
             raise run.NotReady("not every part of this export has been downloaded and ingested")
-        try:
-            if managed_ingest.intent_of(opened, export) is None:
-                managed_ingest.refuse_legacy(exports.owner_of(opened, export))
-        except managed_ingest.Waiting as waiting:
-            opened.rollback()
-            raise run.NotReady(str(waiting)) from None
         return stages(opened, settings, export, now, tools or run.Tools())
 
 

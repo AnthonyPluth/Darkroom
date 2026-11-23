@@ -28,10 +28,6 @@ def exclusive(path: Path) -> Iterator[None]:
         os.close(handle)
 
 
-def import_account(data_dir: Path, account_id: int) -> Path:
-    return data_dir / "locks" / f"import-account-{account_id}.lock"
-
-
 def is_held(path: Path) -> bool:
     try:
         with exclusive(path):
