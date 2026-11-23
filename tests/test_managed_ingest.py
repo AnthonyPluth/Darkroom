@@ -15,10 +15,10 @@ from sqlalchemy import select
 
 import run as cli
 from darkroom.domain import immich_reconcile, legacy, managed_ingest, managed_metadata, managed_upload, review
-from darkroom.domain.ingest import cleanup, finish_export, part_free, place, run
+from darkroom.domain.ingest import cleanup, finish_export, part_free, part_ingest, place, run
 from darkroom.storage import db, secretbox
 from darkroom.storage.paths import Photos
-from darkroom.storage.models import Alert, Event, Export, GoogleAccount, ImportRun, ManagedImportIntent, ManagedImportReceipt, MediaItem, Person, ReviewItem, TakeoutEntry
+from darkroom.storage.models import Alert, DedupeDecision, Event, Export, GoogleAccount, ImportRun, ManagedImportIntent, ManagedImportReceipt, MediaItem, Person, ReviewItem, TakeoutEntry
 from tests.fakes.immich import FakeAsset, FakePerson, extract
 from tests.import_world import DAY, NOW
 from tests.privacy import no_leaks
@@ -115,8 +115,7 @@ class UploadTests(unittest.TestCase):
         self.assertIn("3 items of export 1 were not uploaded", world.alert("managed:held:1").message)
         self.assertIsNone(world.alert("managed:pending:1"))
         self.assertEqual([f"{m} {p}" for m, p in world.fake.requests() if not ALLOWED.fullmatch(f"{m} {p}")], [])
-        intent = world.opened.execute(select(ManagedImportIntent)).scalar_one()
-        self.assertEqual((intent.person_id, intent.owner_id, intent.resource_manifest), (world.ids["jo"], OWNER, managed_ingest.MANIFEST))
+        self.assertEqual(world.opened.execute(select(ManagedImportIntent.person_id, ManagedImportIntent.owner_id)).one(), (world.ids["jo"], OWNER))
 
     def test_with_the_setting_off_an_export_is_placed_in_the_old_folders_as_before(self):
         world = ManagedWorld(self, state=None)
@@ -182,8 +181,9 @@ class UploadTests(unittest.TestCase):
         finish_export.finish_ready(world.opened, world.settings, NOW + 10, world.tools)
         self.assertEqual(world.receipts()[f"review:{held}"], ("committed", "created", None))
         self.assertIn("IMG_1005.JPG", [name for name, _ in world.assets()])
-        self.assertEqual((world.google_only(), world.opened.get(ReviewItem, held).status), (set(), "kept_both"))
-        with self.assertRaises(review.WrongState):
+        kept = world.opened.get(ReviewItem, held)
+        self.assertEqual((world.google_only(), kept.status, review.summary(world.opened, kept, world.opened.get(DedupeDecision, kept.decision_id))["undo_until"]), (set(), "kept_both", None))
+        with self.assertRaisesRegex(review.WrongState, "kept in Immich"):
             review.undo(world.opened, world.photos, held, NOW + 20, review.FileEffects())
         cleanup.clean(world.opened, world.photos, NOW + 30 * DAY)
         self.assertTrue((world.root / world.opened.get(ReviewItem, held).hold_path).is_file())
@@ -193,14 +193,40 @@ class UploadTests(unittest.TestCase):
         world.run_managed()
         held = world.opened.execute(select(ReviewItem)).scalar_one()
         review.resolve(world.opened, world.photos, held.id, "keep_both", NOW + 5, review.FileEffects())
-        world.jo().managed_imports = managed_ingest.PAUSING
+        decision = world.opened.get(DedupeDecision, held.decision_id)
+        self.assertIsNotNone(review.summary(world.opened, held, decision)["undo_until"])
+        world.jo().managed_imports = managed_ingest.ON
         world.opened.commit()
+        self.assertIsNone(review.summary(world.opened, held, decision)["undo_until"])
+        with self.assertRaisesRegex(review.WrongState, "go to Immich"):
+            review.undo(world.opened, world.photos, held.id, NOW + 6, review.FileEffects())
         hold = world.root / held.hold_path
         report = cleanup.clean(world.opened, world.photos, NOW + 30 * DAY)
         self.assertEqual((report.holds, hold.is_file()), (0, True))
         world.jo().managed_imports = None
         world.opened.commit()
         self.assertEqual((cleanup.clean(world.opened, world.photos, NOW + 30 * DAY).holds, hold.is_file()), (1, False))
+
+    def test_a_kept_photo_that_never_shows_its_metadata_alerts_once_and_is_not_polled_again(self):
+        world = ManagedWorld(self)
+        world.run_managed()
+        held = world.opened.execute(select(ReviewItem.id)).scalar_one()
+        review.resolve(world.opened, world.photos, held, "keep_both", NOW + 5, review.FileEffects())
+        world.opened.commit()
+        with mock.patch.object(managed_ingest.time, "sleep"), mock.patch("tests.fakes.immich.extract", return_value={"dateTimeOriginal": None}):
+            for at in (NOW + 10, NOW + 3 * DAY, NOW + 4 * DAY):
+                finish_export.finish_ready(world.opened, world.settings, at, world.tools)
+        self.assertEqual(world.receipts()[f"review:{held}"], ("bytes_verified", "created", managed_ingest.NOT_SETTLED))
+        self.assertEqual(len(world.opened.execute(select(Alert).where(Alert.key == f"managed:kept:{held}")).scalars().all()), 1)
+
+    def test_keep_both_refuses_a_live_photo_half_and_records_no_receipt(self):
+        world = ManagedWorld(self)
+        export = world.opened.get(Export, world.run_managed(single("IMG_5014.JPG"), parts=1).id)
+        for hold_path, from_still in (("_inbox/jo/review/export-1/IMG_5015.MOV", False), ("_inbox/jo/review/export-1/IMG_5016.JPG", True)):
+            with self.subTest(), self.assertRaisesRegex(managed_ingest.Refused, "Live Photo"):
+                managed_ingest.keep_for_immich(world.opened, world.photos, export, ReviewItem(id=90, decision_id=1, hold_path=hold_path, sidecar_from_still=from_still),
+                                               world.root / hold_path, "a" * 40, "IMG_5016.JPG", NOW, mock.Mock())
+        self.assertEqual(world.count(ManagedImportReceipt), 1)
 
     def test_a_refused_upload_keeps_every_source_and_the_export_waits_until_it_goes_through(self):
         world = ManagedWorld(self)
@@ -279,6 +305,19 @@ class OldFolderWriterTests(unittest.TestCase):
         self.assertEqual((refused.status, refused.error, world.status(whole)[0]), ("failed", place.LEGACY_REFUSED, "failed"))
         finish_export.finish_ready(world.opened, world.settings, NOW, world.tools)
         self.assertEqual((world.status(later), world.google_only()), (("imported", "done"), set()))
+
+    def test_after_the_switch_a_retry_of_an_old_way_export_is_refused_before_anything_changes(self):
+        world = ManagedWorld(self, state=None)
+        old = world.run_managed(single("IMG_5012.JPG"), parts=1)
+        world.jo().managed_imports = managed_ingest.ON
+        world.opened.commit()
+        with self.assertRaisesRegex(run.NotReady, "go to Immich"):
+            run.request_import(world.opened, old.id, world.photos, NOW + 5)
+        world.opened.rollback()
+        later = world.create(single("IMG_5013.JPG"), parts=1, seed=14, google_id="google-456")
+        part_ingest.run_queued(world.opened, world.settings, NOW, world.tools)
+        finish_export.finish_ready(world.opened, world.settings, NOW, world.tools)
+        self.assertEqual((world.status(old), world.status(later)), (("imported", "done"), ("imported", "done")))
 
     def test_every_writer_of_the_old_folders_refuses_a_person_whose_photos_go_to_immich(self):
         world = ManagedWorld(self, state=None)

@@ -464,7 +464,7 @@ def keep_in_immich(opened: Session, photos: Photos, hit: Found, now: float, read
         raise WrongState("the held copy from the export is gone, so it cannot be kept")
     _, fields = kept_fields(opened, photos, hit, hold, person.id, now, read)
     try:
-        managed_ingest.keep_for_immich(opened, photos, hit.export, hit.review, hold, fields.sha1, now, read)
+        managed_ingest.keep_for_immich(opened, photos, hit.export, hit.review, hold, fields.sha1, Path(hit.decision.source_path or hold.name).name, now, read)
     except managed_ingest.Refused as refused:
         raise WrongState(str(refused)) from None
     return set(), [], ", to be uploaded to Immich"

@@ -28,7 +28,8 @@ FINISHED: Final = ("imported", "failed", "expired")
 STARTED_PARTS: Final = ("ingesting", "ingested", "failed")
 MANIFEST: Final = json.dumps({"schema": 1, "resource": "takeout_entry", "compound": "single"}, sort_keys=True)
 SETTLE_SECONDS: Final = 24 * 3600.0
-TERMINAL: Final = (*managed_metadata.HELD_BEFORE_UPLOAD, "not_enriched")
+NOT_SETTLED: Final = "not_settled"
+TERMINAL: Final = (*managed_metadata.HELD_BEFORE_UPLOAD, "not_enriched", NOT_SETTLED)
 KEPT: Final = "review:"
 STOPPED_TEXT: Final = "this person's Immich-managed imports are stopped, so their new Takeout exports wait until they are on again"
 PAUSED_CLEANUP: Final = "cleanup is paused while this person's Immich-managed imports are on"
@@ -250,13 +251,13 @@ class Uploads:
         row = managed_upload.fresh(self.opened, receipt_id)
         if row.state == "committed":
             self.committed += 1
-        elif report.outcome in ("held", "unusable") or row.metadata_hold in TERMINAL or settled_late(row, self.now):
+        elif report.outcome in ("held", "unusable") or row.metadata_hold in TERMINAL or gave_up(self.opened, row, self.now):
             self.held += 1
         else:
             self.pending += 1
 
 
-def keep_for_immich(opened: Session, photos: Photos, export: Export, review: ReviewItem, hold: Path, sha1: str, now: float, read: xmp.Reader) -> None:
+def keep_for_immich(opened: Session, photos: Photos, export: Export, review: ReviewItem, hold: Path, sha1: str, name: str, now: float, read: xmp.Reader) -> None:
     person = exports.owner_of(opened, export)
     if person is None or not immich.is_canonical_id(person.immich_user_id):
         raise Refused("this person has no Immich user, so the photo cannot be kept in Immich")
@@ -269,6 +270,8 @@ def keep_for_immich(opened: Session, photos: Photos, export: Export, review: Rev
         return
     if Path(review.hold_path or "").suffix.lower() in media.VIDEO_SUFFIXES or review.sidecar_from_still:
         raise Refused("a Live Photo's halves are not uploaded to Immich yet, so the pair stays in review and its copy is kept")
+    if not nameable(name):
+        raise Refused("Immich does not take a file with this name, so the pair stays in review and its copy is kept")
     with paths.pinned_inbox_files(photos, [hold]) as pinned:
         tags = read([pinned[hold]]).get(pinned[hold]) if hold in pinned else None
         size = pinned[hold].stat().st_size if hold in pinned else 0
@@ -289,23 +292,30 @@ def send_one(opened: Session, settings: config.Settings, photos: Photos, receipt
     person = None if intent is None else opened.get(Person, intent.person_id)
     review = opened.get(ReviewItem, int(row.resource_key.removeprefix(KEPT)))
     decision = None if review is None else opened.get(DedupeDecision, review.decision_id)
-    if intent is None or person is None or person.managed_imports != ON or review is None or review.hold_path is None or decision is None:
+    if intent is None or person is None or review is None or review.hold_path is None or decision is None:
+        return False
+    if person.managed_imports != ON:
+        kept_alert(opened, settings, person, review.id, STOPPED_TEXT, now)
         return False
     hold, name = photos.root / review.hold_path, Path(decision.source_path or review.hold_path).name
     reader = reader_of(settings, person, intent, client)
     with contextlib.ExitStack() as handles:
         def original() -> immich.UploadSource:
             return immich.UploadSource(handles.enter_context(paths.open_inbox_file(photos, hold)), row.expected_bytes, row.source_sha1)
-        report = managed_metadata.complete_receipt(opened, reader, managed_metadata.Resource(row.id, original, name), now)
+        report = managed_metadata.complete_receipt(opened, reader, managed_metadata.Resource(row.id, original, name), now, time.sleep)
     if report.outcome == "verified":
         report = managed_metadata.commit_compound(opened, reader, intent.id, row.compound_key, now)
     row = managed_upload.fresh(opened, row.id)
-    if report.outcome in ("held", "unusable") or row.metadata_hold in TERMINAL or settled_late(row, now):
-        db.write_lock(opened)
-        once(opened, settings, f"managed:kept:{review.id}", person.slug, f"A photo kept from review {review.id} could not be uploaded to Immich "
-             f"({report.reason}); its copy is kept in the inbox.", now, None, alerts.person(person.id))
-        opened.commit()
+    if report.outcome in ("held", "unusable") or row.metadata_hold in TERMINAL or gave_up(opened, row, now):
+        kept_alert(opened, settings, person, review.id, report.reason, now)
     return row.state == "committed"
+
+
+def kept_alert(opened: Session, settings: config.Settings, person: Person, review_id: int, reason: str, now: float) -> None:
+    db.write_lock(opened)
+    once(opened, settings, f"managed:kept:{review_id}", person.slug, f"A photo kept from review {review_id} is not committed to Immich ({reason}); "
+         "its copy is kept in the inbox.", now, None, alerts.person(person.id))
+    opened.commit()
 
 
 def send_kept(opened: Session, settings: config.Settings, photos: Photos, now: float, client: immich.Client | None) -> int:
@@ -334,8 +344,11 @@ def stopped_alert(opened: Session, settings: config.Settings, person: Person, ex
     opened.commit()
 
 
-def settled_late(row: ManagedImportReceipt, now: float) -> bool:
-    return row.metadata_hold == "mismatch" and row.bytes_verified_at is not None and now - row.bytes_verified_at >= SETTLE_SECONDS
+def gave_up(opened: Session, row: ManagedImportReceipt, now: float) -> bool:
+    if row.metadata_hold != "mismatch" or row.bytes_verified_at is None or now - row.bytes_verified_at < SETTLE_SECONDS:
+        return False
+    managed_upload.move(opened, row, ("bytes_verified",), now, metadata_hold=NOT_SETTLED)
+    return True
 
 
 def alert(opened: Session, settings: config.Settings, export: Export, held: int, pending: int, now: float, notifier: alerts.Notifier | None) -> None:
@@ -343,7 +356,7 @@ def alert(opened: Session, settings: config.Settings, export: Export, held: int,
     db.write_lock(opened)
     if held:
         once(opened, settings, f"managed:held:{export.id}", subject, f"{alerts.counted(held, 'item')} of export {export.id} were not uploaded to Immich "
-             "and are kept in the inbox. Open Darkroom for details.", now, notifier, about)
+             "or not committed there, and are kept in the inbox. Open Darkroom for details.", now, notifier, about)
     if pending:
         once(opened, settings, f"managed:pending:{export.id}", subject, f"{alerts.counted(pending, 'upload')} of export {export.id} to Immich could not be "
              "completed yet. Darkroom keeps the files and tries again.", now, notifier, about)

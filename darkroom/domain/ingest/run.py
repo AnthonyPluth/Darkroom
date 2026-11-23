@@ -708,6 +708,8 @@ def request_import(opened: Session, export_id: int, photos: Photos | None = None
     export = opened.get(Export, export_id)
     if export is None:
         raise LookupError("no such export")
+    if (export.status == "imported" or route_of(opened, photos, export) == PER_PART) and place.legacy_blocked(opened, export) and not place.managed_import(opened, export):
+        raise NotReady(place.LEGACY_REFUSED)
     if export.status == "imported":
         return request_retry(opened, export, photos, utc_now().timestamp() if now is None else now)
     if (export.status == "downloading" and has_part_states(opened, export) and route_of(opened, photos, export) == PER_PART
