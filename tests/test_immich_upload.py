@@ -61,16 +61,21 @@ class ManagedUploadTests(unittest.TestCase):
                 intent_id=1, resource_key=key, compound_key=key, source_sha1=sha1(data), expected_bytes=len(data),
                 expected_metadata="{}", updated_at=1.0)).inserted_primary_key[0]
 
-    def upload(self, receipt_id, data=DATA, reader=None, opened=None):
+    def upload(self, receipt_id, data=DATA, reader=None, opened=None, now=NOW):
         def body():
             return immich.MultipartUpload(immich.UploadSource(io.BytesIO(data), len(data), sha1(data)), FILENAME, TAKEN, TAKEN)
-        return managed_upload.upload_receipt(opened or self.opened, reader or self.reader, receipt_id, body, NOW)
+        return managed_upload.upload_receipt(opened or self.opened, reader or self.reader, receipt_id, body, now)
 
     def row(self, receipt_id):
         receipt = ManagedImportReceipt
         with self.engine.connect() as connection:
             return tuple(connection.execute(select(receipt.state, receipt.asset_id, receipt.upload_outcome, receipt.verified_sha1, receipt.verified_bytes,
                                                    receipt.bytes_verified_at).where(receipt.id == receipt_id)).one())
+
+    def attempts(self, receipt_id):
+        with self.engine.connect() as connection:
+            return tuple(connection.execute(select(ManagedImportReceipt.send_attempts, ManagedImportReceipt.send_lease_until)
+                                            .where(ManagedImportReceipt.id == receipt_id)).one())
 
     def sent(self, request=UPLOAD):
         return self.fake.requests().count(request)
@@ -126,6 +131,44 @@ class ManagedUploadTests(unittest.TestCase):
         self.assertEqual(sorted(row[2] for row in rows), ["created", "duplicate"])
         self.assertEqual(self.sent(), 2)
 
+    def test_two_workers_that_both_read_a_prepared_receipt_send_it_once(self):
+        receipt, reports, waited = self.receipt(), [], []
+        together = threading.Barrier(2, timeout=10)
+
+        def both_read_it_first(method, path, slug):
+            if path == "/api/api-keys/me" and len(waited) < 2:
+                waited.append(path)
+                together.wait()
+        self.fake.state.intercept = both_read_it_first
+
+        def run():
+            with Session(self.engine, expire_on_commit=False) as opened:
+                reports.append(self.upload(receipt, opened=opened).outcome)
+        threads = [threading.Thread(target=run) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        (asset,) = self.fake.state.assets
+        self.assertEqual((len(waited), self.sent()), (2, 1))
+        self.assertIn("verified", reports)
+        self.assertLessEqual(set(reports), {"verified", "pending"})
+        self.assertEqual((self.row(receipt)[:3], self.attempts(receipt)), (("bytes_verified", asset.id, "created"), (1, None)))
+        self.assertEqual(self.upload(receipt).outcome, "verified")
+        self.assertEqual(self.sent(), 1)
+
+    def test_an_attempt_in_flight_holds_the_receipt_until_its_lease_ends_and_then_recovery_runs_first(self):
+        receipt = self.receipt()
+        with self.engine.begin() as connection:
+            connection.execute(update(ManagedImportReceipt).where(ManagedImportReceipt.id == receipt)
+                               .values(state="outcome_unknown", send_attempts=1, send_lease_until=NOW + 60))
+        self.assertEqual(self.upload(receipt).outcome, "pending")
+        self.assertEqual(self.fake.requests(), [])
+        self.assertEqual(self.upload(receipt, now=NOW + 60).outcome, "verified")
+        posts = [path for method, path in self.fake.requests() if method == "POST"]
+        self.assertEqual(posts, [BULK[1], UPLOAD[1]])
+        self.assertEqual(self.attempts(receipt), (2, None))
+
     def test_a_lost_response_is_found_by_checksum_before_any_retry(self):
         receipt = self.receipt()
         self.fake.state.lose_uploads = 1
@@ -144,6 +187,7 @@ class ManagedUploadTests(unittest.TestCase):
         self.assertEqual(self.upload(receipt).outcome, "pending")
         self.assertEqual(self.row(receipt)[:2], ("outcome_unknown", None))
         self.assertEqual((self.sent(), self.sent(BULK), self.fake.state.assets), (managed_upload.MAX_SENDS, managed_upload.MAX_SENDS - 1, []))
+        self.assertEqual(self.attempts(receipt), (managed_upload.MAX_SENDS, None))
         self.fake.state.intercept = None
         self.assertEqual(self.upload(receipt).outcome, "verified")
         (asset,) = self.fake.state.assets
@@ -207,7 +251,7 @@ class ManagedUploadTests(unittest.TestCase):
         receipt = self.receipt()
         self.fake.state.intercept = lambda method, path, slug: 401 if path == UPLOAD[1] else None
         self.assertEqual(self.upload(receipt).outcome, "pending")
-        self.assertEqual((self.row(receipt)[0], self.sent()), ("outcome_unknown", 1))
+        self.assertEqual((self.row(receipt)[0], self.sent(), self.attempts(receipt)), ("outcome_unknown", 1, (1, None)))
         self.fake.state.intercept = None
         self.assertEqual(self.upload(receipt).outcome, "verified")
         self.assertEqual((self.sent(), self.sent(BULK)), (2, 1))

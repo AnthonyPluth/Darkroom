@@ -313,6 +313,11 @@ class ManagedAccessTests(unittest.TestCase):
             self.reader.upload(upload_body(), lambda: sent.append(1))
         with self.assertRaisesRegex(immich.ImmichFailed, "only a managed import"):
             self.reader.bulk_check(SHA1)
+        for key in (ADMIN_KEY, "", None):
+            with self.subTest(key=key), self.assertRaisesRegex(immich.ImmichFailed, "person's own key"):
+                self.client.upload(key, upload_body())
+            with self.subTest(key=key), self.assertRaisesRegex(immich.ImmichFailed, "person's own key"):
+                self.client.bulk_check(key, SHA1)
         self.assertEqual((sent, self.fake.requests()), ([], []))
 
     def test_an_upload_streams_the_body_with_the_person_key_and_reads_its_answer(self):

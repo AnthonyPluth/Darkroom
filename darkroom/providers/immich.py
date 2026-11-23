@@ -446,9 +446,14 @@ class Client:
             raise ImmichFailed("Immich's metadata answer was not a list")
         return {entry["key"] for entry in found if isinstance(entry, dict) and isinstance(entry.get("key"), str)}
 
+    def person_key(self, key: str) -> str:
+        if not isinstance(key, str) or not key or key == self.admin_key:
+            raise ImmichFailed("an upload needs the person's own key")
+        return key
+
     def upload(self, key: str, body: MultipartUpload) -> UploadResult:
         try:
-            with self.open("POST", UPLOAD_PATH, key, importing=True, upload=body) as response:
+            with self.open("POST", UPLOAD_PATH, self.person_key(key), importing=True, upload=body) as response:
                 status, raw = response.status, response.read(CHECK_LIMIT + 1)
         except urllib.error.HTTPError as error:
             error.close()
@@ -465,7 +470,7 @@ class Client:
             raise UploadUncertain("the upload's answer was not understood") from None
 
     def bulk_check(self, key: str, sha1: str) -> BulkMatch | None:
-        found = self.call("POST", BULK_CHECK_PATH, key=key, importing=True, body={"assets": [{"id": BULK_CHECK_ID, "checksum": checksum_of(sha1)}]})
+        found = self.call("POST", BULK_CHECK_PATH, key=self.person_key(key), importing=True, body={"assets": [{"id": BULK_CHECK_ID, "checksum": checksum_of(sha1)}]})
         results = found.get("results") if isinstance(found, dict) else None
         entry = results[0] if isinstance(results, list) and len(results) == 1 and isinstance(results[0], dict) else {}
         if entry.get("id") == BULK_CHECK_ID and entry.get("action") == "accept":

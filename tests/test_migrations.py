@@ -615,6 +615,30 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT id, status, stage FROM exports").all(), [(1, "downloaded", "queued")])
         db.migrate(self.engine)
 
+    def test_0047_managed_upload_lease_starts_unclaimed_keeps_every_receipt_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0046")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO managed_import_intents (id, person_id, export_id, owner_id, resource_manifest, created_at) VALUES (1, 1, 1, 'owner', '{}', 1.0)")
+            connection.exec_driver_sql("INSERT INTO managed_import_receipts (id, intent_id, resource_key, compound_key, source_sha1, expected_bytes, expected_metadata, state, updated_at) "
+                                       f"VALUES (1, 1, 'part/still', 'part/still', '{'a' * 40}', 5000000000, '{{}}', 'prepared', 1.0)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT state, expected_bytes, send_attempts, send_lease_until FROM managed_import_receipts").all(),
+                             [("prepared", 5000000000, 0, None)])
+            connection.exec_driver_sql("UPDATE managed_import_receipts SET state = 'outcome_unknown', send_attempts = 2, send_lease_until = 3.0")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0046")
+        self.assertFalse({"send_attempts", "send_lease_until"} & {column["name"] for column in inspect(self.engine).get_columns("managed_import_receipts")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT state, expected_bytes FROM managed_import_receipts").all(), [("outcome_unknown", 5000000000)])
+        db.migrate(self.engine)
+
     def test_0046_parts_start_with_nothing_remembered_about_a_kept_proof_and_it_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

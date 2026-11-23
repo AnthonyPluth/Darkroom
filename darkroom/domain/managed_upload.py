@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from sqlalchemy import update
+from sqlalchemy import ColumnElement, or_, update
 from sqlalchemy.orm import Session
 
 from darkroom.providers import immich
@@ -12,8 +12,8 @@ from darkroom.storage import db
 from darkroom.storage.models import ManagedImportIntent, ManagedImportReceipt
 
 MAX_SENDS = 3
+LEASE_SECONDS = 3600.0
 VERIFIED = ("bytes_verified", "metadata_verified", "committed")
-UNSENT = ("prepared", "outcome_unknown")
 Outcome = Literal["verified", "unusable", "pending"]
 Body = Callable[[], immich.MultipartUpload]
 
@@ -36,20 +36,32 @@ def fresh(opened: Session, receipt_id: int) -> ManagedImportReceipt:
     return row
 
 
-def move(opened: Session, row: ManagedImportReceipt, before: tuple[str, ...], now: float, **values: object) -> ManagedImportReceipt:
+def move(opened: Session, row: ManagedImportReceipt, before: tuple[str, ...], now: float, *checks: ColumnElement[bool], **values: object) -> bool:
     opened.commit()
     db.write_lock(opened)
-    where = [ManagedImportReceipt.id == row.id, ManagedImportReceipt.state.in_(before)]
+    where = [ManagedImportReceipt.id == row.id, ManagedImportReceipt.state.in_(before), *checks]
     if row.asset_id is not None:
         where.append(ManagedImportReceipt.asset_id == row.asset_id)
-    opened.execute(update(ManagedImportReceipt).where(*where).values(updated_at=now, **values))
+    changed = opened.connection().execute(update(ManagedImportReceipt).where(*where).values(updated_at=now, **values)).rowcount == 1
     opened.commit()
-    return fresh(opened, row.id)
+    return changed
 
 
-def claim(opened: Session, row: ManagedImportReceipt, now: float) -> None:
-    if move(opened, row, UNSENT, now, state="outcome_unknown").state != "outcome_unknown":
+def claim(opened: Session, row: ManagedImportReceipt, now: float) -> int:
+    attempt, lease = row.send_attempts + 1, ManagedImportReceipt.send_lease_until
+    if not move(opened, row, (row.state,), now, ManagedImportReceipt.send_attempts == row.send_attempts, or_(lease.is_(None), lease <= now),
+                state="outcome_unknown", send_attempts=attempt, send_lease_until=now + LEASE_SECONDS):
         raise Moved
+    return attempt
+
+
+def release(opened: Session, row: ManagedImportReceipt, claimed: list[int], now: float) -> None:
+    if claimed:
+        move(opened, row, ("outcome_unknown",), now, ManagedImportReceipt.send_attempts == claimed[0], send_lease_until=None)
+
+
+def in_flight(row: ManagedImportReceipt, now: float) -> bool:
+    return row.state == "outcome_unknown" and row.send_lease_until is not None and row.send_lease_until > now
 
 
 def recovered(reader: immich.ManagedReader, row: ManagedImportReceipt) -> str | None:
@@ -60,7 +72,8 @@ def recovered(reader: immich.ManagedReader, row: ManagedImportReceipt) -> str | 
 
 
 def returned(opened: Session, reader: immich.ManagedReader, row: ManagedImportReceipt, asset_id: str, outcome: str, now: float) -> Report:
-    row = move(opened, row, ("outcome_unknown",), now, state="returned", asset_id=asset_id, upload_outcome=outcome)
+    move(opened, row, ("outcome_unknown",), now, state="returned", asset_id=asset_id, upload_outcome=outcome, send_lease_until=None)
+    row = fresh(opened, row.id)
     if row.asset_id != asset_id:
         return Report("pending", "the receipt already names another Immich asset")
     return read_back(opened, reader, row, now)
@@ -73,8 +86,8 @@ def read_back(opened: Session, reader: immich.ManagedReader, row: ManagedImportR
         return Report("unusable", "Immich's asset is not an available managed original of this person")
     except immich.ImmichFailed:
         return Report("pending", "the original could not be read back and verified")
-    row = move(opened, row, ("returned",), now, state="bytes_verified", verified_sha1=row.source_sha1, verified_bytes=row.expected_bytes,
-               bytes_verified_at=now)
+    move(opened, row, ("returned",), now, state="bytes_verified", verified_sha1=row.source_sha1, verified_bytes=row.expected_bytes, bytes_verified_at=now)
+    row = fresh(opened, row.id)
     return Report("verified", "the unedited original matches the source") if row.state in VERIFIED else Report("pending", "the receipt moved")
 
 
@@ -82,11 +95,16 @@ def send(opened: Session, reader: immich.ManagedReader, row: ManagedImportReceip
     upload = body()
     if (upload.original.sha1, upload.original.size) != (row.source_sha1, row.expected_bytes):
         return Report("pending", "the upload body is not this receipt's source")
+    claimed: list[int] = []
     try:
-        result = reader.upload(upload, lambda: claim(opened, row, now))
-    except (Moved, immich.UploadUncertain):
+        result = reader.upload(upload, lambda: claimed.append(claim(opened, row, now)))
+    except Moved:
+        return None
+    except immich.UploadUncertain:
+        release(opened, row, claimed, now)
         return None
     except immich.ImmichFailed:
+        release(opened, row, claimed, now)
         return Report("pending", "the upload was refused or could not be sent")
     return returned(opened, reader, fresh(opened, row.id), result.asset_id, result.status, now)
 
@@ -102,6 +120,8 @@ def upload_receipt(opened: Session, reader: immich.ManagedReader, receipt_id: in
             return Report("verified", "the unedited original matches the source")
         if row.state == "returned":
             return read_back(opened, reader, row, now)
+        if in_flight(row, now):
+            return Report("pending", "another upload attempt for this receipt is in flight")
         if row.state == "outcome_unknown":
             try:
                 found = recovered(reader, row)
