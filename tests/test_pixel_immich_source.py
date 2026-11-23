@@ -586,7 +586,7 @@ class PixelReadersTests(unittest.TestCase):
         settings = dataclasses.replace(settings_from(DARKROOM_PIXEL_IMMICH_SOURCE="1", IMMICH_URL="http://127.0.0.1:9"), secret_key=SECRET)
         readers = jobs.pixel_readers(settings)
         reader = readers(Person(slug="jo", immich_user_id=OWNER, immich_api_key_sealed=secretbox.seal(KEY, SECRET)))
-        self.assertEqual((reader.owner_id, reader.key, reader.access), (OWNER, KEY, "read"))
+        self.assertEqual((reader.owner_id, reader.key, reader.access), (OWNER, KEY, "read_or_import"))
         with self.assertRaises(immich.ImmichFailed):
             readers(Person(slug="sam"))
 

@@ -133,3 +133,13 @@ Everything the design says about Syncthing's REST API, Chromium in the merged im
 | Parts of different accounts' exports | Still download at the same time; the free-space reservation counts every downloading part | #496, #500 |
 | The download budget | Google's `Number of times already downloaded` for the part when it is known, read before each attempt and by the status check, lower or higher than Darkroom's; Darkroom's own counter only when Google's is unknown | #500 |
 | When the counter goes down | Only when Google's count is read for a part that is not downloading, and (status check) no download job for the export is open, and (download job) the job has not already clicked that part itself, since Google may not have counted that click yet. On such a retry the job still sends Google's count when it is higher than Darkroom's count after the last click, so it can only raise ours. Never while downloading; never on an unknown count. These limits only keep the count higher than #500 alone would; they were not asked for by the owner and are Darkroom's own guard against a count read before Google has caught up | #500 (limits: this change) |
+
+## The scheduled Pixel job's key grants (#535, 2026-11-23)
+
+**Owner decision.** Recorded on [pull request #555](https://github.com/AnthonyPluth/Darkroom/pull/555#issuecomment-7115935945) by the Claude Code session on the owner's behalf. The question: "The backfill reads and uploads with the person's key set up with five 'import' grants. The hourly Pixel job reads the same person's key, but its check demands exactly the four 'read' grants, so it would reject that key and every converted Pixel copy would stay held. How should the Pixel job read?" The owner chose **"Accept either approved key"**: "The Pixel job accepts the person's own non-admin key if it has exactly the read grants or exactly the import grants, and still only issues read requests. No new key to store or set up; the Pixel job simply doesn't reject a key that can also upload."
+
+| Item | Decision | Source |
+| --- | --- | --- |
+| The Pixel job's reader | `ManagedReader` access `read_or_import` (`jobs.pixel_readers`): the person's own non-admin key with exactly the approved read grants or exactly the approved import grants; every other set, an admin user and the admin key are refused as before. It issues read requests only; `upload` and `bulk_check` still require access `import` | #535, [#555](https://github.com/AnthonyPluth/Darkroom/pull/555#issuecomment-7115935945) |
+| Options not taken | A separate read-only key per person; not converting Pixel copies until such a key exists | #535 |
+
