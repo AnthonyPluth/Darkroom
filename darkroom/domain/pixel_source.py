@@ -84,9 +84,8 @@ def recorded(opened: Session, row: PixelCopy, account_id: int) -> ManagedPixelSo
 
 def current(opened: Session, row: PixelCopy, pixel: Pixel) -> ManagedPixelSource | None:
     source = recorded(opened, row, pixel.google_account_id)
-    account = opened.get(GoogleAccount, pixel.google_account_id, populate_existing=True)
     item = opened.get(MediaItem, row.item_id, populate_existing=True)
-    if (source is None or account is None or item is None or row.pixel_id != pixel.id or source.destination_email != account.email
+    if (source is None or item is None or row.pixel_id != pixel.id
             or (source.sha1, source.bytes) != (row.sha1, row.bytes) or (item.sha1, item.bytes) != (row.sha1, row.bytes)):
         return None
     version = opened.get(ManagedAssetVersion, source.version_id, populate_existing=True)

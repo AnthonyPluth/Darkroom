@@ -185,7 +185,7 @@ class PixelImmichSourceTests(unittest.TestCase):
             "version no longer verified": lambda row, version_id: update(ManagedAssetVersion).where(ManagedAssetVersion.id == version_id).values(state="trashed"),
             "person bound to another owner": lambda row, version_id: update(Person).where(Person.id == self.jo).values(immich_user_id="22222222-2222-4222-8222-222222222222"),
             "a generation without a reference": lambda row, version_id: update(PixelCopy).where(PixelCopy.id == row.id).values(requeued=PixelCopy.requeued + 1),
-            "another destination recorded": lambda row, version_id: update(ManagedPixelSource).where(ManagedPixelSource.copy_id == row.id).values(destination_email="old@x.test"),
+            "another account recorded": lambda row, version_id: update(ManagedPixelSource).where(ManagedPixelSource.copy_id == row.id).values(google_account_id=self.other_account()),
         }
         for name, broken in breaks.items():
             with self.subTest(name):
@@ -292,6 +292,27 @@ class PixelImmichSourceTests(unittest.TestCase):
         self.assertEqual(self.copy(self.jo_pixel, item).state, "queued")
         self.assertFalse(self.copy_path(self.jo_pixel, item).exists())
         self.assertEqual(self.staged(), [])
+
+    def other_account(self) -> int:
+        account = GoogleAccount(email=f"other-{next(self.counter)}@x.test", default_person_id=self.jo, created=1.0)
+        self.opened.add(account)
+        self.opened.flush()
+        return account.id
+
+    def test_editing_the_accounts_email_keeps_its_copies_placeable_and_prunable(self):
+        placed, placed_version, _ = self.managed()
+        self.queue(placed, placed_version)
+        self.tend()
+        waiting, waiting_version, _ = self.managed()
+        self.queue(waiting, waiting_version)
+        accounts.update(self.opened, self.jo_account, "jo-renamed@x.test", None, NOW + 1)
+        self.opened.commit()
+        self.match(placed, self.jo_account, NOW + 10)
+        tended = self.tend(at=NOW + 20)
+        self.assertEqual((tended.pruned, tended.placed, tended.blocked), (1, 1, 0))
+        self.assertEqual((self.copy(self.jo_pixel, placed).state, self.copy(self.jo_pixel, waiting).state), ("pruned", "placed"))
+        emails = self.opened.execute(select(ManagedPixelSource.destination_email).order_by(ManagedPixelSource.id)).scalars().all()
+        self.assertEqual(emails, ["jo@x.test", "jo@x.test"])
 
     def references(self, pixel_id: int) -> int:
         return len(self.opened.execute(select(ManagedPixelSource.id).where(ManagedPixelSource.pixel_id == pixel_id)).all())
