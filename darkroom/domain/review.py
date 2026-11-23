@@ -11,8 +11,8 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import monitoring
-from darkroom.domain import accounts, dedupe, events, exports, media, people, thumbs, xmp
-from darkroom.domain.ingest import cleanup, metadata, pairing, place, sidecar
+from darkroom.domain import accounts, dedupe, events, exports, managed_ingest, media, people, thumbs, xmp
+from darkroom.domain.ingest import cleanup, finish_export, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
 from darkroom.storage import paths
@@ -165,11 +165,16 @@ def summary(opened: Session, review: ReviewItem, decision: DedupeDecision) -> di
     return {
         "id": review.id, "status": review.status, "decision_id": decision.id, "export_id": decision.export_id, "account_id": decision.account_id,
         "tier": decision.tier, "reason": decision.reason, "decided_at": decision.decided_at, "reversed": decision.reversed_at is not None,
-        "resolved_at": review.resolved_at, "undo_until": undo_until(review), "name": name_of(decision.source_path),
+        "resolved_at": review.resolved_at, "undo_until": None if kept_in_immich(opened, decision) else undo_until(review), "name": name_of(decision.source_path),
         "library_name": None if matched is None else name_of(matched.path), "person_id": decision.person_id,
         "kept_item_id": None if kept is None else kept.id, "kept_person_id": None if kept is None else kept.person_id,
         "decided_by_person_id": decided_by(opened, review, kept),
     }
+
+
+def kept_in_immich(opened: Session, decision: DedupeDecision) -> bool:
+    export = opened.get(Export, decision.export_id)
+    return export is not None and place.managed_import(opened, export)
 
 
 def undoable_count(opened: Session, status: str | None, now: float) -> int:
@@ -450,6 +455,20 @@ def adopted_lineage(opened: Session, item: MediaItem) -> set[str]:
     return (adopted & {"photo", "sidecar"}) | ({"photo"} if "row" in adopted else set()) | found
 
 
+def keep_in_immich(opened: Session, photos: Photos, hit: Found, now: float, read: xmp.Reader) -> tuple[set[int], list[str], str]:
+    hold = cleanup.hold_file(photos, hit.export, hit.review)
+    person = exports.owner_of(opened, hit.export)
+    if hold is None or person is None:
+        raise WrongState("the held copy from the export is gone, so it cannot be kept")
+    _, fields = kept_fields(opened, photos, hit, hold, person.id, now, read)
+    try:
+        managed_ingest.keep_for_immich(opened, photos, hit.export, hit.review, hold, fields.sha1, Path(hit.decision.source_path or hold.name).name,
+                                       hit.decision.id in finish_export.live_decisions(opened, hit.export), now, read)
+    except managed_ingest.Refused as refused:
+        raise WrongState(str(refused)) from None
+    return set(), [], ", to be uploaded to Immich"
+
+
 def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: float, effects: FileEffects,
             read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp, by: int | None = None) -> Changed:
     if action not in ACTIONS:
@@ -460,7 +479,7 @@ def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: f
     if hit.decision.reversed_at is not None:
         raise WrongState("this pair's dedupe decision was reversed")
     changed = Changed(hit.export)
-    people, adopted, found_at = keep_both(opened, photos, hit, now, effects, read, write)
+    people, adopted, found_at = keep_in_immich(opened, photos, hit, now, read) if place.managed_import(opened, hit.export) else keep_both(opened, photos, hit, now, effects, read, write)
     changed.people |= people
     hit.review.status, hit.review.resolved_at = ACTIONS[action], now
     opened.flush()
@@ -556,6 +575,8 @@ def undo(opened: Session, photos: Photos, review_id: int, now: float, effects: F
     hold = cleanup.hold_file(photos, hit.export, hit.review)
     if hold is None:
         raise WrongState("the held copy from the export is gone, so this decision can no longer be undone")
+    if kept_in_immich(opened, hit.decision):
+        raise WrongState("this pair was kept in Immich, and Darkroom never takes a photo back out of Immich")
     people, token = take_back(opened, photos, hit, hold, effects)
     changed = Changed(hit.export, people)
     hit.review.status, hit.review.resolved_at = "pending", None

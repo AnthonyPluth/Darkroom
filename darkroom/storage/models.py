@@ -29,6 +29,7 @@ class Person(Base):
     legacy_path: Mapped[str | None] = mapped_column(String)
     immich_reconciled_until: Mapped[float | None] = mapped_column(Float)
     created: Mapped[float] = mapped_column(Float, nullable=False)
+    managed_imports: Mapped[str | None] = mapped_column(String)
 
 
 class GoogleAccount(Base):
