@@ -153,8 +153,8 @@ class UploadTests(unittest.TestCase):
         with mock.patch.object(managed_ingest.time, "sleep"), mock.patch("tests.fakes.immich.extract", return_value={"dateTimeOriginal": None}):
             world.finish(export)
             world.finish(export, at=NOW + 2 * DAY)
-        self.assertEqual((world.status(export), world.receipts()), (("imported", "done"), {"IMG_5011.JPG": ("bytes_verified", "created", "mismatch")}))
-        self.assertIsNotNone(world.alert("managed:held:1"))
+        self.assertEqual((world.status(export), world.receipts()), (("imported", "done"), {"IMG_5011.JPG": ("bytes_verified", "created", managed_ingest.NOT_SETTLED)}))
+        self.assertIn("1 item of export 1", world.alert("managed:held:1").message)
 
     def test_keep_both_on_a_managed_review_goes_to_immich_and_is_not_taken_back(self):
         world = ManagedWorld(self)
@@ -188,20 +188,34 @@ class UploadTests(unittest.TestCase):
         review.resolve(world.opened, world.photos, held, "keep_both", NOW + 5, review.FileEffects())
         world.opened.commit()
         with mock.patch.object(managed_ingest.time, "sleep"), mock.patch("tests.fakes.immich.extract", return_value={"dateTimeOriginal": None}):
-            for at in (NOW + 10, NOW + 3 * DAY, NOW + 4 * DAY):
+            for at in (NOW + 10, NOW + 3 * DAY):
                 finish_export.finish_ready(world.opened, world.settings, at, world.tools)
+            seen = len(world.fake.requests())
+            finish_export.finish_ready(world.opened, world.settings, NOW + 4 * DAY, world.tools)
+        self.assertEqual(len(world.fake.requests()), seen)
         self.assertEqual(world.receipts()[f"review:{held}"], ("bytes_verified", "created", managed_ingest.NOT_SETTLED))
         self.assertEqual(len(world.opened.execute(select(Alert).where(Alert.key == f"managed:kept:{held}")).scalars().all()), 1)
 
-    def test_keep_both_refuses_a_live_photo_half_and_records_no_receipt(self):
+    def test_keep_both_refuses_a_live_photo_half_an_unreadable_hold_or_a_name_immich_refuses_and_records_no_receipt(self):
         world = ManagedWorld(self)
         export = world.opened.get(Export, world.run_managed(single("IMG_5014.JPG"), parts=1).id)
-        for hold_path, from_still, live in (("_inbox/jo/review/export-1/IMG_5015.MOV", False, False), ("_inbox/jo/review/export-1/IMG_5016.JPG", True, False),
-                                            ("_inbox/jo/review/export-1/IMG_5017.JPG", False, True)):
-            with self.subTest(), self.assertRaisesRegex(managed_ingest.Refused, "Live Photo"):
-                managed_ingest.keep_for_immich(world.opened, world.photos, export, ReviewItem(id=90, decision_id=1, hold_path=hold_path, sidecar_from_still=from_still),
-                                               world.root / hold_path, "a" * 40, "IMG_5016.JPG", live, NOW, mock.Mock())
+        for hold_path, from_still, live, name, reason in (("IMG_5015.MOV", False, False, "IMG_5015.MOV", "Live Photo"), ("IMG_5016.JPG", True, False, "IMG_5016.JPG", "Live Photo"),
+                                                          ("IMG_5017.JPG", False, True, "IMG_5017.JPG", "Live Photo"), ("IMG_5018.JPG", False, False, "IMG\n5018.JPG", "name"),
+                                                          ("IMG_5019.JPG", False, False, "IMG_5019.JPG", "could not be read")):
+            hold = world.root / "_inbox/jo/review/export-1" / hold_path
+            with self.subTest(), self.assertRaisesRegex(managed_ingest.Refused, reason):
+                managed_ingest.keep_for_immich(world.opened, world.photos, export, ReviewItem(id=90, decision_id=1, hold_path=str(hold.relative_to(world.root)),
+                                               sidecar_from_still=from_still), hold, "a" * 40, name, live, NOW, mock.Mock(return_value={}))
         self.assertEqual(world.count(ManagedImportReceipt), 1)
+
+    def test_keep_both_on_a_live_photo_half_leaves_the_pair_pending_in_review(self):
+        world = ManagedWorld(self)
+        world.run_managed()
+        held = world.opened.execute(select(ReviewItem)).scalar_one()
+        with mock.patch.object(finish_export, "live_decisions", return_value={held.decision_id}), self.assertRaisesRegex(review.WrongState, "Live Photo"):
+            review.resolve(world.opened, world.photos, held.id, "keep_both", NOW + 5, review.FileEffects())
+        world.opened.rollback()
+        self.assertEqual((world.opened.get(ReviewItem, held.id).status, world.count(ManagedImportReceipt)), ("pending", 3))
 
     def test_both_halves_of_a_live_photo_are_live_and_a_raw_with_its_jpeg_or_a_plain_photo_is_not(self):
         world = ManagedWorld(self)

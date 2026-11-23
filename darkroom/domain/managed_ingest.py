@@ -214,7 +214,8 @@ def send_one(opened: Session, settings: config.Settings, photos: Photos, receipt
     if report.outcome == "verified":
         report = managed_metadata.commit_compound(opened, reader, intent.id, row.compound_key, now)
     row = managed_upload.fresh(opened, row.id)
-    if report.outcome in ("held", "unusable") or row.metadata_hold in TERMINAL or gave_up(opened, row, now):
+    stuck = row.state != "committed" and review.resolved_at is not None and now - review.resolved_at >= SETTLE_SECONDS
+    if report.outcome in ("held", "unusable") or row.metadata_hold in TERMINAL or gave_up(opened, row, now) or stuck:
         kept_alert(opened, settings, person, review.id, report.reason, now)
     return row.state == "committed"
 
