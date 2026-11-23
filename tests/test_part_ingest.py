@@ -1295,7 +1295,7 @@ class ParallelFingerprintTests(unittest.TestCase):
         items = [(row.id, row.person_id, row.source, row.path, row.sha1, row.bytes, row.phash, row.dhash, row.captured_utc, row.captured_local,
                   row.offset_minutes, row.time_source, row.width, row.height, row.lat, row.lon, row.gps_source)
                  for row in world.opened.execute(select(MediaItem).order_by(MediaItem.id)).scalars()]
-        decisions = [(row.id, row.source_path, row.tier, row.action, row.reason, row.matched_item_id, row.takeout_item_id)
+        decisions = [(row.id, row.source_path, row.person_id, row.tier, row.reason, row.decided_by, row.matched_item_id, row.takeout_item_id)
                      for row in world.opened.execute(select(DedupeDecision).order_by(DedupeDecision.id)).scalars()]
         return world.state(), entries, items, decisions
 
