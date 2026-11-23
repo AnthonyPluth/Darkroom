@@ -275,6 +275,16 @@ class PixelImmichSourceTests(unittest.TestCase):
         self.assertIn("missing, trashed, offline", alert.message)
         self.assertNotIn(asset_id, alert.message)
 
+    def test_a_hold_followed_by_a_local_failure_opens_no_held_alert(self):
+        item, version_id, asset_id = self.managed()
+        self.queue(item, version_id)
+        self.assets[asset_id].trashed = True
+        self.assertEqual(self.tend().blocked, 1)
+        self.assets[asset_id].trashed = False
+        with mock.patch.object(paths, "publish_pixel_copy", side_effect=OSError(28, "No space left on device")):
+            self.assertEqual(self.tend(at=NOW + 60).failed, 1)
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 2 * 86400, lambda settings, title, message, link: "sent"), 0)
+
     def test_a_local_write_failure_counts_as_failed_not_as_a_held_source(self):
         item, version_id, _ = self.managed()
         self.queue(item, version_id)

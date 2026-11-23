@@ -95,13 +95,13 @@ def exceptions(opened: Session, person_id: int) -> dict[str, list[int]]:
     return dict(found)
 
 
-def note(opened: Session, person: Person, item_id: int, reason: str | None, now: float, version_id: int | None = None, receipt_id: int | None = None) -> None:
+def note(opened: Session, person: Person, item_id: int, reason: str | None, now: float, version_id: int | None = None, receipt_id: int | None = None) -> bool:
     opened.commit()
     db.write_lock(opened)
     item = opened.get(MediaItem, item_id, populate_existing=True)
     if item is None or item.person_id != person.id:
         opened.commit()
-        return
+        return False
     row = opened.execute(select(ManagedBackfillItem).where(ManagedBackfillItem.item_id == item_id)).scalar_one_or_none()
     outcome = "mapped" if version_id is not None else "exception"
     if row is None:
@@ -111,6 +111,7 @@ def note(opened: Session, person: Person, item_id: int, reason: str | None, now:
         row.since = now
     row.person_id, row.outcome, row.reason, row.version_id, row.receipt_id, row.checked_at = person.id, outcome, reason, version_id, receipt_id, now
     opened.commit()
+    return True
 
 
 def version_of(opened: Session, person: Person, asset_id: str, sha1: str, size: int, kind: str, video_id: str | None, snapshot: str, now: float) -> ManagedAssetVersion:
@@ -169,14 +170,15 @@ class Backfill:
         version_id = version.id
         self.opened.commit()
         refused = pixels(self.opened, self.settings, item, version_id, self.now, self.report) if queue else None
-        note(self.opened, self.person, item.id, reason or refused, self.now, version_id, receipt_id)
+        if not note(self.opened, self.person, item.id, reason or refused, self.now, version_id, receipt_id):
+            return
         self.report.mapped += 1
         if reason or refused:
             self.report.exceptions[str(reason or refused)] += 1
 
     def exception(self, item: MediaItem, reason: str) -> None:
-        note(self.opened, self.person, item.id, reason, self.now)
-        self.report.exceptions[reason] += 1
+        if note(self.opened, self.person, item.id, reason, self.now):
+            self.report.exceptions[reason] += 1
 
     def phone(self, item: MediaItem) -> None:
         reason = self.phone_problem(item)
@@ -331,16 +333,16 @@ class Backfill:
             if item is None or version_id is None:
                 continue
             refused = pixels(self.opened, self.settings, item, version_id, self.now, self.report)
-            if refused != before:
-                note(self.opened, self.person, item_id, refused, self.now, version_id, receipt_id)
-            if refused:
+            written = refused == before or note(self.opened, self.person, item_id, refused, self.now, version_id, receipt_id)
+            if refused and written:
                 self.report.exceptions[refused] += 1
 
     def run(self, limit: int) -> Summary:
         self.convert_deferred()
         row = ManagedBackfillItem
-        unsettled = ~exists(select(row.id).where(row.item_id == MediaItem.id, or_(row.reason.is_(None), row.reason.not_in(RETRIED))))
-        retried = exists(select(row.id).where(row.item_id == MediaItem.id, row.reason.in_(RETRIED)))
+        mine = and_(row.item_id == MediaItem.id, row.person_id == self.person.id)
+        unsettled = ~exists(select(row.id).where(mine, or_(row.reason.is_(None), row.reason.not_in(RETRIED))))
+        retried = exists(select(row.id).where(mine, row.reason.in_(RETRIED)))
         google_only = and_(MediaItem.source == "takeout", MediaItem.path.startswith(f"{self.person.slug}/google-only/"))
         phones = and_(MediaItem.source == "phone", MediaItem.path.startswith(f"{self.person.slug}/originals/{IMMICH_FOLDER}/"))
         waiting = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, known_contents(), or_(phones, google_only), unsettled)
@@ -474,6 +476,8 @@ def candidate(opened: Session, item: MediaItem) -> dedupe.TakeoutCandidate:
 
 
 def same_shots(opened: Session, person: Person, items: list[MediaItem]) -> set[int]:
+    if not items:
+        return set()
     phone = opened.execute(select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == "phone", known_contents())
                            .order_by(MediaItem.id)).scalars().all()
     if not phone or not items:

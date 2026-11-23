@@ -349,6 +349,8 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
         if not again and (deferring or (used > 0 and used + row.bytes > cap_bytes)):
             deferring = True
             tended.deferred += 1
+            if managed and held_since(opened, row) is not None:
+                events.record(opened, now, "pixel_copy_deferred", f"pixel {row.pixel_id}", f"copy {row.id}")
             opened.commit()
             continue
         item, person = opened.get(MediaItem, row.item_id, populate_existing=True), opened.get(Person, row.person_id)

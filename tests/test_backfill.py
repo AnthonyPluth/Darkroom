@@ -342,6 +342,30 @@ class BackfillTests(unittest.TestCase):
             summary = world.backfill()
         self.assertEqual((dict(summary.exceptions), world.uploads(), world.count(ManagedBackfillItem), world.count(ManagedImportReceipt)), ({}, [], 0, 0))
 
+    def test_an_exception_for_a_photo_taken_back_before_it_is_written_is_neither_counted_nor_alerted(self):
+        world = BackfillWorld(self)
+        world.run_managed(single_photo, parts=1)
+        item_id = world.google_only_item("IMG_5001.JPG").id
+
+        def taken_back(*args):
+            with world.engine.begin() as connection:
+                connection.execute(delete(MediaItem).where(MediaItem.id == item_id))
+            return {item_id}
+        with mock.patch.object(backfill, "live_halves", taken_back):
+            summary = world.backfill()
+        self.assertEqual((dict(summary.exceptions), world.count(ManagedBackfillItem)), ({}, 0))
+        self.assertEqual(world.opened.execute(select(Alert.id).where(Alert.key.startswith("managed:backfill:"))).all(), [])
+
+    def test_an_exception_recorded_for_another_person_does_not_settle_the_photo_for_its_owner(self):
+        world = BackfillWorld(self)
+        world.run_managed(single_photo, parts=1)
+        item = world.google_only_item("IMG_5001.JPG")
+        world.opened.add(ManagedBackfillItem(person_id=world.ids["sam"], item_id=item.id, outcome="exception", reason="same_shot", checked_at=NOW, since=NOW))
+        world.opened.commit()
+        self.assertEqual(world.backfill().mapped, 1)
+        world.opened.expire_all()
+        self.assertEqual(world.opened.execute(select(ManagedBackfillItem.person_id, ManagedBackfillItem.outcome)).one(), (world.ids["jo"], "mapped"))
+
     def test_a_changed_file_is_reported_and_not_uploaded(self):
         world = BackfillWorld(self)
         world.run_managed(single_photo, parts=1)
