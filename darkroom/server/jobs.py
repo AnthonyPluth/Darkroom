@@ -364,8 +364,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
                 return
             reconcile_transport(scheduler, settings, opened, photos, at, force=True)
             tended = pixel_folder.tend(opened, photos, settings.pixel_folder_cap_gb * pixel_folder.GIGABYTE, at, readers)
-            if readers is not None:
-                pixel_folder.alert_held(opened, live(), at)
+            pixel_folder.alert_held(opened, live(), at)
             held = len(scheduler.placed_copies.held_pixels(opened))
         monitoring.log("pixel folders tended", placed=tended.placed, pruned=tended.pruned, skipped=tended.skipped, deferred=tended.deferred,
                        failed=tended.failed, refused=tended.refused, held=held)

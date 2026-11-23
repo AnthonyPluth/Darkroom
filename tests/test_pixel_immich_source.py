@@ -300,7 +300,20 @@ class PixelImmichSourceTests(unittest.TestCase):
         self.assertEqual((tended.placed, tended.deferred), (0, 2))
         deferrals = self.opened.execute(select(Event.detail).where(Event.type == "pixel_copy_deferred")).scalars().all()
         self.assertEqual(sorted(deferrals), sorted(f"copy {self.copy(self.jo_pixel, item).id}" for item, _, _ in later))
+        last = self.copy(self.jo_pixel, later[1][0]).id
+        with mock.patch.object(pixel_folder, "lock_copy", wraps=pixel_folder.lock_copy) as locked:
+            self.assertEqual(pixel_folder.tend(self.opened, self.photos, first.bytes + 1, NOW + 180, self.readers).deferred, 2)
+        self.assertNotIn(last, [call.args[1] for call in locked.call_args_list])
         self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 2 * 86400, lambda settings, title, message, link: "sent"), 0)
+
+    def test_a_copy_held_because_the_source_is_turned_off_alerts_after_a_day(self):
+        item, version_id, _ = self.managed()
+        self.queue(item, version_id)
+        self.assertEqual(self.tend(readers=False).blocked, 1)
+        sends = lambda settings, title, message, link: "sent"
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 2 * 86400, sends), 1)
+        alert = self.opened.execute(select(Alert).where(Alert.key.startswith("pixel:source-held:"))).scalar_one()
+        self.assertIn("turned off", alert.message)
 
     def test_a_local_write_failure_counts_as_failed_not_as_a_held_source(self):
         item, version_id, _ = self.managed()
