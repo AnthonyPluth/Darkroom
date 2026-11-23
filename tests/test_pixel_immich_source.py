@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from darkroom.domain import dedupe, pixel_folder, pixel_source
+from darkroom.domain import dedupe, pixel_folder, pixel_source, pixels
 from darkroom.providers import immich
 from darkroom.server import jobs
 from darkroom.storage import paths, secretbox
@@ -291,6 +291,40 @@ class PixelImmichSourceTests(unittest.TestCase):
         self.assertEqual(self.copy(self.jo_pixel, item).state, "queued")
         self.assertFalse(self.copy_path(self.jo_pixel, item).exists())
         self.assertEqual(self.staged(), [])
+
+    def references(self, pixel_id: int) -> int:
+        return len(self.opened.execute(select(ManagedPixelSource.id).where(ManagedPixelSource.pixel_id == pixel_id)).all())
+
+    def test_removing_a_person_drops_their_queued_managed_copy_with_its_reference_only(self):
+        sam = add_person(self.opened, "sam")
+        self.opened.add(PixelPerson(pixel_id=self.jo_pixel, person_id=sam))
+        _, work_pixel = self.account("jo-work@x.test")
+        self.opened.commit()
+        item, version_id, _ = self.managed()
+        self.assertEqual(self.queue(item, version_id), 2)
+        pixels.update(self.opened, self.jo_pixel, {"people_ids": [sam]}, NOW + 1)
+        self.opened.commit()
+        self.assertIsNone(self.copy(self.jo_pixel, item))
+        self.assertEqual((self.references(self.jo_pixel), self.references(work_pixel)), (0, 1))
+        self.assertEqual(self.copy(work_pixel, item).state, "queued")
+        self.assertEqual(self.tend(at=NOW + 2).placed, 1)
+
+    def test_a_pixel_is_deleted_with_its_pruned_managed_copies_and_their_references(self):
+        _, work_pixel = self.account("jo-work@x.test")
+        self.opened.commit()
+        item, version_id, _ = self.managed()
+        self.queue(item, version_id)
+        self.tend()
+        with self.assertRaises(pixels.StillHasCopies):
+            pixels.delete(self.opened, self.jo_pixel, NOW + 1)
+        self.opened.rollback()
+        self.match(item, self.jo_account, NOW + 10)
+        self.assertEqual(self.tend(at=NOW + 20).pruned, 1)
+        pixels.delete(self.opened, self.jo_pixel, NOW + 30)
+        self.opened.commit()
+        self.assertIsNone(self.opened.get(Pixel, self.jo_pixel, populate_existing=True))
+        self.assertEqual((self.references(self.jo_pixel), self.references(work_pixel)), (0, 1))
+        self.assertEqual(self.copy(work_pixel, item).state, "placed")
 
     def test_the_source_module_stays_apart_from_the_transport(self):
         self.assertEqual(transport_references((ROOT / "darkroom/domain/pixel_source.py").read_text()), set())

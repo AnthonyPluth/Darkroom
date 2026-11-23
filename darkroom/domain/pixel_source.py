@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import PurePosixPath
 
-from sqlalchemy import select
+from sqlalchemy import Select, delete, select
 from sqlalchemy.orm import Session
 
 from darkroom.storage import paths
@@ -18,6 +18,10 @@ SUFFIX = re.compile(r"\.[a-z0-9]{1,10}")
 
 class NotManaged(ValueError):
     pass
+
+
+def retire(opened: Session, copies: Select[int]) -> None:
+    opened.execute(delete(ManagedPixelSource).where(ManagedPixelSource.copy_id.in_(copies)))
 
 
 def converted(opened: Session, copy_id: int) -> bool:
