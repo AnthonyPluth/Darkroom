@@ -152,8 +152,8 @@ def photo(seed: int, size: tuple[int, int] = (4032, 3024)) -> Image.Image:
         box = (left, top, min(width, left + span), min(height, top + chance.randrange(8, max(9, height // 4))))
         colour = (chance.randrange(256), chance.randrange(256), chance.randrange(256))
         (draw.ellipse if chance.random() < 0.5 else draw.rectangle)(box, fill=colour)
-    grain = Image.effect_noise(size, chance.uniform(2, 14)).convert("RGB")
-    return Image.blend(image, grain, 0.08)
+    grain = Image.frombytes("L", size, chance.randbytes(width * height)).convert("RGB")
+    return Image.blend(image, grain, chance.uniform(0.02, 0.1))
 
 
 def photo_jpeg(seed: int, path: Path, size: tuple[int, int] = (4032, 3024)) -> Path:
