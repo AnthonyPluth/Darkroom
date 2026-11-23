@@ -5,6 +5,7 @@ import base64
 import email.parser
 import email.policy
 import hashlib
+import html
 import io
 import json
 import re
@@ -62,6 +63,7 @@ class FakeAsset:
     exif: dict[str, object] | None = None
     ready_at: float = 0.0
     offline: bool = False
+    sidecar: bytes | None = None
 
     def json(self) -> dict[str, object]:
         checksum = self.checksum or base64.b64encode(hashlib.sha1(self.data, usedforsecurity=False).digest()).decode()
@@ -83,6 +85,8 @@ def extract(data: bytes, sidecar: bytes | None) -> dict[str, object]:
     except OSError:
         exif = Image.Exif()
     tags, gps = exif.get_ifd(ExifTags.IFD.Exif), exif.get_ifd(ExifTags.IFD.GPSInfo)
+    if exif.get(ExifTags.Base.ImageDescription):
+        found["description"] = str(exif[ExifTags.Base.ImageDescription])
     if ExifTags.Base.DateTimeOriginal in tags:
         offset = tags.get(ExifTags.Base.OffsetTimeOriginal, "+00:00")
         taken = datetime.strptime(tags[ExifTags.Base.DateTimeOriginal] + offset, "%Y:%m:%d %H:%M:%S%z")
@@ -98,7 +102,7 @@ def extract(data: bytes, sidecar: bytes | None) -> dict[str, object]:
         if value := re.search(rf'exif:{tag}="(\d+),([\d.]+)([NSEW])"', text):
             found[name] = (int(value.group(1)) + float(value.group(2)) / 60) * (-1 if value.group(3) in "SW" else 1)
     if description := re.search(r'<rdf:li xml:lang="x-default">([^<]*)</rdf:li>', text):
-        found["description"] = description.group(1)
+        found["description"] = html.unescape(description.group(1))
     return found
 
 
@@ -291,7 +295,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 name = (fields.get("filename") or b"").decode()
                 kind = "VIDEO" if name.lower().endswith((".avi", ".mp4", ".mov")) else "IMAGE"
                 asset = FakeAsset(str(uuid.uuid4()), person.user_id, data, name=name, kind=kind, exif=extract(data, sidecar),
-                                  ready_at=time.monotonic() + state.extraction_delay, metadata=())
+                                  ready_at=time.monotonic() + state.extraction_delay, metadata=(), sidecar=sidecar)
                 video_id = (fields.get("livePhotoVideoId") or b"").decode()
                 video = next((a for a in state.assets if a.id == video_id and a.owner_id == person.user_id and a.kind == "VIDEO"), None)
                 if video_id and video is None:

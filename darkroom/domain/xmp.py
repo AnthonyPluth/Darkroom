@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -18,6 +19,8 @@ DESCRIPTION = "XMP-dc:Description"
 DATE_TAGS = ("DateTimeOriginal", "DateCreated", "CreationDate", "CreateDate")
 STILL_DATE_TAGS = ("DateTimeOriginal", "DateCreated", "CreationDate")
 DESCRIPTION_TAGS = ("ImageDescription", "Description", "Caption-Abstract")
+XML_ESCAPES = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\r": "&#13;"}
+XML_CONTROLS = frozenset({0x9, 0xA, 0xD})
 
 Reader = Callable[[list[Path]], dict[Path, dict[str, object]]]
 Writer = Callable[[Path, Mapping[str, str]], bool]
@@ -99,6 +102,49 @@ def gaps(own: dict[str, object], existing: dict[str, object], google: GoogleMeta
     if google.description is not None and not has_description(own) and not has_tag(existing, DESCRIPTION):
         fields[DESCRIPTION] = google.description
     return fields
+
+
+def xml_char(char: str) -> bool:
+    code = ord(char)
+    return code in XML_CONTROLS or 0x20 <= code <= 0xD7FF or 0xE000 <= code <= 0xFFFD or 0x10000 <= code <= 0x10FFFF
+
+
+def xml_text(text: str) -> str:
+    return "".join(XML_ESCAPES.get(char, char) for char in text)
+
+
+def coordinate(value: str, refs: str) -> str:
+    degrees = float(value)
+    if not math.isfinite(degrees) or abs(degrees) > 180:
+        raise ValueError("not a coordinate")
+    scale = 60 * 10**8
+    minutes = round(abs(degrees) * scale)
+    whole, rest = divmod(minutes, scale)
+    return f"{whole},{rest // 10**8}.{rest % 10**8:08d}{refs[0] if degrees >= 0 else refs[1]}"
+
+
+def upload_sidecar(fields: Mapping[str, str]) -> bytes | None:
+    if not fields:
+        return None
+    if not set(fields) <= {LATITUDE, LONGITUDE, CREATED, DESCRIPTION} or (LATITUDE in fields) != (LONGITUDE in fields):
+        raise ValueError("an upload sidecar carries only a place, a date and a description")
+    attributes = ""
+    if LATITUDE in fields:
+        attributes += f' exif:GPSLatitude="{coordinate(fields[LATITUDE], "NS")}" exif:GPSLongitude="{coordinate(fields[LONGITUDE], "EW")}"'
+    if CREATED in fields:
+        parsed = media.parse_local(fields[CREATED])
+        if parsed is None or parsed[1] is None:
+            raise ValueError("an upload sidecar's date needs the offset it was taken at")
+        stamp = f"{parsed[0]:%Y-%m-%dT%H:%M:%S}{offset_text(parsed[1])}"
+        attributes += f' exif:DateTimeOriginal="{stamp}" photoshop:DateCreated="{stamp}"'
+    described = ""
+    if DESCRIPTION in fields:
+        if not all(xml_char(char) for char in fields[DESCRIPTION]):
+            raise ValueError("the description has characters XML cannot carry")
+        described = f'<dc:description><rdf:Alt><rdf:li xml:lang="x-default">{xml_text(fields[DESCRIPTION])}</rdf:li></rdf:Alt></dc:description>'
+    return ('<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+            '<rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"'
+            f' xmlns:dc="http://purl.org/dc/elements/1.1/"{attributes}>{described}</rdf:Description></rdf:RDF></x:xmpmeta>').encode()
 
 
 def is_still(media_path: Path) -> bool:

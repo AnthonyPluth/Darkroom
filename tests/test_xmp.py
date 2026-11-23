@@ -459,6 +459,45 @@ class WriteXmpTests(Folder):
             self.assertTrue(output.name.endswith(".xmp"))
 
 
+class UploadSidecarTests(Folder):
+    def written(self, fields):
+        packet = self.folder / "upload.xmp"
+        packet.write_bytes(xmp.upload_sidecar(fields))
+        return tags_of(packet)
+
+    def test_the_upload_sidecar_means_what_darkroom_s_own_sidecar_means_and_dates_it_for_immich(self):
+        fields = xmp.gaps({}, {}, xmp.GoogleMetadata(-34.6037, -58.3816, float(TAKEN), 'A made-up <square> & "quay"\r\nline'), with_date=True)
+        exiftool.write_xmp(self.folder / "own.xmp", fields)
+        own, sent = tags_of(self.folder / "own.xmp"), self.written(fields)
+        self.assertEqual({tag: sent.get(tag) for tag in fields}, {tag: own.get(tag) for tag in fields})
+        self.assertEqual((sent["XMP-exif:GPSLatitude"], sent["XMP-exif:GPSLongitude"], sent["XMP-dc:Description"]), (-34.6037, -58.3816, 'A made-up <square> & "quay"\r\nline'))
+        self.assertEqual(sent["XMP-exif:DateTimeOriginal"], sent[xmp.CREATED])
+        self.assertEqual(sent[xmp.CREATED], fields[xmp.CREATED])
+
+    def test_only_the_fields_the_original_lacks_are_carried(self):
+        self.assertIsNone(xmp.upload_sidecar({}))
+        sent = self.written({xmp.DESCRIPTION: "A made-up square"})
+        self.assertEqual({tag for tag in sent if tag.startswith("XMP-") and tag != "XMP-x:XMPToolkit"}, {"XMP-dc:Description"})
+        self.assertEqual(xmp.upload_sidecar({xmp.CREATED: "2019:07:04 12:30:15+00:00"}).count(b"+00:00"), 2)
+
+    def test_a_date_without_its_offset_an_unknown_tag_half_a_place_or_text_xml_cannot_carry_is_refused(self):
+        for fields in ({xmp.CREATED: "2019:07:04 12:30:15"}, {"XMP-dc:Title": "x"}, {xmp.LATITUDE: "1.0000000"},
+                       {xmp.DESCRIPTION: "a\x01b"}, {xmp.LATITUDE: "nan", xmp.LONGITUDE: "1.0"}):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                xmp.upload_sidecar(fields)
+
+    def test_a_description_keeps_every_character_xml_allows_including_the_replacement_character_and_refuses_the_rest(self):
+        kept = "tab\tline\ncr\r space ퟿  caf� \U00010000 \U0001f600 \U0010ffff"
+        self.assertEqual(self.written({xmp.DESCRIPTION: kept})["XMP-dc:Description"], kept)
+        for char in ("\x00", "\x01", "\x08", "\x0b", "\x1f", "\ud800", "\udbff", "\udc00", "\udfff", "￾", "￿"):
+            with self.subTest(code=hex(ord(char))), self.assertRaises(ValueError):
+                xmp.upload_sidecar({xmp.DESCRIPTION: f"made-up {char} text"})
+
+    def test_coordinates_are_degrees_and_exact_decimal_minutes(self):
+        self.assertEqual([xmp.coordinate(value, "NS") for value in ("12.25", "-0.0000001", "45.9999999", "-90.0000000")],
+                         ["12,15.00000000N", "0,0.00000600S", "45,59.99999400N", "90,0.00000000S"])
+
+
 class WriteSidecarTests(Folder):
     def render(self, text):
         def write(temp, source):

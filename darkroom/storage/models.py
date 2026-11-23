@@ -158,6 +158,7 @@ class ManagedImportReceipt(Base):
     updated_at: Mapped[float] = mapped_column(Float, nullable=False)
     send_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     send_lease_until: Mapped[float | None] = mapped_column(Float)
+    metadata_hold: Mapped[str | None] = mapped_column(String)
 
 
 class ManagedAssetVersion(Base):
