@@ -32,6 +32,7 @@ def fresh(opened: Session, receipt_id: int) -> ManagedImportReceipt:
     row = opened.get(ManagedImportReceipt, receipt_id, populate_existing=True)
     if row is None:
         raise LookupError("no such managed import receipt")
+    opened.expunge(row)
     opened.commit()
     return row
 
@@ -112,8 +113,9 @@ def send(opened: Session, reader: immich.ManagedReader, row: ManagedImportReceip
 def upload_receipt(opened: Session, reader: immich.ManagedReader, receipt_id: int, body: Body, now: float) -> Report:
     row = fresh(opened, receipt_id)
     intent = opened.get(ManagedImportIntent, row.intent_id)
+    owner = None if intent is None else intent.owner_id
     opened.commit()
-    if reader.access != "import" or intent is None or reader.owner_id != intent.owner_id:
+    if reader.access != "import" or owner is None or reader.owner_id != owner:
         return Report("pending", "the Immich key is not this import's owner")
     for _ in range(MAX_SENDS):
         if row.state in VERIFIED:

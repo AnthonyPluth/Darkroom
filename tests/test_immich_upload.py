@@ -142,7 +142,7 @@ class ManagedUploadTests(unittest.TestCase):
         self.fake.state.intercept = both_read_it_first
 
         def run():
-            with Session(self.engine, expire_on_commit=False) as opened:
+            with Session(self.engine) as opened:
                 reports.append(self.upload(receipt, opened=opened).outcome)
         threads = [threading.Thread(target=run) for _ in range(2)]
         for thread in threads:
