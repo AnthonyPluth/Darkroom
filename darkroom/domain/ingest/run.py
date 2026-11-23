@@ -33,8 +33,6 @@ PER_PART_STATES = ("queued", "ingesting", "ingested", "refused", "failed")
 PART_NOT_QUEUED = "not_queued"
 PART_QUEUED = "queued"
 PART_FAILED = "failed"
-PART_REFUSED = "refused"
-STOPPED_PARTS = (PART_FAILED, PART_REFUSED)
 PER_PART = "per_part"
 WHOLE = "whole"
 STARTED_STAGES = frozenset(STAGES[1:])
@@ -595,17 +593,17 @@ def adopt(opened: Session, export: Export, now: float) -> int:
     return len(parts)
 
 
-def requeue_stopped(opened: Session, export: Export, now: float) -> int:
+def requeue_failed(opened: Session, export: Export, now: float) -> int:
     parts = list(opened.execute(select(ExportPart).where(ExportPart.export_id == export.id, ExportPart.status == "done",
-                                                         ExportPart.ingest_state.in_(STOPPED_PARTS))).scalars())
+                                                         ExportPart.ingest_state == PART_FAILED)).scalars())
     for part in parts:
         part.ingest_state, part.ingest_queued_at, part.ingest_refusal, part.ingest_failure, part.ingest_failure_type = PART_QUEUED, now, None, None, None
     return len(parts)
 
 
-def stopped_parts(opened: Session, export_id: int) -> int:
+def failed_parts(opened: Session, export_id: int) -> int:
     return int(opened.execute(select(func.count()).select_from(ExportPart).where(ExportPart.export_id == export_id, ExportPart.status == "done",
-                                                                                 ExportPart.ingest_state.in_(STOPPED_PARTS))).scalar_one())
+                                                                                 ExportPart.ingest_state == PART_FAILED)).scalar_one())
 
 
 def route_pending(opened: Session, settings: config.Settings, now: float) -> list[int]:
@@ -709,7 +707,7 @@ def request_import(opened: Session, export_id: int, photos: Photos | None = None
     if export.status == "imported":
         return request_retry(opened, export, photos, utc_now().timestamp() if now is None else now)
     if (export.status == "downloading" and has_part_states(opened, export) and route_of(opened, photos, export) == PER_PART
-            and requeue_stopped(opened, export, utc_now().timestamp() if now is None else now)):
+            and requeue_failed(opened, export, utc_now().timestamp() if now is None else now)):
         opened.flush()
         return export
     if export.status not in IMPORTABLE or (export.status == "failed" and export.inbox_dir is None):
@@ -718,7 +716,7 @@ def request_import(opened: Session, export_id: int, photos: Photos | None = None
     if route_of(opened, photos, export) == PER_PART:
         asked_at = utc_now().timestamp() if now is None else now
         adopt(opened, export, asked_at)
-        requeue_stopped(opened, export, asked_at)
+        requeue_failed(opened, export, asked_at)
         if export.status == "failed":
             if last is not None and last.status == "failed":
                 last.status = "queued"
