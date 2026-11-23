@@ -219,15 +219,32 @@ class ManagedMetadataTests(unittest.TestCase):
                 self.assertEqual((self.complete(item).outcome, self.row(item)[:2]), ("held", ("prepared", "unwritable")))
         self.assertEqual(self.fake.requests(), [])
 
+    def test_a_date_created_tag_is_no_capture_date_as_in_the_index_so_googles_instant_is_written_or_held(self):
+        data, _ = photo("date-created")
+        created = {"XMP-photoshop:DateCreated": "2019:07:04 14:30:15+02:00"}
+        intended = intend(created, xmp.GoogleMetadata(*ROME, SUMMER, None), "IMAGE")
+        self.assertEqual((intended.hold, intended.taken_utc, intended.offset, intended.taken_from, dict(intended.sidecar)[xmp.CREATED]),
+                         (None, SUMMER, 120, "sidecar", "2019:07:04 14:30:15+02:00"))
+        self.assertEqual(self.complete(self.resource("part/date-created", data, intended)).outcome, "verified")
+        conflicting = intend(created, xmp.GoogleMetadata(*ROME, SUMMER + 3 * 86400, None), "IMAGE")
+        self.assertEqual((conflicting.taken_utc, conflicting.offset, conflicting.taken_from), (SUMMER + 3 * 86400, 120, "sidecar"))
+        for own, google, hold in ((created, xmp.GoogleMetadata(None, None, SUMMER, None), "unknown_offset"),
+                                  ({"IPTC:DateCreated": "2019:07:04"}, xmp.GoogleMetadata(None, None, SUMMER, None), "unknown_offset"),
+                                  ({"IPTC:DateCreated": "2019:07:04"}, xmp.GoogleMetadata(*ROME, None, None), "no_instant")):
+            with self.subTest(own=own, placed=google.lat is not None):
+                found = intend(own, google, "IMAGE")
+                self.assertEqual((found.hold, found.offset, found.taken_utc), (hold, None, None))
+
     def test_a_time_resolved_at_a_position_is_held_when_the_place_immich_sees_is_in_another_zone(self):
         near = (45.4400, 12.3300)
         data, clock = photo("moved", "2019:07:04 14:30:15", None, ROME)
         quicktime = {"QuickTime:CreateDate": "2019:07:04 12:30:15", "Composite:GPSLatitude": ROME[0], "Composite:GPSLongitude": ROME[1]}
-        for name, own, kind in (("wall clock at its own position", clock, "IMAGE"), ("quicktime instant", quicktime, "VIDEO")):
+        for name, own, kind, moved in (("wall clock at its own position", clock, "IMAGE", ("unknown_offset", None, None, "sidecar")),
+                                       ("quicktime instant", quicktime, "VIDEO", (None, SUMMER, 0, "sidecar"))):
             with self.subTest(name):
                 found = [intend(own, xmp.GoogleMetadata(*place, SUMMER, None), kind) for place in (ROME, near, ACCRA)]
-                self.assertEqual([(intended.hold, intended.offset, intended.place_from) for intended in found],
-                                 [(None, 120, "media"), (None, 120, "sidecar"), ("unknown_offset", None, "sidecar")])
+                self.assertEqual([(intended.hold, intended.taken_utc, intended.offset, intended.place_from) for intended in found],
+                                 [(None, SUMMER, 120, "media"), (None, SUMMER, 120, "sidecar"), moved])
         moved = self.resource("part/moved", data, intend(clock, xmp.GoogleMetadata(*ACCRA, SUMMER, None), "IMAGE"))
         self.assertEqual((self.complete(moved).outcome, self.fake.requests()), ("held", []))
 

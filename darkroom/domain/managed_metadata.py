@@ -27,6 +27,7 @@ Kind = Literal["IMAGE", "VIDEO"]
 Source = Literal["media", "sidecar", "sidecar_offset"]
 Hold = Literal["unknown_offset", "no_instant", "unwritable", "mismatch", "not_enriched", "not_linked"]
 SCHEMA = 1
+NOT_A_CAPTURE_DATE = "DateCreated"
 ROLES = ("single", "live_still", "live_video")
 KINDS = ("IMAGE", "VIDEO")
 SOURCES = (None, "media", "sidecar", "sidecar_offset")
@@ -91,11 +92,10 @@ def taken_of(own: dict[str, object], fields: dict[str, str], place: tuple[float 
         return (None, None, None, "no_instant") if utc is None else (utc, parsed[1], "sidecar", None)
     own_lat, own_lon, _ = media.location(own)
     utc, local, offset, source = media.capture(own, own_lat, own_lon)
-    if source in ("gps_lookup", "quicktime_utc") and utc is not None:
-        seen = media.wall_clock_at(utc, *place)[1]
-        if offset is not None and seen != offset:
-            return None, None, None, "unknown_offset"
-        offset = seen
+    if source == "quicktime_utc" and utc is not None:
+        offset = media.wall_clock_at(utc, *place)[1]
+    if source == "gps_lookup" and utc is not None and media.wall_clock_at(utc, *place)[1] != offset:
+        return None, None, None, "unknown_offset"
     if utc is None and (derived := agreed_offset(local, google, corrects)) is not None and local is not None:
         agreed = media.utc_or_none(datetime.fromisoformat(local), derived)
         if agreed is not None and media.wall_clock_at(agreed, *place)[1] == derived:
@@ -107,7 +107,8 @@ def taken_of(own: dict[str, object], fields: dict[str, str], place: tuple[float 
     return utc, offset, "media", None
 
 
-def intend(own: dict[str, object], google: xmp.GoogleMetadata, kind: Kind, role: Role = "single", corrects: bool = True) -> Intended:
+def intend(tags: dict[str, object], google: xmp.GoogleMetadata, kind: Kind, role: Role = "single", corrects: bool = True) -> Intended:
+    own = {key: value for key, value in tags.items() if key.rsplit(":", 1)[-1] != NOT_A_CAPTURE_DATE}
     fields = xmp.gaps(own, {}, google, with_date=True, still=kind == "IMAGE", corrects=corrects)
     own_lat, own_lon, _ = media.location(own)
     lat, lon = own_lat, own_lon
