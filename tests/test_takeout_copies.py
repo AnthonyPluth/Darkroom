@@ -8,11 +8,12 @@ from unittest import mock
 from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import dedupe, takeout_copies, xmp
+from darkroom.domain import dedupe, pixel_folder, pixel_source, takeout_copies, xmp
 from darkroom.providers import exiftool
 from darkroom.storage import paths
 from darkroom.storage.models import (
-    DedupeDecision, DuplicateRemoval, Event, Export, GoogleAccount, ImmichAsset, MediaItem, Person, Pixel, PixelCopy, PixelPerson, ReviewItem,
+    DedupeDecision, DuplicateRemoval, Event, Export, GoogleAccount, ImmichAsset, ManagedAssetVersion, ManagedPixelSource, MediaItem, Person, Pixel, PixelCopy,
+    PixelPerson, ReviewItem,
 )
 from tests.fixtures import media as fixtures
 from tests.shared import add_person, own_database, try_elsewhere, write_elsewhere
@@ -681,3 +682,64 @@ class CrashTests(CopiesCase):
             takeout_copies.finish(self.opened, self.photos, self.jo, row, 3.0, takeout_copies.Resolved(), takeout_copies.Tools(self.exif.read, self.exif.write))
             counts.append((row.state, len(seen)))
         self.assertEqual(counts, [("removed", counts[0][1])] * 2)
+
+
+class ManagedPixelDependencyTests(CopiesCase):
+    def version(self, item):
+        self.jo.immich_user_id = "owner-jo"
+        version = ManagedAssetVersion(person_id=self.jo.id, owner_id="owner-jo", asset_id=f"asset-{item.id}", sha1=item.sha1, bytes=item.bytes, kind="IMAGE",
+                                      state="bytes_verified", metadata_snapshot="{}", seen_at=1.0, bytes_verified_at=1.0)
+        self.opened.add(version)
+        self.opened.flush()
+        return version
+
+    def referenced(self, item, state):
+        version, sent = self.version(item), state != "queued"
+        copy = PixelCopy(pixel_id=self.pixel.id, item_id=item.id, person_id=self.jo.id, state=state, name="2021/copy.jpg" if sent else None, bytes=item.bytes,
+                         sha1=item.sha1, queued_at=1.0, placed_at=1.5 if sent else None, pruned_at=1.6 if state == "pruned" else None)
+        self.opened.add(copy)
+        self.opened.flush()
+        self.opened.add(ManagedPixelSource(copy_id=copy.id, pixel_id=copy.pixel_id, item_id=item.id, person_id=self.jo.id, version_id=version.id,
+                                           owner_id=version.owner_id, asset_id=version.asset_id, sha1=item.sha1, bytes=item.bytes, generation=0,
+                                           google_account_id=self.account, destination_email="family@x.test", copy_snapshot="{}", recorded_at=1.0))
+        self.opened.commit()
+
+    def test_a_loser_with_a_managed_pixel_copy_queued_placed_or_only_recorded_is_kept(self):
+        for loses in ("phone", "takeout"):
+            for state in ("queued", "placed", "pruned"):
+                with self.subTest(loses=loses, state=state):
+                    self.setUp()
+                    takeout, phone = self.takeout_wins() if loses == "phone" else (self.takeout(b"same bytes")[0], self.phone(b"same bytes"))
+                    self.referenced(phone if loses == "phone" else takeout, state)
+                    before = self.files()
+                    resolved = self.resolve()
+                    self.assertEqual((resolved.removed, resolved.kept_both, self.removals()), (0, 1, []))
+                    self.assertEqual(self.files(), before)
+                    self.assertIsNotNone(self.opened.get(MediaItem, (phone if loses == "phone" else takeout).id, populate_existing=True))
+
+    def test_a_loser_with_nothing_depending_on_it_still_goes(self):
+        for loses in ("phone", "takeout"):
+            with self.subTest(loses=loses):
+                self.setUp()
+                takeout, phone = self.takeout_wins() if loses == "phone" else (self.takeout(b"same bytes")[0], self.phone(b"same bytes"))
+                self.assertEqual(self.resolve().removed, 1)
+                self.assertNotIn(phone.path if loses == "phone" else takeout.path, self.files())
+
+    def test_a_reference_recorded_after_the_removal_was_planned_refuses_it_under_the_lock(self):
+        for phone_loses in (True, False):
+            with self.subTest(phone_loses=phone_loses):
+                self.setUp()
+                takeout, phone = self.pending(phone_loses=phone_loses)
+                before = self.files()
+                self.referenced(phone if phone_loses else takeout, "queued")
+                self.assertEqual(self.resolve(at=3.0).removed, 0)
+                self.assertEqual([row.state for row in self.removals()], ["refused"])
+                self.assertEqual(self.files(), before)
+
+    def test_a_photo_whose_removal_is_pending_is_not_queued_for_a_pixel(self):
+        _, phone = self.pending(phone_loses=True)
+        with self.assertRaises(pixel_source.NotManaged):
+            pixel_folder.queue_managed(self.opened, phone, self.version(phone).id, 3.0)
+        self.opened.rollback()
+        self.assertEqual(self.resolve(at=3.0).removed, 1)
+        self.assertEqual(self.opened.execute(select(ManagedPixelSource.id)).all(), [])

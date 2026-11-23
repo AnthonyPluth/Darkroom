@@ -17,7 +17,7 @@ from darkroom.storage.models import (DedupeDecision, Event, Export, GoogleAccoun
 from darkroom.storage.paths import Photos
 from tests.fakes.immich import FakeAsset, FakeImmich, FakePerson
 from tests.privacy import no_leaks
-from tests.review_world import PAIR_NAME, ReviewCase
+from tests.review_world import GOOGLE_ONLY_NAME, PAIR_NAME, ReviewCase
 from tests.shared import add_person, own_database, settings_from
 from tests.test_pixel_folder import transport_references
 
@@ -372,11 +372,13 @@ class PixelImmichSourceTests(unittest.TestCase):
 
 
 class ReviewUndoTests(ReviewCase):
-    def test_undoing_a_kept_photo_waits_until_its_managed_pixel_copy_is_pruned(self):
+    def kept_with_a_managed_copy(self) -> tuple[int, MediaItem]:
         review_id = self.pending().id
         status, body = self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
         self.assertEqual(status, 200, body)
-        item = self.item_named(PAIR_NAME)
+        return review_id, self.with_a_managed_copy(self.item_named(PAIR_NAME))
+
+    def with_a_managed_copy(self, item: MediaItem) -> MediaItem:
         opened = self.world.opened
         owner = opened.get(Person, item.person_id).immich_user_id
         version = ManagedAssetVersion(person_id=item.person_id, owner_id=owner, asset_id="generated-review-asset", sha1=item.sha1, bytes=item.bytes,
@@ -385,6 +387,24 @@ class ReviewUndoTests(ReviewCase):
         opened.flush()
         self.assertEqual(pixel_folder.queue_managed(opened, item, version.id, NOW), 1)
         opened.commit()
+        return item
+
+    def test_a_photo_with_a_managed_pixel_reference_is_reassigned_only_once_none_is_left(self):
+        item = self.with_a_managed_copy(self.item_named(GOOGLE_ONLY_NAME))
+        owner, sam, before = item.person_id, self.world.ids["sam"], self.tree()
+        status, body = self.call("POST", f"/api/media/{item.id}/reassign", {"person_id": sam})
+        self.assertEqual(status, 409, body)
+        self.assertEqual((self.opened.get(MediaItem, item.id).person_id, self.tree()), (owner, before))
+        opened = self.opened
+        pixels.update(opened, self.world.pixel, {"people_ids": [sam]}, NOW + 1)
+        opened.commit()
+        self.assertEqual(opened.execute(select(ManagedPixelSource.id)).all(), [])
+        status, body = self.call("POST", f"/api/media/{item.id}/reassign", {"person_id": sam})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.opened.get(MediaItem, item.id).person_id, sam)
+
+    def test_undoing_a_kept_photo_waits_until_its_managed_pixel_copy_is_pruned(self):
+        review_id, item = self.kept_with_a_managed_copy()
         status, body = self.call("POST", f"/api/review/{review_id}/undo")
         self.assertEqual(status, 409, body)
         opened = self.opened

@@ -12,7 +12,7 @@ from darkroom import dates
 from darkroom.domain import accounts, events, pixel_source
 from darkroom.providers import immich
 from darkroom.storage import db, paths
-from darkroom.storage.models import (DedupeDecision, Event, Export, ManagedAssetVersion, MediaItem, Person, Pixel, PixelCopy, PixelPerson, UNKNOWN_SHA1,
+from darkroom.storage.models import (DedupeDecision, DuplicateRemoval, Event, Export, ManagedAssetVersion, MediaItem, Person, Pixel, PixelCopy, PixelPerson, UNKNOWN_SHA1,
                                      known_contents)
 from darkroom.storage.paths import Photos
 
@@ -157,6 +157,8 @@ def queue_managed(opened: Session, item: MediaItem, version_id: int, now: float)
     version = opened.get(ManagedAssetVersion, version_id, populate_existing=True)
     if version is None or item.sha1 == UNKNOWN_SHA1 or not pixel_source.usable(opened, version, item.person_id, item.sha1, item.bytes):
         raise pixel_source.NotManaged("only a verified Immich-managed original of the person goes to a Pixel")
+    if opened.execute(select(DuplicateRemoval.id).where(DuplicateRemoval.removed_item_id == item.id, DuplicateRemoval.state == "pending").limit(1)).first():
+        raise pixel_source.NotManaged("a photo whose duplicate removal is pending does not go to a Pixel")
     always_send = pixel_source.phone_origin(opened, version.id)
     queued = 0
     for pixel in pixels_serving(opened, item.person_id):

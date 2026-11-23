@@ -34,6 +34,10 @@ def retire_account(opened: Session, account_id: int) -> None:
     opened.execute(delete(ManagedPixelSource).where(ManagedPixelSource.google_account_id == account_id))
 
 
+def referenced(opened: Session, item_id: int) -> bool:
+    return opened.execute(select(ManagedPixelSource.id).where(ManagedPixelSource.item_id == item_id).limit(1)).first() is not None
+
+
 def still_sending(opened: Session, item_id: int) -> bool:
     return opened.execute(select(PixelCopy.id).join(ManagedPixelSource, ManagedPixelSource.copy_id == PixelCopy.id)
                           .where(PixelCopy.item_id == item_id, PixelCopy.state.in_(("queued", "placed"))).limit(1)).first() is not None

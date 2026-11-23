@@ -633,6 +633,8 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
         raise WrongState("a later import matched this photo; reverse that decision before reassigning it")
     if opened.execute(select(MediaItem.id).where(MediaItem.person_id == target.id, MediaItem.sha1 == item.sha1).limit(1)).first():
         raise WrongState(f"{target.name} already has this photo")
+    if pixel_source.referenced(opened, item.id):
+        raise WrongState(f"this photo was queued for a Pixel from {current.name}'s Immich library, so it stays with {current.name} while that Pixel copy is recorded")
     lineage, token = adopted_lineage(opened, item), paths.placing_token()
     try:
         placed = place.copy_into(place.google_only_folder(photos, target.slug, item), source, item.sha1,
