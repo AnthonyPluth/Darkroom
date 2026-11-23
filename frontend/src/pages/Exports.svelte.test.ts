@@ -702,7 +702,7 @@ describe("the Exports page", () => {
         "GET /api/exports": () => ({ exports: [current], schedules: [] }),
         "POST /api/exports/46/import": () => {
           current = requeued;
-          return reply(202, { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 1 });
+          return reply(202, { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 1, run_requeued: false });
         },
       });
       const section = await screen.findByRole("region", { name: /Current export parts/ });
@@ -735,12 +735,37 @@ describe("the Exports page", () => {
         "GET /api/accounts": { accounts: [joAccount] },
         "GET /api/browser/jobs": { jobs: [] },
         "GET /api/exports": { exports: [failedExport], schedules: [] },
-        "POST /api/exports/37/import": () => reply(202, { export_id: 37, status: "downloaded", stage: "queued", per_part: false, parts_requeued: 0 }),
+        "POST /api/exports/37/import": () => reply(202, { export_id: 37, status: "downloaded", stage: "queued", per_part: false, parts_requeued: 0, run_requeued: false }),
       });
       const earlier = await screen.findByRole("region", { name: /Earlier exports/ });
       await userEvent.click(within(earlier).getByRole("button", { name: "Retry import" }));
       expect(server.sent("POST /api/exports/37/import")).toHaveLength(1);
       expect(await screen.findByRole("status")).toHaveTextContent("Import queued again for jo.photos@example.com.");
+    });
+
+    it("says when the retry queued the export's finishing again rather than a part", async () => {
+      const finishing = { ...keptPartsExport, status: "failed", parts: keptPartsExport.parts.map((part) => ({ ...part, ingest_state: "ingested", import_failure: null, kept_reason: null, failed_items: 0 })) };
+      const server = show({
+        "GET /api/accounts": { accounts: [joAccount] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "GET /api/exports": { exports: [finishing], schedules: [] },
+        "POST /api/exports/46/import": () => reply(202, { export_id: 46, status: "failed", stage: null, per_part: true, parts_requeued: 0, run_requeued: true }),
+      });
+      const earlier = await screen.findByRole("region", { name: /Earlier exports/ });
+      await userEvent.click(within(earlier).getByRole("button", { name: "Retry import" }));
+      expect(server.sent("POST /api/exports/46/import")).toHaveLength(1);
+      expect(await screen.findByRole("status")).toHaveTextContent("Finishing the import of jo.photos@example.com's export queued again.");
+    });
+
+    it("says so when there was nothing to retry", async () => {
+      show({
+        "GET /api/accounts": { accounts: [joAccount] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "GET /api/exports": { exports: [keptPartsExport], schedules: [] },
+        "POST /api/exports/46/import": () => reply(202, { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 0, run_requeued: false }),
+      });
+      await userEvent.click(await screen.findByRole("button", { name: "Retry import" }));
+      expect(await screen.findByRole("status")).toHaveTextContent("Nothing in this export was waiting for a retry.");
     });
 
     it("is not offered when no import can be retried", async () => {

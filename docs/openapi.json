@@ -1324,6 +1324,9 @@
           "per_part": {
             "type": "boolean"
           },
+          "run_requeued": {
+            "type": "boolean"
+          },
           "stage": {
             "anyOf": [
               {
@@ -1342,6 +1345,7 @@
           "export_id",
           "parts_requeued",
           "per_part",
+          "run_requeued",
           "stage",
           "status"
         ],

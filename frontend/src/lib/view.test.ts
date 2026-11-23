@@ -387,10 +387,11 @@ describe("a failed download", () => {
   });
 
   it("says what pressing Retry import did", () => {
-    const queued = { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 2 };
+    const queued = { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 2, run_requeued: false };
     expect(retryImportSentence(queued, "jo.photos@example.com")).toBe("2 parts of jo.photos@example.com's export queued to import again.");
     expect(retryImportSentence({ ...queued, parts_requeued: 1 }, "jo.photos@example.com")).toBe("1 part of jo.photos@example.com's export queued to import again.");
-    expect(retryImportSentence({ ...queued, parts_requeued: 0 }, "jo.photos@example.com")).toBe("No part of this export was waiting for a retry.");
+    expect(retryImportSentence({ ...queued, parts_requeued: 0 }, "jo.photos@example.com")).toBe("Nothing in this export was waiting for a retry.");
+    expect(retryImportSentence({ ...queued, status: "failed", parts_requeued: 0, run_requeued: true }, "jo.photos@example.com")).toBe("Finishing the import of jo.photos@example.com's export queued again.");
     expect(retryImportSentence({ ...queued, per_part: false, parts_requeued: 0 }, "jo.photos@example.com")).toBe("Import queued again for jo.photos@example.com.");
   });
 

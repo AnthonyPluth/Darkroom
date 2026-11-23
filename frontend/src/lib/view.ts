@@ -299,7 +299,7 @@ export function retryImportNote(item: ExportView): string | null {
 
 export function retryImportSentence(reply: ImportQueued, email: string): string {
   if (!reply.per_part) return `Import queued again for ${email}.`;
-  if (reply.parts_requeued === 0) return "No part of this export was waiting for a retry.";
+  if (reply.parts_requeued === 0) return reply.run_requeued ? `Finishing the import of ${email}'s export queued again.` : "Nothing in this export was waiting for a retry.";
   return `${reply.parts_requeued === 1 ? "1 part" : `${whole.format(reply.parts_requeued)} parts`} of ${email}'s export queued to import again.`;
 }
 

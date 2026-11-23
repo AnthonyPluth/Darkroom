@@ -43,7 +43,7 @@ class ImportsApiTests(unittest.TestCase):
 
     def test_requesting_an_import_queues_it_for_the_scheduler(self):
         status, body = self.call("POST", f"/api/exports/{self.export_id}/import")
-        self.assertEqual((status, body), (202, {"export_id": self.export_id, "status": "downloaded", "stage": "queued", "per_part": False, "parts_requeued": 0}))
+        self.assertEqual((status, body), (202, {"export_id": self.export_id, "status": "downloaded", "stage": "queued", "per_part": False, "parts_requeued": 0, "run_requeued": False}))
         self.assertEqual(self.call("GET", "/api/imports"), (200, {"imports": []}))
         self.import_now()
         status, body = self.call("GET", "/api/imports")
@@ -125,7 +125,7 @@ class ImportsApiTests(unittest.TestCase):
     def test_an_export_with_failed_items_can_be_requested_again_and_then_finishes(self):
         self.failing_import()
         status, body = self.call("POST", f"/api/exports/{self.export_id}/import")
-        self.assertEqual((status, body), (202, {"export_id": self.export_id, "status": "importing", "stage": "unpacked", "per_part": False, "parts_requeued": 0}))
+        self.assertEqual((status, body), (202, {"export_id": self.export_id, "status": "importing", "stage": "unpacked", "per_part": False, "parts_requeued": 0, "run_requeued": True}))
         self.import_now()
         runs = sorted(self.call("GET", "/api/imports")[1]["imports"], key=lambda r: r["id"])
         self.assertEqual([(r["status"], r["failed"], r["added"]) for r in runs], [("done", 1, 1), ("done", 0, 2)])
@@ -196,7 +196,7 @@ class PerPartImportsApiTests(unittest.TestCase):
         export = self.imported_with_a_failed_item()
         with no_leaks(self, PRIVATE_NAME, replies=self.replies):
             self.assertEqual(self.call("POST", f"/api/exports/{export.id}/import"), (202, {"export_id": export.id, "status": "importing", "stage": "unpacked",
-                                                                                              "per_part": True, "parts_requeued": 0}))
+                                                                                              "per_part": True, "parts_requeued": 0, "run_requeued": True}))
             self.assertEqual(finish_export.finish_ready(self.world.reopen(), self.world.settings, NOW + DAY, self.world.tools), [export.id])
             self.assertEqual(self.runs(), [("done", 1), ("done", 0)])
         self.assertEqual(self.call("POST", f"/api/exports/{export.id}/import"), (409, {"error": "this export is already imported"}))
@@ -216,7 +216,7 @@ class PerPartImportsApiTests(unittest.TestCase):
         opened.execute(update(ExportPart).where(ExportPart.export_id == export.id, ExportPart.number == 2).values(ingest_state="refused", ingest_refusal="not_a_zip"))
         opened.commit()
         self.assertEqual(self.call("POST", f"/api/exports/{export.id}/import"),
-                         (202, {"export_id": export.id, "status": "downloaded", "stage": None, "per_part": True, "parts_requeued": 0}))
+                         (202, {"export_id": export.id, "status": "downloaded", "stage": None, "per_part": True, "parts_requeued": 0, "run_requeued": False}))
         opened = self.world.reopen()
         states = opened.execute(select(ExportPart.ingest_state, ExportPart.ingest_refusal).where(ExportPart.export_id == export.id)
                                 .order_by(ExportPart.number)).all()
@@ -255,7 +255,7 @@ class PerPartRetryApiTests(unittest.TestCase):
         self.assertTrue(exported["import_retry_allowed"])
         self.assertEqual([part["import_failure"] for part in exported["parts"]], [None, {"code": "files", "error": "OSError"}, None])
         status, body = self.call("POST", f"/api/exports/{self.export.id}/import")
-        self.assertEqual((status, body), (202, {"export_id": self.export.id, "status": "downloading", "stage": None, "per_part": True, "parts_requeued": 1}))
+        self.assertEqual((status, body), (202, {"export_id": self.export.id, "status": "downloading", "stage": None, "per_part": True, "parts_requeued": 1, "run_requeued": False}))
         self.assertEqual(self.states(), [("ingested", None), ("queued", None), ("refused", None)])
         self.world.opened.expire_all()
         self.assertEqual(self.world.part(self.export, 3).ingest_refusal, "not_a_zip")
@@ -276,6 +276,43 @@ class PerPartRetryApiTests(unittest.TestCase):
         self.assertEqual(self.call("POST", f"/api/exports/{self.export.id}/import"), (409, {"error": "this export has not been downloaded yet"}))
         self.assertEqual(self.states(), before)
 
+
+    def ingested_but_finishing_failed(self, run_status):
+        self.world.ingest_all(self.export)
+        found = self.world.opened.get(Export, self.export.id)
+        found.status = "failed"
+        if run_status is not None:
+            self.world.opened.add(ImportRun(export_id=self.export.id, started=NOW, finished=NOW, status=run_status, stage="placed", error="the import failed"))
+        self.world.opened.commit()
+
+    def test_a_retry_after_finishing_failed_queues_the_run_again_and_says_so(self):
+        self.ingested_but_finishing_failed("failed")
+        self.assertTrue(self.call("GET", f"/api/exports/{self.export.id}")[1]["export"]["import_retry_allowed"])
+        status, body = self.call("POST", f"/api/exports/{self.export.id}/import")
+        self.assertEqual((status, body), (202, {"export_id": self.export.id, "status": "failed", "stage": None, "per_part": True, "parts_requeued": 0,
+                                                "run_requeued": True}))
+        self.world.opened.expire_all()
+        self.assertEqual(run.latest_run(self.world.opened, self.export.id).status, "queued")
+        self.assertEqual(self.states(), [("ingested", None)] * 3)
+
+    def test_a_retry_of_a_failed_export_with_no_failed_run_puts_it_back_to_finish(self):
+        self.ingested_but_finishing_failed(None)
+        status, body = self.call("POST", f"/api/exports/{self.export.id}/import")
+        self.assertEqual((status, body), (202, {"export_id": self.export.id, "status": "downloaded", "stage": None, "per_part": True, "parts_requeued": 0,
+                                                "run_requeued": True}))
+
+    def test_a_retry_with_nothing_left_to_do_says_nothing_was_queued(self):
+        self.world.ingest_all(self.export)
+        found = self.world.opened.get(Export, self.export.id)
+        found.status = "downloaded"
+        self.world.opened.commit()
+        before = self.states()
+        status, body = self.call("POST", f"/api/exports/{self.export.id}/import")
+        self.assertEqual((status, body), (202, {"export_id": self.export.id, "status": "downloaded", "stage": None, "per_part": True, "parts_requeued": 0,
+                                                "run_requeued": False}))
+        self.assertEqual(self.states(), before)
+        self.world.opened.expire_all()
+        self.assertIsNone(run.latest_run(self.world.opened, self.export.id))
 
 if __name__ == "__main__":
     unittest.main()

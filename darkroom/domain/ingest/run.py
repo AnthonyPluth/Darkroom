@@ -601,6 +601,24 @@ def requeue_failed(opened: Session, export: Export, now: float) -> int:
     return len(parts)
 
 
+@dataclass(frozen=True)
+class RunMark:
+    export_status: str | None
+    run_id: int | None
+    run_status: str | None
+
+
+def run_mark(opened: Session, export_id: int) -> RunMark:
+    export, last = opened.get(Export, export_id), latest_run(opened, export_id)
+    return RunMark(None if export is None else export.status, None if last is None else last.id, None if last is None else last.status)
+
+
+def run_requeued(before: RunMark, after: RunMark) -> bool:
+    if before.export_status == "failed" and after.export_status != "failed":
+        return True
+    return after.run_status == "queued" and (after.run_id, after.run_status) != (before.run_id, before.run_status)
+
+
 def failed_parts(opened: Session, export_id: int) -> int:
     return int(opened.execute(select(func.count()).select_from(ExportPart).where(ExportPart.export_id == export_id, ExportPart.status == "done",
                                                                                  ExportPart.ingest_state == PART_FAILED)).scalar_one())

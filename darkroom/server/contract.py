@@ -480,6 +480,7 @@ class ImportQueued(TypedDict):
     stage: str | None
     per_part: bool
     parts_requeued: int
+    run_requeued: bool
 
 
 class ReviewSummary(TypedDict):

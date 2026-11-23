@@ -263,6 +263,7 @@ export interface ImportQueued {
   stage: string | null;
   per_part: boolean;
   parts_requeued: number;
+  run_requeued: boolean;
 }
 
 export interface ImportReply {
