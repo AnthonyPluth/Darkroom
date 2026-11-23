@@ -131,3 +131,30 @@ def save_jpeg(image: Image.Image, path: Path, quality: int = 92) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path, format="JPEG", quality=quality)
     return path
+
+
+PHONE_SIZES = ((4032, 3024), (3024, 4032), (4000, 3000), (2048, 1536), (1600, 1200), (1001, 667))
+
+
+def photo(seed: int, size: tuple[int, int] = (4032, 3024)) -> Image.Image:
+    chance = random.Random(seed)
+    width, height = size
+    image = Image.new("RGB", size, (chance.randrange(256), chance.randrange(256), chance.randrange(256)))
+    for octave in range(1, 8):
+        across = 2 ** octave
+        down = max(1, across * height // width)
+        layer = Image.frombytes("RGB", (across, down), chance.randbytes(across * down * 3)).resize(size, Image.Resampling.BICUBIC)
+        image = Image.blend(image, layer, 1 / (octave + 1))
+    draw = ImageDraw.Draw(image)
+    for _ in range(chance.randrange(5, 40)):
+        left, top = chance.randrange(width), chance.randrange(height)
+        span = chance.randrange(8, max(9, width // 4))
+        box = (left, top, min(width, left + span), min(height, top + chance.randrange(8, max(9, height // 4))))
+        colour = (chance.randrange(256), chance.randrange(256), chance.randrange(256))
+        (draw.ellipse if chance.random() < 0.5 else draw.rectangle)(box, fill=colour)
+    grain = Image.effect_noise(size, chance.uniform(2, 14)).convert("RGB")
+    return Image.blend(image, grain, 0.08)
+
+
+def photo_jpeg(seed: int, path: Path, size: tuple[int, int] = (4032, 3024)) -> Path:
+    return save_jpeg(photo(seed, size), path, quality=70 + seed % 26)

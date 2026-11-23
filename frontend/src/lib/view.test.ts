@@ -91,6 +91,7 @@ describe("a part imported on its own", () => {
     expect(partImportState({ ...part, ingest_state: "queued" }, "downloading")).toEqual({ tone: "neutral", label: "Downloaded", detail: "Waiting to import" });
     expect(partImportState({ ...part, ingest_state: "ingesting", entries: 0, entries_done: 0 }, "downloading")).toEqual({ tone: "neutral", label: "Importing", detail: "Reading the file" });
     expect(partImportState({ ...part, ingest_state: "ingesting", entries: 1488, entries_done: 812 }, "downloading")).toEqual({ tone: "neutral", label: "Importing", detail: "812 of 1,488 items" });
+    expect(partImportState({ ...part, ingest_state: "ingesting", entries: 9008, entries_done: 2237 }, "downloading")).toEqual({ tone: "neutral", label: "Importing", detail: "2,237 of 9,008 items" });
     expect(partImportState({ ...part, ingest_state: "ingested", entries: 1517 }, "downloading")).toEqual({ tone: "ok", label: "Imported", detail: "1,517 items" });
     expect(partImportState({ ...part, ingest_state: "ingested", failed_items: 2, kept_reason: "failed_item", held: 3 }, "downloading")).toEqual({ tone: "warn", label: "Kept", detail: "1,402 items, 2 failed" });
     expect(partImportState({ ...part, ingest_state: "refused" }, "downloading")).toEqual({ tone: "bad", label: "Couldn't read", detail: null });
