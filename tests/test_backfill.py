@@ -146,6 +146,22 @@ class BackfillTests(unittest.TestCase):
         alert = world.opened.execute(select(Alert).where(Alert.key.startswith("managed:backfill:"))).scalar_one()
         self.assertIn("5 photos of jo need a look", alert.message)
 
+    def test_live_photo_halves_renamed_on_a_name_collision_are_listed_and_not_uploaded(self):
+        world = BackfillWorld(self)
+        world.run_managed(live_only, parts=1)
+        renamed = []
+        for name, new_name in (("IMG_3001.HEIC", "IMG_3001-0a1b2c3d.HEIC"), ("IMG_3001.MOV", "IMG_3001-4e5f6a7b.MOV")):
+            item = world.google_only_item(name)
+            moved = str(PurePosixPath(item.path).with_name(new_name))
+            (world.root / item.path).rename(world.root / moved)
+            if (world.root / f"{item.path}.xmp").exists():
+                (world.root / f"{item.path}.xmp").rename(world.root / f"{moved}.xmp")
+            world.opened.execute(update(MediaItem).where(MediaItem.id == item.id).values(path=moved, sidecar_from_still=False, captured_utc=None))
+            renamed.append(new_name)
+        world.opened.commit()
+        world.backfill()
+        self.assertEqual((world.report(), world.uploads()), ({"live_photo": sorted(renamed)}, []))
+
     def test_running_again_uploads_nothing_more(self):
         world = BackfillWorld(self)
         world.seeded()
@@ -209,3 +225,7 @@ class BackfillTests(unittest.TestCase):
 
 def single_photo(builder):
     builder.photo("IMG_5001.JPG", gps=(45.4, 12.3), description="A made-up quay", part=0)
+
+
+def live_only(builder):
+    builder.live_photo("IMG_3001", part=0)

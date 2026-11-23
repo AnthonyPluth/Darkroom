@@ -453,6 +453,31 @@ class ReviewUndoTests(ReviewCase):
         self.assertIn("never takes a photo back out of Immich", str(body))
         self.assertEqual((self.opened.get(MediaItem, item.id).person_id, self.tree()), (item.person_id, before))
 
+    def test_a_photo_with_a_backfill_upload_under_way_or_held_after_it_is_not_reassigned(self):
+        sent = {"asset_id": "generated-backfill-asset", "upload_outcome": "created"}
+        cases = {
+            "about to be sent": ({"state": "prepared"}, 409),
+            "answer not known": ({"state": "outcome_unknown", "send_attempts": 1}, 409),
+            "metadata pending": (sent | {"state": "bytes_verified", "metadata_hold": "mismatch"}, 409),
+            "metadata held": (sent | {"state": "bytes_verified", "metadata_hold": "not_enriched"}, 409),
+            "held before sending": ({"state": "prepared", "metadata_hold": "unknown_offset"}, 200),
+        }
+        for name, (values, expected) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                item = self.item_named(GOOGLE_ONLY_NAME)
+                opened = self.world.opened
+                owner = opened.get(Person, item.person_id).immich_user_id
+                intent = ManagedImportIntent(person_id=item.person_id, export_id=None, owner_id=owner, kind="backfill", resource_manifest="{}", created_at=1.0)
+                opened.add(intent)
+                opened.flush()
+                verified = {"verified_sha1": item.sha1, "verified_bytes": item.bytes, "bytes_verified_at": 1.0} if values["state"] == "bytes_verified" else {}
+                opened.add(ManagedImportReceipt(intent_id=intent.id, resource_key=f"backfill:media-item:{item.id}", compound_key=f"backfill:media-item:{item.id}",
+                                                source_sha1=item.sha1, expected_bytes=item.bytes, expected_metadata="{}", updated_at=1.0, **values, **verified))
+                opened.commit()
+                status, body = self.call("POST", f"/api/media/{item.id}/reassign", {"person_id": self.world.ids["sam"]})
+                self.assertEqual(status, expected, body)
+
     def test_undoing_a_kept_photo_waits_until_its_managed_pixel_copy_is_pruned(self):
         review_id, item = self.kept_with_a_managed_copy()
         item_id = item.id

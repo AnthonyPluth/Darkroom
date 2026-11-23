@@ -92,7 +92,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     connection = op.get_bind()
-    if connection.execute(sa.text(f"SELECT 1 FROM {TABLE} WHERE kind = 'backfill' LIMIT 1")).first() is not None:
+    intents = sa.table(TABLE, sa.column("id"), sa.column("kind"))
+    if connection.execute(sa.select(intents.c.id).where(intents.c.kind == "backfill").limit(1)).first() is not None:
         raise RuntimeError("Immich backfill receipts are kept; roll the schema forward instead of downgrading past 0050")
     op.drop_index("ix_managed_backfill_items_person_outcome", table_name="managed_backfill_items")
     op.drop_table("managed_backfill_items")

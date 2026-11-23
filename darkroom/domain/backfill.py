@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Final
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, and_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
@@ -33,6 +33,7 @@ IMMICH_FOLDER: Final = "immich"
 NEAR_TIERS: Final = (2, 3, 4)
 RETRIED: Final = ("pending", "mismatch")
 CHUNK: Final = 1024 * 1024
+LIVE_SECONDS: Final = 1.0
 REASONS: Final[dict[str, str]] = {
     "missing": "the file is not a plain file in the person's folder any more",
     "changed": "the file's bytes are not the ones Darkroom recorded",
@@ -73,8 +74,11 @@ def due(opened: Session) -> list[Person]:
 
 
 def copied(opened: Session, item_id: int) -> bool:
-    return opened.execute(select(ManagedBackfillItem.id).where(ManagedBackfillItem.item_id == item_id, ManagedBackfillItem.outcome == "mapped")
-                          .limit(1)).first() is not None
+    mapped = select(ManagedBackfillItem.id).where(ManagedBackfillItem.item_id == item_id, ManagedBackfillItem.outcome == "mapped").limit(1)
+    never_sent = and_(ManagedImportReceipt.state == "prepared", ManagedImportReceipt.metadata_hold.in_(managed_metadata.HELD_BEFORE_UPLOAD))
+    receipt = (select(ManagedImportReceipt.id).join(ManagedImportIntent, ManagedImportIntent.id == ManagedImportReceipt.intent_id)
+               .where(ManagedImportIntent.kind == KIND, ManagedImportReceipt.resource_key == f"{KEY}{item_id}", ~never_sent).limit(1))
+    return opened.execute(mapped).first() is not None or opened.execute(receipt).first() is not None
 
 
 def exceptions(opened: Session, person_id: int) -> dict[str, list[int]]:
@@ -223,6 +227,10 @@ class Backfill:
         intended = managed_metadata.intend(tags, xmp.GoogleMetadata.of(item.sidecar_json), kind, corrects=not item.sidecar_from_still)
         db.write_lock(self.opened)
         found = self.opened.execute(query).scalar_one_or_none()
+        current = self.opened.get(MediaItem, item.id, populate_existing=True)
+        if found is None and (current is None or (current.person_id, current.path, current.sha1, current.bytes) != (self.person.id, item.path, item.sha1, item.bytes)):
+            self.opened.commit()
+            return None
         if found is None:
             key = f"{KEY}{item.id}"
             row = ManagedImportReceipt(intent_id=intent.id, resource_key=key, compound_key=key, source_sha1=item.sha1, expected_bytes=item.bytes,
@@ -303,7 +311,7 @@ class Backfill:
                                                                MediaItem.path.startswith(f"{self.person.slug}/google-only/"))
                                        .order_by(MediaItem.id)).scalars().all()
         waiting = [item for item in [*phones, *takeouts] if item.id not in done][:limit]
-        halves, near = live_halves(takeouts), same_shots(self.opened, self.person, [item for item in waiting if item.source == "takeout"])
+        halves, near = live_halves(self.opened, self.person, takeouts), same_shots(self.opened, self.person, [item for item in waiting if item.source == "takeout"])
         for item in waiting:
             if item.source == "phone":
                 self.phone(item)
@@ -329,22 +337,40 @@ def sha1_of(handle: BinaryIO) -> str:
     return digest.hexdigest()
 
 
-def live_halves(items: Sequence[MediaItem]) -> set[int]:
-    folders: dict[PurePosixPath, list[MediaItem]] = defaultdict(list)
+def live_halves(opened: Session, person: Person, items: Sequence[MediaItem]) -> set[int]:
+    by_id = {item.id: item for item in items}
+    named: dict[tuple[object, PurePosixPath], list[tuple[MediaItem, PurePosixPath]]] = defaultdict(list)
     for item in items:
-        folders[PurePosixPath(item.path).parent].append(item)
+        path = PurePosixPath(item.path)
+        named[("library", path.parent)].append((item, path))
+    recorded = opened.execute(select(DedupeDecision.takeout_item_id, DedupeDecision.export_id, DedupeDecision.source_path)
+                              .join(MediaItem, MediaItem.id == DedupeDecision.takeout_item_id)
+                              .where(MediaItem.person_id == person.id, MediaItem.source == "takeout", DedupeDecision.source_path.is_not(None))).all()
+    for item_id, export_id, source in recorded:
+        if item_id in by_id:
+            path = PurePosixPath(str(source))
+            named[(export_id, path.parent)].append((by_id[item_id], path))
     halves: set[int] = set()
-    for siblings in folders.values():
-        for video in siblings:
-            path = PurePosixPath(video.path)
+    for siblings in named.values():
+        for video, path in siblings:
             if path.suffix.lower() not in media.VIDEO_SUFFIXES:
                 continue
             stems = {path.stem.lower()} | ({path.name.lower()} if path.suffix.lower() == pairing.MOTION_CLIP_SUFFIX else set())
-            stills = [item.id for item in siblings if PurePosixPath(item.path).suffix.lower() in pairing.STILL_SUFFIXES
-                      and PurePosixPath(item.path).stem.lower() in stems]
-            if stills or video.sidecar_from_still:
+            stills = {item.id for item, name in siblings if name.suffix.lower() in pairing.STILL_SUFFIXES and name.stem.lower() in stems}
+            if stills:
                 halves |= {video.id, *stills}
+    for video in items:
+        if PurePosixPath(video.path).suffix.lower() in media.VIDEO_SUFFIXES and (video.sidecar_from_still or video.id in halves):
+            halves |= {video.id, *same_instant(video, items)}
     return halves
+
+
+def same_instant(video: MediaItem, items: Sequence[MediaItem]) -> set[int]:
+    if video.captured_utc is None:
+        return set()
+    folder = PurePosixPath(video.path).parent
+    return {item.id for item in items if PurePosixPath(item.path).parent == folder and PurePosixPath(item.path).suffix.lower() in pairing.STILL_SUFFIXES
+            and item.captured_utc is not None and abs(item.captured_utc - video.captured_utc) <= LIVE_SECONDS}
 
 
 def candidate(opened: Session, item: MediaItem) -> dedupe.TakeoutCandidate:
