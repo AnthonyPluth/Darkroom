@@ -472,6 +472,23 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(rows, [("exception", "export_unfinished", None, None)])
         self.assertEqual(world.report(), {"export_unfinished": ["IMG_5001.JPG"]})
 
+    def test_an_export_retried_after_the_run_read_it_as_imported_is_refused_under_the_write_lock(self):
+        world = BackfillWorld(self)
+        export = world.run_managed(single_photo, parts=1)
+        real = backfill.sha1_of
+
+        def retried(handle):
+            with world.engine.begin() as connection:
+                connection.execute(update(Export).where(Export.id == export.id).values(status="importing", stage="unpacked"))
+            return real(handle)
+        with mock.patch.object(backfill, "sha1_of", retried):
+            world.backfill()
+        self.assertEqual((world.uploads(), world.count(ManagedImportReceipt), world.count(ManagedBackfillItem), world.report()), ([], 0, 0, {}))
+        world.opened.execute(update(Export).where(Export.id == export.id).values(status="imported"))
+        world.opened.commit()
+        self.assertEqual(world.backfill(at=NOW + 200).mapped, 1)
+        self.assertEqual((world.count(ManagedImportReceipt), world.report()), (1, {}))
+
     def test_an_export_imported_after_the_run_read_its_ledger_waits_for_the_next_run(self):
         world = BackfillWorld(self)
         export = world.run_managed(single_photo, parts=1)
