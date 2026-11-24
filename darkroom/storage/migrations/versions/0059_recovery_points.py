@@ -2,7 +2,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0056"
+revision = "0059"
 down_revision = "0058"
 branch_labels = None
 depends_on = None
@@ -61,7 +61,7 @@ def downgrade() -> None:
         return
     points = sa.table(POINTS, sa.column("id"))
     if connection.execute(sa.select(points.c.id).limit(1)).first() is not None:
-        raise RuntimeError("the recovery points are the audit of which backups covered which photos; roll the schema forward instead of downgrading past 0056")
+        raise RuntimeError("the recovery points are the audit of which backups covered which photos; roll the schema forward instead of downgrading past 0059")
     op.drop_table(ASSETS)
     op.drop_index("ix_recovery_points_state_opened", table_name=POINTS)
     op.drop_table(POINTS)

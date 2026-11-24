@@ -764,7 +764,7 @@ class MigrationTests(unittest.TestCase):
                              manifests | {1: old_takeout, 2: '{"compound": "single", "resource": "media_item", "schema": 1}'})
         db.migrate(self.engine)
 
-    def test_0056_recovery_points_hold_each_state_in_its_shape_with_a_manifest_that_goes_with_its_point_and_keep_the_audit_on_undo(self):
+    def test_0059_recovery_points_hold_each_state_in_its_shape_with_a_manifest_that_goes_with_its_point_and_keep_the_audit_on_undo(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
