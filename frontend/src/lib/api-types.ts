@@ -549,6 +549,7 @@ export interface ReviewSummary {
   reversed: boolean;
   resolved_at: number | null;
   undo_until: number | null;
+  kept_in_immich: boolean;
   name: string | null;
   library_name: string | null;
   person_id: number | null;
