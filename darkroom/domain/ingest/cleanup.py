@@ -172,8 +172,8 @@ def unsafe_reviews(opened: Session, photos: Photos, export: Export, per_part: bo
 
 
 def note_switch_kept(opened: Session, now: float, subject: str, detail: str) -> None:
-    seen = opened.execute(select(Event.id).where(Event.type == "cleanup_kept", Event.subject == subject, Event.detail == detail).limit(1)).first()
-    if seen is None:
+    last = opened.execute(select(Event.detail).where(Event.type == "cleanup_kept", Event.subject == subject).order_by(Event.id.desc()).limit(1)).scalar_one_or_none()
+    if last != detail:
         events.record(opened, now, "cleanup_kept", subject, detail)
 
 
@@ -436,7 +436,11 @@ def clean(opened: Session, photos: Photos, now: float, settings: config.Settings
                 export = opened.get(Export, export_id)
                 if export is not None and export.status == "imported":
                     clean_export(opened, photos, export, now, report)
-        except (run.Busy, OperationalError):
+        except run.Busy:
+            report.kept += 1
+        except OperationalError as error:
+            if not db.is_busy(error):
+                raise
             opened.rollback()
             report.kept += 1
         except OSError as error:

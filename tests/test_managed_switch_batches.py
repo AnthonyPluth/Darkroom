@@ -3,6 +3,7 @@ import unittest
 from unittest import mock
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom.domain import managed_switch
@@ -99,6 +100,28 @@ class WholeExportCleanupTests(Imported):
         self.assertEqual((report.staging, report.parts, report.kept), (0, 0, 1))
         self.assertTrue(self.staging.is_dir())
         self.assertEqual(self.clean().staging, 1)
+
+    def test_a_busy_claim_leaves_the_export_for_the_next_tick_and_cleanup_goes_on(self):
+        busy = OperationalError("UPDATE people", {}, Exception("database is locked"))
+        with mock.patch.object(managed_switch, "hold", side_effect=busy):
+            report = self.clean()
+        self.assertEqual((report.staging, report.parts, report.failed), (0, 0, 0))
+        self.assertGreaterEqual(report.kept, 1)
+        self.assertTrue(self.staging.is_dir())
+        self.assertEqual(self.clean().staging, 1)
+
+    def test_an_error_that_is_not_a_busy_one_is_not_swallowed(self):
+        broken = OperationalError("UPDATE people", {}, Exception("disk I/O error"))
+        with mock.patch.object(managed_switch, "hold", side_effect=broken), self.assertRaises(OperationalError):
+            self.clean()
+        self.world.opened.rollback()
+        self.assertTrue(self.staging.is_dir())
+
+    def test_each_return_to_a_state_gets_its_own_event(self):
+        for state in ("on", "stopped", "on"):
+            set_state(self.world, "jo", state)
+            self.clean()
+        self.assertEqual(kept_events(self.world), [("export 1", FIXED[state]) for state in ("on", "stopped", "on")])
 
     def test_the_lock_is_taken_before_any_write_transaction_is_open(self):
         real = run.account_lock
@@ -243,13 +266,13 @@ class PartFreeingTests(unittest.TestCase):
         set_state(self.world, "jo", None)
         self.assertEqual(self.world.free(at=NOW + 3 * TICK).parts, 2)
 
-    def test_an_imported_export_with_no_held_copies_records_no_switch_keep(self):
-        self.world.free()
-        self.world.finish(self.export, at=NOW + 2 * TICK)
-        self.world.free(at=NOW + 3 * TICK)
+    def test_an_imported_export_with_unfreed_parts_and_no_held_copies_records_no_held_keep(self):
+        self.world.finish(self.export, at=NOW + TICK)
+        self.assertEqual(self.world.held_store(), {})
         set_state(self.world, "jo", "on")
-        report = self.world.free(at=NOW + 4 * TICK)
-        self.assertEqual((report.kept, self.kept("export_held_kept")), (0, []))
+        with mock.patch.object(part_free, "free_held", wraps=part_free.free_held) as reached:
+            report = self.world.free(at=NOW + 2 * TICK)
+        self.assertEqual((reached.call_count, report.kept, self.kept("export_held_kept")), (1, 2, []))
 
     def test_on_and_stopped_keep_every_zip_and_held_copy_of_an_old_way_export(self):
         for state in ("on", "stopped"):
