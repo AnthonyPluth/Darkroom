@@ -1,6 +1,6 @@
 # Recovery-point gate for managed cleanup
 
-Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. **Draft for the owner's review; no code yet.** It fills in the gate that [`immich-managed-storage.md`](immich-managed-storage.md) (sections 4, 8, 9 and 10) requires before Darkroom may delete anything an Immich-managed import left in the inbox. Until the slices in section 9 land and the owner records what section 6 asks for, cleanup keeps every zip, held copy and review hold of a managed export, as it does today.
+Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. The owner accepted its proposed defaults; slice A (the owner's records) is built, the other slices are not. It fills in the gate that [`immich-managed-storage.md`](immich-managed-storage.md) (sections 4, 8, 9 and 10) requires before Darkroom may delete anything an Immich-managed import left in the inbox. Until the slices in section 9 land and the owner records what section 6 asks for, cleanup keeps every zip, held copy and review hold of a managed export, as it does today.
 
 ## 1. Where things stand
 
@@ -29,7 +29,7 @@ It cannot make Immich and Darkroom atomic. Another Immich client can trash or de
 
 ## 3. Data model
 
-One new migration, numbered after main's newest when the first slice lands (0052 at the time of writing), with its own `test_<revision>_…` in `tests/test_migrations.py`, on SQLite and PostgreSQL. It adds tables and nullable columns only; no existing row changes. Times are UTC epoch seconds (`Float`), as elsewhere.
+Each slice adds the tables and columns it uses in its own migration, numbered after main's newest when it lands (slice A's is 0054, `retention_attestations`), with its own `test_<revision>_…` in `tests/test_migrations.py`, on SQLite and PostgreSQL. It adds tables and nullable columns only; no existing row changes. Times are UTC epoch seconds (`Float`), as elsewhere.
 
 ### `retention_attestations`: what the owner records
 

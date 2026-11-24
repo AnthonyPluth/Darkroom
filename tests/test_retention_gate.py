@@ -187,14 +187,13 @@ class RefusalTests(RetentionWorld):
 
     def test_refused_values_are_never_echoed_logged_or_stored(self):
         canary_url = "https://example.test/CANARY-EVIDENCE-7f3a"
-        with no_leaks(self, "CANARY-EVIDENCE-7f3a", "CANARY-VERSION-91bd", "CANARY-DATABASE-c2e8", "CANARY-DAY-55a1", "CANARY-WHICH-0d4f", database=self.engine):
-            self.retention(*rehearsal_with(evidence=canary_url))
-            self.retention("accept-boundary", "--evidence", canary_url, "--accept")
-            self.retention(*rehearsal_with(darkroom_version="CANARY-VERSION-91bd"))
-            self.retention(*rehearsal_with(immich_version="CANARY-VERSION-91bd"))
-            self.retention(*rehearsal_with(database="CANARY-DATABASE-c2e8"))
-            self.retention(*rehearsal_with(rehearsed_on="CANARY-DAY-55a1"))
-            self.retention("withdraw", "CANARY-WHICH-0d4f")
+        refused = (rehearsal_with(evidence=canary_url), ["accept-boundary", "--evidence", canary_url, "--accept"], ["accept-boundary", "--evidence", canary_url],
+                   rehearsal_with(darkroom_version="CANARY-VERSION-91bd"), rehearsal_with(immich_version="CANARY-VERSION-91bd"),
+                   rehearsal_with(database="CANARY-DATABASE-c2e8"), rehearsal_with(rehearsed_on="CANARY-DAY-55a1"), ["withdraw", "CANARY-WHICH-0d4f"])
+        with no_leaks(self, "CANARY-EVIDENCE-7f3a", "CANARY-VERSION-91bd", "CANARY-DATABASE-c2e8", "CANARY-DAY-55a1", "CANARY-WHICH-0d4f", database=self.engine), \
+                mock.patch.dict(os.environ, self.environment, clear=True):
+            codes = [run.main(["retention", *argv]) for argv in refused]
+        self.assertEqual(codes, [1] * len(refused))
 
 
 class StatusTests(RetentionWorld):
