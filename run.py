@@ -22,7 +22,7 @@ from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs, wizard
 from darkroom.storage import browser_copy, db, secret_key, secretbox, share, stored_settings
 from darkroom.storage.settings_keys import SHARE_SENTINEL
-from darkroom.storage.models import Export, Person, RetentionAttestation
+from darkroom.storage.models import Export, Person, RecoveryPoint, RetentionAttestation
 from darkroom.storage.paths import PIXELS, NotInTheInbox, Photos
 
 DEMO_SESSION_FILE = "demo-session.json"
@@ -522,6 +522,36 @@ def retention_action(opened: Session, args: argparse.Namespace, today: str) -> l
             f"Withdrawn records: {current.withdrawn}", RETENTION_KEPT]
 
 
+RECOVERY_NOT_MIGRATED = "recovery-point: the database has no recovery points table yet; run `python run.py migrate` (or start the service once), then run this again"
+RECOVERY_UNREACHABLE = ("recovery-point begin: Immich answered for no photo, so recovery point {id} was recorded as failed with an empty manifest; "
+                        "do not treat the backup that follows as covering anything, and run this again once Immich answers")
+
+
+def recovery_point_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="run.py recovery-point")
+    actions = parser.add_subparsers(dest="action", required=True)
+    actions.add_parser("begin")
+    return parser
+
+
+def recovery_point(argv: list[str]) -> int:
+    recovery_point_parser().parse_args(argv)
+    settings = config.load()
+    engine = db.make_engine(db.database_url(settings))
+    try:
+        if not inspect(engine).has_table(RecoveryPoint.__tablename__):
+            print(RECOVERY_NOT_MIGRATED, file=sys.stderr)
+            return 1
+        begun = retention_gate.begin(engine, settings, utc_now().timestamp())
+    finally:
+        engine.dispose()
+    if begun.state == "failed":
+        print(RECOVERY_UNREACHABLE.format(id=begun.point_id), file=sys.stderr)
+        return 1
+    print(f"recovery point {begun.point_id} opened: {begun.listed} photos listed, {begun.confirmed} confirmed in Immich and in its manifest, {begun.refused} left out")
+    return 0
+
+
 def retention(argv: list[str]) -> int:
     args = retention_parser().parse_args(argv)
     settings = config.load()
@@ -681,7 +711,7 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "reread-video-times", "legacy-report", "revoke-sessions", "demo", "seal-secret", "bind-share", "reopen-setup", "retention",
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "reread-video-times", "legacy-report", "revoke-sessions", "demo", "seal-secret", "bind-share", "reopen-setup", "retention", "recovery-point",
                                             "copy-browser-state"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
@@ -698,6 +728,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--apply", action="store_true")
     if argv[:1] == ["retention"]:
         return retention(argv[1:])
+    if argv[:1] == ["recovery-point"]:
+        return recovery_point(argv[1:])
     args = parser.parse_args(argv)
     if args.command == "demo":
         return run_demo(args.data)

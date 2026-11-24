@@ -6,7 +6,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from sqlalchemy import inspect, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError
 
 from darkroom.storage import db
 from darkroom.storage.schema import metadata
@@ -804,6 +804,77 @@ class MigrationTests(unittest.TestCase):
         with self.engine.connect() as connection:
             self.assertEqual(dict(connection.exec_driver_sql("SELECT id, resource_manifest FROM managed_import_intents ORDER BY id").all()),
                              manifests | {1: old_takeout, 2: '{"compound": "single", "resource": "media_item", "schema": 1}'})
+        db.migrate(self.engine)
+
+    def test_0059_recovery_points_hold_each_state_in_its_shape_with_a_manifest_that_goes_with_its_point_and_keep_the_audit_on_undo(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0055")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            before = snapshot(connection, ("people",), " ORDER BY id")
+        db.migrate(self.engine)
+        digest = "'" + "ab12" * 16 + "'"
+        columns = "(state, opened_at, manifest_count, manifest_sha256{extra})"
+        point = "INSERT INTO recovery_points " + columns + " VALUES ({state}, 10.0, {count}, {digest}{value})"
+        succeeded = (", finished_at, taken_at, kept_until, scopes, tool, snapshot_ref", ", 30.0, 20.0, 99.0, 'darkroom-db,darkroom-secret,immich-db,immich-media', 'tool-1', 'snap:1'")
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+            connection.exec_driver_sql(point.format(extra="", state="'open'", count=0, digest=digest, value=""))
+            connection.exec_driver_sql(point.format(extra=succeeded[0], state="'succeeded'", count=2, digest=digest, value=succeeded[1]))
+            connection.exec_driver_sql(point.format(extra=", finished_at, failure", state="'failed'", count=0, digest=digest, value=", 10.0, 'immich_unreachable'"))
+            connection.exec_driver_sql(point.format(extra=", failure", state="'abandoned'", count=1, digest=digest, value=", 'not_finished'"))
+            connection.exec_driver_sql(point.format(extra=", finished_at, taken_at, failure", state="'failed'", count=0, digest=digest, value=", 30.0, 10.0, 'reported_failed'"))
+            for asset, source in (("a1", "receipt"), ("a2", "version")):
+                connection.exec_driver_sql(f"INSERT INTO recovery_point_assets (recovery_point_id, owner_id, asset_id, sha1, source) VALUES (2, 'o1', '{asset}', '{'a' * 40}', '{source}')")
+        refused = (point.format(extra="", state="'other'", count=0, digest=digest, value=""),
+                   point.format(extra="", state="'open'", count=-1, digest=digest, value=""),
+                   *(point.format(extra="", state="'open'", count=0, digest=f"'{bad}'", value="")
+                     for bad in ("", "ab12", "ab12" * 16 + "0", "AB12" * 16, "ab1g" * 16, "ab12" * 15 + "ab1\n")),
+                   point.format(extra=", failure", state="'open'", count=0, digest=digest, value=", 'not_finished'"),
+                   point.format(extra=", finished_at", state="'open'", count=0, digest=digest, value=", 30.0"),
+                   point.format(extra=", scopes", state="'open'", count=0, digest=digest, value=", 'immich-db'"),
+                   point.format(extra=succeeded[0].replace(", tool, snapshot_ref", "").replace(", scopes", ""), state="'succeeded'", count=0, digest=digest,
+                                value=", 30.0, 20.0, 99.0"),
+                   point.format(extra=succeeded[0], state="'succeeded'", count=0, digest=digest, value=succeeded[1].replace("20.0", "5.0")),
+                   point.format(extra=succeeded[0], state="'succeeded'", count=0, digest=digest, value=succeeded[1].replace("20.0", "31.0")),
+                   point.format(extra=succeeded[0] + ", failure", state="'succeeded'", count=0, digest=digest, value=succeeded[1] + ", 'reported_failed'"),
+                   point.format(extra="", state="'failed'", count=0, digest=digest, value=""),
+                   point.format(extra="", state="'abandoned'", count=0, digest=digest, value=""),
+                   point.format(extra=", failure", state="'failed'", count=0, digest=digest, value=", 'made_up'"),
+                   point.format(extra=", taken_at", state="'open'", count=0, digest=digest, value=", 10.0"),
+                   "INSERT INTO recovery_point_assets (recovery_point_id, owner_id, asset_id, sha1, source) VALUES (2, 'o1', 'a1', '" + "b" * 40 + "', 'version')",
+                   "INSERT INTO recovery_point_assets (recovery_point_id, owner_id, asset_id, sha1, source) VALUES (2, 'o2', 'a1', '" + "b" * 40 + "', 'other')",
+                   "INSERT INTO recovery_point_assets (recovery_point_id, owner_id, asset_id, sha1, source) VALUES (99, 'o2', 'a1', '" + "b" * 40 + "', 'receipt')",
+                   "INSERT INTO recovery_point_assets (recovery_point_id, owner_id, asset_id, sha1, source) VALUES (2, '', 'a1', '" + "b" * 40 + "', 'receipt')",
+                   "INSERT INTO recovery_point_assets (recovery_point_id, owner_id, asset_id, sha1, source) VALUES (2, 'o2', '', '" + "b" * 40 + "', 'receipt')",
+                   *(f"INSERT INTO recovery_point_assets (recovery_point_id, owner_id, asset_id, sha1, source) VALUES (2, 'o2', 'a9', '{bad}', 'receipt')"
+                     for bad in ("", "b" * 39, "b" * 41, "B" * 40, "g" * 40)))
+        for statement in refused:
+            with self.subTest(statement=statement), self.assertRaises((IntegrityError, DataError)), self.engine.begin() as connection:
+                connection.exec_driver_sql(statement)
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT state, failure, taken_at FROM recovery_points ORDER BY id").all(),
+                             [("open", None, None), ("succeeded", None, 20.0), ("failed", "immich_unreachable", None), ("abandoned", "not_finished", None),
+                              ("failed", "reported_failed", 10.0)])
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM recovery_points WHERE id = 5")
+            self.assertEqual(connection.exec_driver_sql("SELECT count(*) FROM recovery_point_assets").scalar_one(), 2)
+            connection.exec_driver_sql("DELETE FROM recovery_points WHERE id = 2")
+            self.assertEqual(connection.exec_driver_sql("SELECT count(*) FROM recovery_point_assets").scalar_one(), 0)
+        with self.assertRaises(RuntimeError), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0055")
+        self.assertIn("recovery_points", inspect(self.engine).get_table_names())
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM recovery_points")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0055")
+        self.assertNotIn("recovery_points", inspect(self.engine).get_table_names())
+        self.assertNotIn("recovery_point_assets", inspect(self.engine).get_table_names())
+        with self.engine.connect() as connection:
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
         db.migrate(self.engine)
 
     def test_0051_managed_backfill_keeps_every_intent_receipt_and_origin_as_an_import_and_can_be_undone(self):
