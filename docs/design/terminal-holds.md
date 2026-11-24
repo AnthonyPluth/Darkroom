@@ -181,7 +181,7 @@ Each its own pull request under 1,000 added lines including tests, landing in or
 
 ## 11. Open questions for the owner
 
-1. **Wording** of the undo text for a pair kept in Immich: proposed "Kept in Immich, so it can't be undone"; and for a resolution that was already sent: "Already sent to Immich, so it can't be undone".
+1. **Wording** of the undo text for a pair kept in Immich: "Kept in Immich, so it can't be undone"; and for a resolution that was already sent: "Already sent to Immich, so it can't be undone". Closed: the owner approved both texts on 2026-11-24, recorded on #548 (https://github.com/AnthonyPluth/Darkroom/issues/548#issuecomment-7122813221).
 2. **Who may see and resolve a hold**: any signed-in member, as Review today (proposed), or only the photo's person and the owner.
 3. **An owner offset that disagrees with the place** Immich will see: refuse (proposed), or allow and let the read-back decide (it would likely end `not_settled`).
 4. **Facts only, or a hint**: the list shows the wall clock, Google's UTC instant and whether a place is known, with no suggested offset (proposed). Showing the offset that would make the clock agree with Google's instant would be a suggestion the owner could just accept.

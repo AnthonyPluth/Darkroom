@@ -64,6 +64,8 @@ Approved departures (#27), approved by the owner and recorded on #16 (https://gi
 3. Review: Reassign on the pending pair is one action that keeps both files and then moves the kept copy to the chosen person (hidden when the account serves one person); undoing it takes the copy back.
 4. Imports, Missing GPS: the thumbnail is a plain placeholder tile where no thumbnail can be made.
 
+Approved departure (#548), approved by the owner on 2026-11-24 and recorded on #548 (https://github.com/AnthonyPluth/Darkroom/issues/548#issuecomment-7122813221): Review, a pair kept in an Immich-managed export shows "Kept in Immich, so it can't be undone" in place of "Too late to undo".
+
 Approved departures (#30), approved by the owner and recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6646447403). The Exports page builds the board's three parts (schedule, current export parts, earlier exports) and "Check exports now" on top of the per-account cards from #29:
 
 1. Schedule: the account card keeps its Session checked, Schedule created and Schedule ends rows and adds Last export and Next export, five rows in the card instead of the board's three stats. Under Schedule ends it says only "In N weeks" (the board adds "A reminder goes out about 3 weeks before", which waits for renewal, #40), and under Next export "Darkroom checks daily" without the board's "from 1 Dec".
