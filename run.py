@@ -7,21 +7,22 @@ import json
 import os
 import sys
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, inspect
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
 from darkroom.providers import exiftool, immich, resend
-from darkroom.dates import utc_now
-from darkroom.domain import demo, immich_reconcile, index, legacy, share_bind, share_check, video_times
+from darkroom.dates import local_today, utc_now
+from darkroom.domain import demo, immich_reconcile, index, legacy, retention_gate, share_bind, share_check, video_times
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs, wizard
 from darkroom.storage import browser_copy, db, secret_key, secretbox, share, stored_settings
 from darkroom.storage.settings_keys import SHARE_SENTINEL
-from darkroom.storage.models import Export, Person
+from darkroom.storage.models import Export, Person, RetentionAttestation
 from darkroom.storage.paths import PIXELS, NotInTheInbox, Photos
 
 DEMO_SESSION_FILE = "demo-session.json"
@@ -464,6 +465,84 @@ def reopen_setup() -> int:
     return 0
 
 
+RETENTION_KEPT = "Cleanup keeps every file of an Immich-managed import: this version of Darkroom releases none of them, whatever is recorded here."
+RETENTION_NOT_MIGRATED = "retention: the database has no retention records table yet; run `python run.py migrate` (or start the service once), then run this again"
+BOUNDARY_NOT_STORED = "Nothing was recorded. Run this again with --accept to record that you accept this boundary."
+BOUNDARY_TEXT_CURRENT = "text digest: recorded, and it equals the digest of the text shown now"
+BOUNDARY_TEXT_CHANGED = "text digest: recorded, and it differs from the digest of the text shown now; the boundary was accepted under other text"
+KIND_NAMES: dict[str, str] = {retention_gate.REHEARSAL: "Restore rehearsal", retention_gate.BOUNDARY: "Remote-deletion boundary"}
+
+
+def retention_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="run.py retention")
+    actions = parser.add_subparsers(dest="action", required=True)
+    rehearsal = actions.add_parser("record-rehearsal")
+    for flag in ("--evidence", "--rehearsed-on", "--immich-version", "--darkroom-version", "--database"):
+        rehearsal.add_argument(flag, required=True)
+    boundary = actions.add_parser("accept-boundary")
+    boundary.add_argument("--evidence", required=True)
+    boundary.add_argument("--accept", action="store_true")
+    actions.add_parser("withdraw").add_argument("which")
+    actions.add_parser("status")
+    return parser
+
+
+def when(moment: float) -> str:
+    return datetime.fromtimestamp(moment, UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def describe_attestation(kind: str, found: retention_gate.Attestation | None) -> list[str]:
+    if found is None:
+        return [f"{KIND_NAMES[kind]}: not recorded"]
+    lines = [f"{KIND_NAMES[kind]}: recorded {when(found.recorded_at)} (record {found.id})", f"  evidence: {found.evidence_url}"]
+    if found.rehearsed_on is not None:
+        lines.append(f"  rehearsed on {found.rehearsed_on}: Immich {found.immich_version}, Darkroom {found.darkroom_version}, {found.database_kind} database")
+    if found.kind == retention_gate.BOUNDARY:
+        lines.append(f"  {BOUNDARY_TEXT_CURRENT if retention_gate.accepts_current_text(found) else BOUNDARY_TEXT_CHANGED}")
+        lines.append(f"  text sha-256: {found.boundary_text_sha256}")
+    return lines
+
+
+def retention_action(opened: Session, args: argparse.Namespace, today: str) -> list[str]:
+    now = utc_now().timestamp()
+    if args.action == "record-rehearsal":
+        rehearsal = retention_gate.checked_rehearsal(args.evidence, args.rehearsed_on, args.immich_version, args.darkroom_version, args.database, today)
+        return ["Recorded:", *describe_attestation(retention_gate.REHEARSAL, retention_gate.record_rehearsal(opened, now, rehearsal)), RETENTION_KEPT]
+    if args.action == "accept-boundary":
+        retention_gate.checked_evidence(args.evidence)
+        if not args.accept:
+            return [retention_gate.BOUNDARY_TEXT, BOUNDARY_NOT_STORED]
+        return [retention_gate.BOUNDARY_TEXT, "Recorded:", *describe_attestation(retention_gate.BOUNDARY, retention_gate.accept_boundary(opened, now, args.evidence)),
+                RETENTION_KEPT]
+    if args.action == "withdraw":
+        found = retention_gate.withdraw(opened, now, args.which)
+        return [f"Withdrawn: {KIND_NAMES[found.kind]} (record {found.id}). It no longer counts."]
+    current = retention_gate.status(opened)
+    return [*describe_attestation(retention_gate.REHEARSAL, current.rehearsal), *describe_attestation(retention_gate.BOUNDARY, current.boundary),
+            f"Withdrawn records: {current.withdrawn}", RETENTION_KEPT]
+
+
+def retention(argv: list[str]) -> int:
+    args = retention_parser().parse_args(argv)
+    settings = config.load()
+    engine = db.make_engine(db.database_url(settings))
+    if not inspect(engine).has_table(RetentionAttestation.__tablename__):
+        engine.dispose()
+        print(RETENTION_NOT_MIGRATED, file=sys.stderr)
+        return 1
+    try:
+        with db.session(engine) as opened:
+            lines = retention_action(opened, args, local_today(settings.timezone))
+    except retention_gate.Refused as refused:
+        monitoring.log("retention command refused", reason=refused.reason)
+        print(f"retention {args.action}: {refused}; nothing was recorded", file=sys.stderr)
+        return 1
+    finally:
+        engine.dispose()
+    print("\n".join(lines))
+    return 0
+
+
 def demo_settings(folder: str) -> config.Settings:
     root = Path(folder)
     return dataclasses.replace(config.load(), data_dir=root / "data", photos_root=root / "photos", database_url="", demo=True)
@@ -602,7 +681,7 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "reread-video-times", "legacy-report", "revoke-sessions", "demo", "seal-secret", "bind-share", "reopen-setup",
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "reread-video-times", "legacy-report", "revoke-sessions", "demo", "seal-secret", "bind-share", "reopen-setup", "retention",
                                             "copy-browser-state"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
@@ -617,6 +696,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--target")
     parser.add_argument("--set-aside", action="store_true")
     parser.add_argument("--apply", action="store_true")
+    if argv[:1] == ["retention"]:
+        return retention(argv[1:])
     args = parser.parse_args(argv)
     if args.command == "demo":
         return run_demo(args.data)
