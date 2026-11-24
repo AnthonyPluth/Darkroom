@@ -4,18 +4,20 @@ import hashlib
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Final, Literal
 
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import events, immich_reconcile
+from darkroom.domain import alerts, events, immich_reconcile
 from darkroom.providers import immich
 from darkroom.storage import db
 from darkroom.storage.models import (
     REHEARSAL_DATABASES,
+    Export,
+    ImportRun,
     ManagedAssetVersion,
     ManagedImportIntent,
     ManagedImportReceipt,
@@ -47,6 +49,25 @@ def text_sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+SCOPES: Final = ("darkroom-db", "darkroom-secret", "immich-db", "immich-media")
+MAX_KEPT_DAYS: Final = 3650
+TOOL: Final = re.compile(r"[a-z0-9-]{1,32}")
+SNAPSHOT: Final = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+NUMBER: Final = re.compile(r"[1-9][0-9]{0,8}")
+DAY_SECONDS: Final = 24 * 3600.0
+OPEN_LIMIT: Final = DAY_SECONDS
+STALE_AFTER: Final = 3 * DAY_SECONDS
+WINDOW: Final = 14 * DAY_SECONDS
+FINISHED: Final = "recovery_point_finished"
+ABANDONED: Final = "recovery_point_abandoned"
+NOT_FINISHED: Final = "not_finished"
+REPORTED_FAILED: Final = "reported_failed"
+SCOPES_MISSING: Final = "scopes_missing"
+FAILED_KEY: Final = "retention:backup_failed"
+STALE_KEY: Final = "retention:backup_stale"
+FAILED_KIND: Final = "backup_failed"
+STALE_KIND: Final = "backup_stale"
+
 REASONS: Final = {
     "evidence": "--evidence must be the link to a comment on issue #266, https://github.com/AnthonyPluth/Darkroom/issues/266#issuecomment-<number>",
     "rehearsed_on": "--rehearsed-on must be a date written YYYY-MM-DD",
@@ -56,6 +77,19 @@ REASONS: Final = {
     "database": f"--database must be one of: {', '.join(REHEARSAL_DATABASES)}",
     "withdraw_what": "withdraw needs rehearsal or boundary",
     "nothing_active": "nothing is recorded to withdraw",
+    "point_unknown": "the recovery point is not a number Darkroom has recorded",
+    "point_not_open": "that recovery point is not open: it was already finished or was abandoned, and a finished or abandoned point is never reopened",
+    "status": "--status must be succeeded or failed",
+    "point_expired": "that recovery point has been open longer than the limit, so it counts as abandoned and cannot be finished",
+    "taken_at": "--taken-at must be a UTC time with its offset, such as 2026-11-24T03:15:00Z",
+    "taken_before_opened": "--taken-at is before the recovery point was opened",
+    "taken_in_future": "--taken-at is after now",
+    "kept_for_days": f"--kept-for-days must be a whole number of days from 1 to {MAX_KEPT_DAYS}",
+    "scopes": f"--scopes must be a comma-separated list of: {', '.join(SCOPES)}",
+    "tool": "--tool must be a label of 1 to 32 lowercase letters, digits and hyphens",
+    "snapshot": "--snapshot must be 1 to 128 letters, digits and . _ : - characters, never a path",
+    "succeeded_needs": "a succeeded report needs --taken-at, --kept-for-days, --scopes and --tool",
+    "manifest_changed": "the recovery point's manifest no longer matches the digest recorded when it was opened",
 }
 
 
@@ -297,3 +331,190 @@ def begin(engine: Engine, settings: config.Settings, opened_at: float, client: i
         events.record(opened, opened_at, FAILED if unreachable else OPENED, f"recovery point {point.id}", f"listed {listed}, confirmed {len(rows)}")
         monitoring.log("recovery point " + ("failed" if unreachable else "opened"), id=point.id, listed=listed, confirmed=len(rows))
         return Begun(point.id, point.state, listed, len(rows), listed - len(rows))
+
+
+@dataclass(frozen=True)
+class Report:
+    succeeded: bool
+    taken_at: float | None
+    kept_for_days: int | None
+    scopes: tuple[str, ...]
+    tool: str | None
+    snapshot_ref: str | None = field(repr=False)
+
+
+@dataclass(frozen=True)
+class Finished:
+    point_id: int
+    state: str
+    failure: str | None
+    kept_until: float | None
+
+
+def point_number(text: str) -> int:
+    if not NUMBER.fullmatch(text):
+        raise Refused("point_unknown")
+    return int(text)
+
+
+def checked_time(text: str) -> float:
+    if len(text) > 40:
+        raise Refused("taken_at")
+    try:
+        moment = datetime.fromisoformat(text)
+        if moment.tzinfo is None or moment.utcoffset() is None:
+            raise Refused("taken_at")
+        return moment.astimezone(UTC).timestamp()
+    except (ValueError, OverflowError):
+        raise Refused("taken_at") from None
+
+
+def checked_scopes(text: str) -> tuple[str, ...]:
+    if text == "":
+        return ()
+    named = text.split(",")
+    if any(name not in SCOPES for name in named):
+        raise Refused("scopes")
+    return tuple(sorted(set(named)))
+
+
+def checked_days(text: str) -> int:
+    if not NUMBER.fullmatch(text) or int(text) > MAX_KEPT_DAYS:
+        raise Refused("kept_for_days")
+    return int(text)
+
+
+def checked_report(status: str, taken_at: str | None, kept_for_days: str | None, scopes: str | None, tool: str | None, snapshot_ref: str | None) -> Report:
+    if status not in ("succeeded", "failed"):
+        raise Refused("status")
+    if tool is not None and not TOOL.fullmatch(tool):
+        raise Refused("tool")
+    if snapshot_ref is not None and not SNAPSHOT.fullmatch(snapshot_ref):
+        raise Refused("snapshot")
+    taken = None if taken_at is None else checked_time(taken_at)
+    days = None if kept_for_days is None else checked_days(kept_for_days)
+    named = () if scopes is None else checked_scopes(scopes)
+    if status == "succeeded" and (taken is None or days is None or scopes is None or tool is None):
+        raise Refused("succeeded_needs")
+    return Report(status == "succeeded", taken, days, named, tool, snapshot_ref)
+
+
+def manifest_intact(opened: Session, point: RecoveryPoint) -> bool:
+    rows = [(row.owner_id, row.asset_id, row.sha1) for row in opened.execute(select(RecoveryPointAsset).where(RecoveryPointAsset.recovery_point_id == point.id)).scalars()]
+    return len(rows) == point.manifest_count and manifest_sha256(rows) == point.manifest_sha256
+
+
+def finish(opened: Session, now: float, point_id: int, report: Report) -> Finished:
+    db.write_lock(opened)
+    point = opened.get(RecoveryPoint, point_id)
+    if point is None:
+        raise Refused("point_unknown")
+    opened.refresh(point)
+    if point.state != "open":
+        raise Refused("point_not_open")
+    if point.opened_at <= now - OPEN_LIMIT:
+        raise Refused("point_expired")
+    if report.succeeded:
+        if report.taken_at is None or report.taken_at < point.opened_at:
+            raise Refused("taken_before_opened")
+        if report.taken_at > now:
+            raise Refused("taken_in_future")
+        if not manifest_intact(opened, point):
+            raise Refused("manifest_changed")
+    complete = report.succeeded and set(report.scopes) == set(SCOPES)
+    point.finished_at = now
+    point.tool = report.tool
+    point.snapshot_ref = report.snapshot_ref
+    point.scopes = ",".join(report.scopes) or None
+    if complete and report.taken_at is not None and report.kept_for_days is not None:
+        point.state = "succeeded"
+        point.taken_at = report.taken_at
+        point.kept_until = report.taken_at + report.kept_for_days * DAY_SECONDS
+    else:
+        point.state = "failed"
+        point.failure = SCOPES_MISSING if report.succeeded else REPORTED_FAILED
+    opened.flush()
+    events.record(opened, now, FINISHED, f"recovery point {point.id}", point.state if point.failure is None else f"{point.state}: {point.failure}")
+    monitoring.log("recovery point finished", id=point.id, state=point.state, failure=point.failure or "none", manifest=point.manifest_count)
+    return Finished(point.id, point.state, point.failure, point.kept_until)
+
+
+def abandon_stale(opened: Session, now: float) -> int:
+    stale = opened.execute(select(RecoveryPoint).where(RecoveryPoint.state == "open", RecoveryPoint.opened_at <= now - OPEN_LIMIT).order_by(RecoveryPoint.id)).scalars().all()
+    for point in stale:
+        point.state = "abandoned"
+        point.failure = NOT_FINISHED
+        point.finished_at = now
+        events.record(opened, now, ABANDONED, f"recovery point {point.id}", NOT_FINISHED)
+        monitoring.log("recovery point abandoned", id=point.id, manifest=point.manifest_count)
+    return len(stale)
+
+
+def latest_finished(opened: Session) -> RecoveryPoint | None:
+    return opened.execute(select(RecoveryPoint).where(RecoveryPoint.state != "open").order_by(RecoveryPoint.opened_at.desc(), RecoveryPoint.id.desc()).limit(1)).scalar_one_or_none()
+
+
+def owner_recorded(opened: Session) -> bool:
+    boundary = active(opened, BOUNDARY)
+    return active(opened, REHEARSAL) is not None and boundary is not None and accepts_current_text(boundary)
+
+
+def waiting_exports(opened: Session, now: float) -> list[int]:
+    done = select(ImportRun.export_id, func.max(ImportRun.finished).label("finished")).where(ImportRun.status == "done").group_by(ImportRun.export_id).subquery()
+    managed = select(ManagedImportIntent.export_id).where(ManagedImportIntent.kind == "import")
+    return list(opened.execute(select(Export.id).join(done, Export.id == done.c.export_id).where(
+        Export.status == "imported", Export.id.in_(managed), done.c.finished <= now - WINDOW).order_by(Export.id)).scalars())
+
+
+def waiting_needs(opened: Session, exports: list[int]) -> set[tuple[str, str, str]]:
+    rows = opened.execute(select(ManagedImportIntent.owner_id, ManagedImportReceipt.asset_id, ManagedImportReceipt.source_sha1).join(
+        ManagedImportReceipt, ManagedImportReceipt.intent_id == ManagedImportIntent.id).where(
+        ManagedImportIntent.export_id.in_(exports), ManagedImportIntent.kind == "import", ManagedImportReceipt.state == "committed",
+        ManagedImportReceipt.asset_id.is_not(None)))
+    return {(owner_id, asset_id, sha1) for owner_id, asset_id, sha1 in rows if asset_id is not None}
+
+
+def covering_exists(opened: Session, now: float, needs: set[tuple[str, str, str]]) -> bool:
+    points = opened.execute(select(RecoveryPoint.id).where(
+        RecoveryPoint.state == "succeeded", RecoveryPoint.scopes == ",".join(SCOPES), RecoveryPoint.taken_at >= now - WINDOW, RecoveryPoint.kept_until > now).order_by(
+        RecoveryPoint.id.desc())).scalars().all()
+    for point_id in points:
+        listed = set(opened.execute(select(RecoveryPointAsset.owner_id, RecoveryPointAsset.asset_id, RecoveryPointAsset.sha1).where(
+            RecoveryPointAsset.recovery_point_id == point_id)).tuples())
+        if needs <= listed:
+            return True
+    return False
+
+
+def waiting_since(opened: Session, now: float) -> float | None:
+    found = opened.execute(select(func.max(ImportRun.finished)).where(ImportRun.status == "done", ImportRun.export_id.in_(waiting_exports(opened, now))).group_by(
+        ImportRun.export_id)).scalars().all()
+    finished = [moment for moment in found if moment is not None]
+    return min(finished) + WINDOW if finished else None
+
+
+FAILED_MESSAGE: Final = ("The last Immich backup Darkroom was told about did not succeed, so Darkroom keeps every Immich import's files in the inbox. "
+                         "Check the backup job.")
+STALE_MESSAGE: Final = "No recent Immich backup covers the photos Darkroom is keeping, so their inbox files stay."
+
+
+@dataclass(frozen=True)
+class Watched:
+    abandoned: int
+    backup_failed: bool
+    backup_stale: bool
+
+
+def watch(opened: Session, settings: config.Settings, now: float, notifier: alerts.Notifier | None = None) -> Watched:
+    db.write_lock(opened)
+    abandoned = abandon_stale(opened, now)
+    latest = latest_finished(opened)
+    failed = latest is not None and latest.state != "succeeded"
+    since = waiting_since(opened, now)
+    stale = since is not None and now - since >= STALE_AFTER and owner_recorded(opened) and not covering_exists(opened, now, waiting_needs(opened, waiting_exports(opened, now)))
+    for key, kind, message, raised in ((FAILED_KEY, FAILED_KIND, FAILED_MESSAGE, failed), (STALE_KEY, STALE_KIND, STALE_MESSAGE, stale)):
+        if raised:
+            alerts.open_alert(opened, settings, key, kind, "recovery points", alerts.Wording(alerts.TITLES[kind], message), None, now, notifier=notifier, about=alerts.NOBODY)
+        else:
+            alerts.close(opened, key, now)
+    return Watched(abandoned, failed, stale)

@@ -462,6 +462,41 @@ class BuildTests(unittest.TestCase):
         self.assertFalse((world.root / "_inbox/jo/export-1").exists())
         self.assertEqual(world.reopen().get(Export, export_id).status, "imported")
 
+    def test_the_cleanup_job_watches_the_recovery_points_before_it_cleans(self):
+        from unittest import mock
+
+        from tests.import_world import DAY, NOW, World
+
+        world = World(self, immich_configured=False)
+        scheduler = jobs.build(world.settings, world.engine)
+        order = []
+        with mock.patch.object(jobs.retention_gate, "watch", side_effect=lambda *args, **kwargs: order.append("watch") or jobs.retention_gate.Watched(0, False, False)), \
+                mock.patch.object(jobs.cleanup, "clean", side_effect=lambda *args, **kwargs: order.append("clean") or jobs.cleanup.CleanupReport()):
+            scheduler.run_one("cleanup", NOW + 15 * DAY)
+        self.assertEqual(order, ["watch", "clean"])
+
+    def test_a_watch_that_fails_is_logged_without_its_message_and_the_cleanup_still_runs(self):
+        import io
+        from unittest import mock
+
+        from tests.import_world import DAY, NOW, World
+        from tests.privacy import no_leaks
+
+        world = World(self, immich_configured=False)
+        export_id = world.hand_dropped().id
+        world.run_import(export_id)
+        scheduler = jobs.build(world.settings, world.engine)
+        canary = "private-watch-failure-canary"
+        logged = io.StringIO()
+        with no_leaks(self, canary), mock.patch.object(jobs.retention_gate, "watch", side_effect=RuntimeError(canary)), \
+                mock.patch.object(jobs.monitoring, "log", side_effect=lambda event, **fields: print(event, fields, file=logged)):
+            scheduler.run_one("cleanup", NOW + 15 * DAY)
+        self.assertIn("recovery points not watched this tick", logged.getvalue())
+        self.assertIn("RuntimeError", logged.getvalue())
+        self.assertNotIn(canary, logged.getvalue())
+        self.assertFalse((world.root / "_inbox/jo/export-1").exists())
+        self.assertIn("inbox cleaned", logged.getvalue())
+
     def test_the_export_check_runs_every_ten_minutes_and_queues_a_status_job_once_a_day_per_connected_account(self):
         from zoneinfo import ZoneInfo
 
