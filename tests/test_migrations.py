@@ -6,7 +6,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from sqlalchemy import inspect, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DataError, IntegrityError
 
 from darkroom.storage import db
 from darkroom.storage.schema import metadata
@@ -707,7 +707,7 @@ class MigrationTests(unittest.TestCase):
                    *(f"INSERT INTO recovery_point_assets (recovery_point_id, owner_id, asset_id, sha1, source) VALUES (2, 'o2', 'a9', '{bad}', 'receipt')"
                      for bad in ("", "b" * 39, "b" * 41, "B" * 40, "g" * 40)))
         for statement in refused:
-            with self.subTest(statement=statement), self.assertRaises(IntegrityError), self.engine.begin() as connection:
+            with self.subTest(statement=statement), self.assertRaises((IntegrityError, DataError)), self.engine.begin() as connection:
                 connection.exec_driver_sql(statement)
         with self.engine.connect() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT state, failure, taken_at FROM recovery_points ORDER BY id").all(),
