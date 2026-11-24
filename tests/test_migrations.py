@@ -661,6 +661,55 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
         db.migrate(self.engine)
 
+    def test_0058_same_shot_holds_keep_one_hold_per_receipt_in_their_shape_and_are_kept_on_undo(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0054")
+            seed_pixel_source_parents(connection)
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO managed_import_intents (id, person_id, owner_id, export_id, resource_manifest, created_at) VALUES (1, 1, 'owner-a', 1, ' { } ', 1.0)")
+            for number in (1, 2, 3, 4):
+                connection.execute(text("INSERT INTO managed_import_receipts (id, intent_id, resource_key, compound_key, source_sha1, expected_bytes, expected_metadata, updated_at) "
+                                        "VALUES (:id, 1, :key, :key, :sha1, 5, ' { } ', 1.0)"), {"id": number, "key": f"takeout-entry:{number}", "sha1": "a" * 40})
+            before = snapshot(connection, ("people", "exports", "managed_import_intents", "managed_import_receipts"), " ORDER BY id")
+        db.migrate(self.engine)
+        insert = ("INSERT INTO managed_same_shot_holds (person_id, owner_id, receipt_id, found_at, candidates, status, resolved_at, resolved_by, asset_id) "
+                  "VALUES (1, {owner}, {receipt}, 1.0, '{{}}', {status}, {resolved}, NULL, {asset})")
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+            connection.exec_driver_sql(insert.format(owner="'owner-a'", receipt=1, status="'pending'", resolved="NULL", asset="NULL"))
+            connection.exec_driver_sql(insert.format(owner="'owner-a'", receipt=2, status="'represented'", resolved="2.0", asset="'asset-a'"))
+            connection.exec_driver_sql(insert.format(owner="'owner-a'", receipt=3, status="'upload'", resolved="2.0", asset="NULL"))
+        refused = (insert.format(owner="'owner-a'", receipt=1, status="'pending'", resolved="NULL", asset="NULL"),
+                   insert.format(owner="'owner-a'", receipt=99, status="'pending'", resolved="NULL", asset="NULL"),
+                   insert.format(owner="'owner-a'", receipt=4, status="'other'", resolved="2.0", asset="NULL"),
+                   insert.format(owner="''", receipt=4, status="'upload'", resolved="2.0", asset="NULL"),
+                   insert.format(owner="'owner-a'", receipt=4, status="'pending'", resolved="2.0", asset="NULL"),
+                   insert.format(owner="'owner-a'", receipt=4, status="'pending'", resolved="NULL", asset="'asset-a'"),
+                   insert.format(owner="'owner-a'", receipt=4, status="'upload'", resolved="NULL", asset="NULL"),
+                   insert.format(owner="'owner-a'", receipt=4, status="'upload'", resolved="2.0", asset="'asset-a'"),
+                   insert.format(owner="'owner-a'", receipt=4, status="'represented'", resolved="2.0", asset="''"))
+        for statement in refused:
+            with self.subTest(statement=statement), self.assertRaises(IntegrityError), self.engine.begin() as connection:
+                connection.exec_driver_sql(statement)
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT receipt_id, status, resolved_at, asset_id FROM managed_same_shot_holds ORDER BY id").all(),
+                             [(1, "pending", None, None), (2, "represented", 2.0, "asset-a"), (3, "upload", 2.0, None)])
+        with self.assertRaises(RuntimeError), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0054")
+        self.assertIn("managed_same_shot_holds", inspect(self.engine).get_table_names())
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM managed_same_shot_holds")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0054")
+        self.assertNotIn("managed_same_shot_holds", inspect(self.engine).get_table_names())
+        with self.engine.connect() as connection:
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+        db.migrate(self.engine)
+
     def test_0051_managed_backfill_keeps_every_intent_receipt_and_origin_as_an_import_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

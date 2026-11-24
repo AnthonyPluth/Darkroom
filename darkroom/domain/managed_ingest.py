@@ -12,7 +12,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, events, immich_reconcile, managed_metadata, managed_upload, media, xmp
+from darkroom.domain import alerts, events, immich_reconcile, managed_metadata, managed_upload, media, same_shot, xmp
 from darkroom.domain.ingest import place
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import immich
@@ -24,7 +24,7 @@ ON: Final = "on"
 MANIFEST: Final = json.dumps({"schema": 1, "resource": "takeout_entry", "compound": "single"}, sort_keys=True)
 SETTLE_SECONDS: Final = 24 * 3600.0
 NOT_SETTLED: Final = "not_settled"
-TERMINAL: Final = (*managed_metadata.HELD_BEFORE_UPLOAD, "not_enriched", NOT_SETTLED)
+TERMINAL: Final = (*managed_metadata.HELD_BEFORE_UPLOAD, "not_enriched", NOT_SETTLED, same_shot.HOLD)
 KEPT: Final = "review:"
 KEPT_ONLY: Final = "cleanup of an Immich-managed import stays off until the owner records the restore rehearsal (#266)"
 
@@ -143,6 +143,13 @@ class Uploads:
     def send(self, item: Item, source: Path, tags: dict[str, object] | None) -> None:
         receipt_id = self.receipt(item, tags)
         if receipt_id is None:
+            self.held += 1
+            return
+        outcome = same_shot.gate(self.opened, self.reader, self.intent, receipt_id, item.root, Path(item.name).name, self.now)
+        if outcome == "pending":
+            self.pending += 1
+            return
+        if outcome == "held":
             self.held += 1
             return
         sha1, size = str(item.root.sha1), item.root.bytes

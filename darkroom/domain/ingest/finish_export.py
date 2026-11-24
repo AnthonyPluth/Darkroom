@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, dedupe, events, exports, managed_ingest
+from darkroom.domain import alerts, dedupe, events, exports, managed_ingest, same_shot
 from darkroom.domain.ingest import pairing, part_ingest, part_pairing, run
 from darkroom.providers import immich
 from darkroom.storage import db, paths
@@ -326,6 +326,7 @@ class Finish(part_ingest.Ingest):
                 self.close_archive()
                 self.release_scratch()
         managed_ingest.alert(self.opened, self.settings, self.export, uploads.held, uploads.pending, self.now, self.tools.notifier)
+        same_shot.alert(self.opened, self.settings, self.export, self.person, self.now, self.tools.notifier)
         monitoring.log("managed uploads", export=self.export.id, committed=uploads.committed, held=uploads.held, pending=uploads.pending)
         if uploads.pending:
             raise UploadsPending(f"{uploads.pending} uploads to Immich are not complete yet")

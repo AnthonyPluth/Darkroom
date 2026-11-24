@@ -38,6 +38,7 @@ TITLES = {
     "share_check_failed": "Photo share check failed",
     "pixel_held": "Pixel folder held",
     "part_stalled": "Takeout import stalled",
+    "same_shot": "Photos wait for you",
 }
 
 Notifier = Callable[[Settings, str, str, str | None], str]
