@@ -468,6 +468,8 @@ def reopen_setup() -> int:
 RETENTION_KEPT = "Cleanup keeps every file of an Immich-managed import: this version of Darkroom releases none of them, whatever is recorded here."
 RETENTION_NOT_MIGRATED = "retention: the database has no retention records table yet; run `python run.py migrate` (or start the service once), then run this again"
 BOUNDARY_NOT_STORED = "Nothing was recorded. Run this again with --accept to record that you accept this boundary."
+BOUNDARY_TEXT_CURRENT = "text digest: recorded, and it equals the digest of the text shown now"
+BOUNDARY_TEXT_CHANGED = "text digest: recorded, and it differs from the digest of the text shown now; the boundary was accepted under other text"
 KIND_NAMES: dict[str, str] = {retention_gate.REHEARSAL: "Restore rehearsal", retention_gate.BOUNDARY: "Remote-deletion boundary"}
 
 
@@ -495,6 +497,9 @@ def describe_attestation(kind: str, found: retention_gate.Attestation | None) ->
     lines = [f"{KIND_NAMES[kind]}: recorded {when(found.recorded_at)} (record {found.id})", f"  evidence: {found.evidence_url}"]
     if found.rehearsed_on is not None:
         lines.append(f"  rehearsed on {found.rehearsed_on}: Immich {found.immich_version}, Darkroom {found.darkroom_version}, {found.database_kind} database")
+    if found.kind == retention_gate.BOUNDARY:
+        lines.append(f"  {BOUNDARY_TEXT_CURRENT if retention_gate.accepts_current_text(found) else BOUNDARY_TEXT_CHANGED}")
+        lines.append(f"  text sha-256: {found.boundary_text_sha256}")
     return lines
 
 

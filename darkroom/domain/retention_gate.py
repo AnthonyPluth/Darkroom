@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -30,6 +31,11 @@ BOUNDARY_TEXT: Final = (
     "covers that moment: a photo removed in it is still in a backup Darkroom has evidence for. Darkroom also cannot check that a backup really "
     "restores; it relies on your restore rehearsal and on the backup job's own report of success."
 )
+
+
+def text_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
 
 REASONS: Final = {
     "evidence": "--evidence must be the link to a comment on issue #266, https://github.com/AnthonyPluth/Darkroom/issues/266#issuecomment-<number>",
@@ -71,6 +77,7 @@ class Attestation:
     immich_version: str | None
     darkroom_version: str | None
     database_kind: str | None
+    boundary_text_sha256: str | None
 
 
 @dataclass(frozen=True)
@@ -78,6 +85,10 @@ class Status:
     rehearsal: Attestation | None
     boundary: Attestation | None
     withdrawn: int
+
+
+def accepts_current_text(found: Attestation) -> bool:
+    return found.boundary_text_sha256 == text_sha256(BOUNDARY_TEXT)
 
 
 def checked_evidence(url: str) -> str:
@@ -138,7 +149,8 @@ def record_rehearsal(opened: Session, now: float, rehearsal: Rehearsal) -> Attes
 
 def accept_boundary(opened: Session, now: float, evidence_url: str) -> Attestation:
     db.write_lock(opened)
-    return store(opened, now, RetentionAttestation(kind=BOUNDARY, recorded_at=now, evidence_url=checked_evidence(evidence_url)))
+    return store(opened, now, RetentionAttestation(kind=BOUNDARY, recorded_at=now, evidence_url=checked_evidence(evidence_url),
+                                                   boundary_text_sha256=text_sha256(BOUNDARY_TEXT)))
 
 
 def withdraw(opened: Session, now: float, which: str) -> Attestation:
@@ -153,7 +165,7 @@ def withdraw(opened: Session, now: float, which: str) -> Attestation:
 
 
 def described(row: RetentionAttestation) -> Attestation:
-    return Attestation(row.id, row.kind, row.recorded_at, row.evidence_url, row.rehearsed_on, row.immich_version, row.darkroom_version, row.database_kind)
+    return Attestation(row.id, row.kind, row.recorded_at, row.evidence_url, row.rehearsed_on, row.immich_version, row.darkroom_version, row.database_kind, row.boundary_text_sha256)
 
 
 def active(opened: Session, kind: Kind) -> Attestation | None:

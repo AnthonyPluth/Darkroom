@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import logging
 import os
@@ -7,6 +8,7 @@ import unittest
 from unittest import mock
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 import run
 from darkroom.dates import local_today
@@ -18,6 +20,7 @@ from tests.shared import own_database_url
 
 EVIDENCE = "https://github.com/AnthonyPluth/Darkroom/issues/266#issuecomment-7100000001"
 OTHER_EVIDENCE = "https://github.com/AnthonyPluth/Darkroom/issues/266#issuecomment-7100000002"
+BOUNDARY_DIGEST = hashlib.sha256(retention_gate.BOUNDARY_TEXT.encode()).hexdigest()
 REHEARSAL = ["--evidence", EVIDENCE, "--rehearsed-on", "2026-11-20", "--immich-version", "v3.4.1", "--darkroom-version", "v5.9.0", "--database", "sqlite"]
 
 
@@ -44,7 +47,7 @@ class RetentionWorld(unittest.TestCase):
 
     def rows(self):
         with db.session(self.engine) as opened:
-            return [(row.kind, row.evidence_url, row.rehearsed_on, row.immich_version, row.darkroom_version, row.database_kind, row.withdrawn_at is None)
+            return [(row.kind, row.evidence_url, row.rehearsed_on, row.immich_version, row.darkroom_version, row.database_kind, row.boundary_text_sha256, row.withdrawn_at is None)
                     for row in opened.execute(select(RetentionAttestation).order_by(RetentionAttestation.id)).scalars()]
 
     def events(self):
@@ -65,7 +68,7 @@ class RecordTests(RetentionWorld):
     def test_a_rehearsal_is_recorded_with_its_evidence_and_versions_and_an_event(self):
         code, out, _err = self.retention(*rehearsal_with())
         self.assertEqual(code, 0)
-        self.assertEqual(self.rows(), [("restore_rehearsal", EVIDENCE, "2026-11-20", "v3.4.1", "v5.9.0", "sqlite", True)])
+        self.assertEqual(self.rows(), [("restore_rehearsal", EVIDENCE, "2026-11-20", "v3.4.1", "v5.9.0", "sqlite", None, True)])
         self.assertIn(EVIDENCE, out)
         self.assertIn("rehearsed on 2026-11-20: Immich v3.4.1, Darkroom v5.9.0, sqlite database", out)
         self.assertIn(run.RETENTION_KEPT, out)
@@ -75,7 +78,7 @@ class RecordTests(RetentionWorld):
         self.retention(*rehearsal_with())
         self.assertEqual(self.retention(*rehearsal_with(evidence=OTHER_EVIDENCE, database="postgresql"))[0], 0)
         rows = self.rows()
-        self.assertEqual([(row[1], row[5], row[6]) for row in rows], [(EVIDENCE, "sqlite", False), (OTHER_EVIDENCE, "postgresql", True)])
+        self.assertEqual([(row[1], row[5], row[7]) for row in rows], [(EVIDENCE, "sqlite", False), (OTHER_EVIDENCE, "postgresql", True)])
         self.assertEqual([event[0] for event in self.events()], ["retention_recorded", "retention_withdrawn", "retention_recorded"])
 
     def test_the_boundary_is_only_printed_without_accept(self):
@@ -90,7 +93,7 @@ class RecordTests(RetentionWorld):
         code, out, _err = self.retention("accept-boundary", "--evidence", EVIDENCE, "--accept")
         self.assertEqual(code, 0)
         self.assertIn(retention_gate.BOUNDARY_TEXT, out)
-        self.assertEqual(self.rows(), [("remote_deletion_boundary", EVIDENCE, None, None, None, None, True)])
+        self.assertEqual(self.rows(), [("remote_deletion_boundary", EVIDENCE, None, None, None, None, BOUNDARY_DIGEST, True)])
         self.assertEqual(self.events(), [("retention_recorded", "attestation 1", "remote_deletion_boundary")])
 
     def test_recording_and_withdrawing_take_the_write_lock_and_status_does_not(self):
@@ -109,6 +112,73 @@ class RecordTests(RetentionWorld):
         _code, _out, err_status = self.retention("status")
         for text in (err, err_boundary, err_status, logged.getvalue(), repr(self.events())):
             self.assertNotIn("issuecomment", text)
+
+    def test_the_digest_stored_is_the_sha256_of_the_text_shown_and_status_says_it_is_current(self):
+        code, out, _err = self.retention("accept-boundary", "--evidence", EVIDENCE, "--accept")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.rows()[0][6], hashlib.sha256(retention_gate.BOUNDARY_TEXT.encode()).hexdigest())
+        self.assertIn(run.BOUNDARY_TEXT_CURRENT, out)
+        self.assertIn(f"text sha-256: {BOUNDARY_DIGEST}", out)
+        _code, status, _err = self.retention("status")
+        self.assertIn(run.BOUNDARY_TEXT_CURRENT, status)
+        self.assertIn(f"text sha-256: {BOUNDARY_DIGEST}", status)
+        self.assertNotIn(run.BOUNDARY_TEXT_CHANGED, status)
+
+    def test_an_acceptance_made_under_other_text_shows_as_not_current(self):
+        with mock.patch.object(retention_gate, "BOUNDARY_TEXT", "An older text that is not the one shown now."):
+            self.retention("accept-boundary", "--evidence", EVIDENCE, "--accept")
+        self.assertNotEqual(self.rows()[0][6], BOUNDARY_DIGEST)
+        code, out, _err = self.retention("status")
+        self.assertEqual(code, 0)
+        self.assertIn(run.BOUNDARY_TEXT_CHANGED, out)
+        self.assertNotIn(run.BOUNDARY_TEXT_CURRENT, out)
+        self.assertNotIn(retention_gate.BOUNDARY_TEXT, out)
+        self.assertNotIn("An older text", out)
+        with db.session(self.engine) as opened:
+            found = retention_gate.active(opened, retention_gate.BOUNDARY)
+        self.assertFalse(retention_gate.accepts_current_text(found))
+
+    def test_accepting_again_under_the_current_text_replaces_an_old_acceptance(self):
+        with mock.patch.object(retention_gate, "BOUNDARY_TEXT", "An older text that is not the one shown now."):
+            self.retention("accept-boundary", "--evidence", EVIDENCE, "--accept")
+        self.retention("accept-boundary", "--evidence", OTHER_EVIDENCE, "--accept")
+        _code, out, _err = self.retention("status")
+        self.assertIn(run.BOUNDARY_TEXT_CURRENT, out)
+        self.assertEqual([row[6] is not None and row[7] for row in self.rows()], [False, True])
+
+    def test_a_rehearsal_has_no_digest_and_status_shows_none_for_it(self):
+        self.retention(*rehearsal_with())
+        _code, out, _err = self.retention("status")
+        self.assertNotIn("text digest", out)
+
+    def test_status_with_the_boundary_in_it_never_prints_the_text(self):
+        self.retention("accept-boundary", "--evidence", EVIDENCE, "--accept")
+        with no_leaks(self, retention_gate.BOUNDARY_TEXT, database=self.engine), mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual(run.main(["retention", "status"]), 0)
+
+
+class DigestConstraintTests(RetentionWorld):
+    def insert_refused(self, **columns):
+        with self.assertRaises(IntegrityError), db.session(self.engine) as opened:
+            opened.add(RetentionAttestation(recorded_at=1.0, evidence_url="e", **columns))
+
+    def test_a_boundary_without_a_digest_is_refused(self):
+        self.insert_refused(kind="remote_deletion_boundary")
+
+    def test_a_rehearsal_with_a_digest_is_refused(self):
+        self.insert_refused(kind="restore_rehearsal", rehearsed_on="2026-11-20", immich_version="v3.4.1", darkroom_version="v5.9.0", database_kind="sqlite",
+                            boundary_text_sha256=BOUNDARY_DIGEST)
+
+    def test_a_malformed_digest_is_refused(self):
+        for bad in ("", BOUNDARY_DIGEST[:63], BOUNDARY_DIGEST + "0", BOUNDARY_DIGEST.upper(), "g" + BOUNDARY_DIGEST[1:], " " + BOUNDARY_DIGEST[1:], BOUNDARY_DIGEST[:63] + "\n"):
+            with self.subTest(digest=bad):
+                self.insert_refused(kind="remote_deletion_boundary", boundary_text_sha256=bad)
+        self.assertEqual(self.rows(), [])
+
+    def test_the_digest_of_the_text_is_accepted(self):
+        with db.session(self.engine) as opened:
+            opened.add(RetentionAttestation(kind="remote_deletion_boundary", recorded_at=1.0, evidence_url="e", boundary_text_sha256=BOUNDARY_DIGEST))
+        self.assertEqual(len(self.rows()), 1)
 
 
 class RefusalTests(RetentionWorld):

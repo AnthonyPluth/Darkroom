@@ -9,8 +9,11 @@ depends_on = None
 
 TABLE = "retention_attestations"
 ACTIVE = "withdrawn_at IS NULL"
-SHAPE = ("(kind = 'restore_rehearsal' AND rehearsed_on IS NOT NULL AND immich_version IS NOT NULL AND darkroom_version IS NOT NULL AND database_kind IS NOT NULL) OR "
-         "(kind = 'remote_deletion_boundary' AND rehearsed_on IS NULL AND immich_version IS NULL AND darkroom_version IS NULL AND database_kind IS NULL)")
+SHAPE = ("(kind = 'restore_rehearsal' AND rehearsed_on IS NOT NULL AND immich_version IS NOT NULL AND darkroom_version IS NOT NULL AND database_kind IS NOT NULL "
+         "AND boundary_text_sha256 IS NULL) OR "
+         "(kind = 'remote_deletion_boundary' AND rehearsed_on IS NULL AND immich_version IS NULL AND darkroom_version IS NULL AND database_kind IS NULL "
+         "AND boundary_text_sha256 IS NOT NULL)")
+DIGEST = "boundary_text_sha256 IS NULL OR (length(boundary_text_sha256) = 64 AND ltrim(boundary_text_sha256, '0123456789abcdef') = '')"
 
 
 def upgrade() -> None:
@@ -24,11 +27,13 @@ def upgrade() -> None:
         sa.Column("immich_version", sa.String(), nullable=True),
         sa.Column("darkroom_version", sa.String(), nullable=True),
         sa.Column("database_kind", sa.String(), nullable=True),
+        sa.Column("boundary_text_sha256", sa.String(), nullable=True),
         sa.Column("withdrawn_at", sa.Float(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.CheckConstraint("kind IN ('restore_rehearsal', 'remote_deletion_boundary')", name="ck_retention_attestations_kind"),
         sa.CheckConstraint("database_kind IN ('sqlite', 'postgresql')", name="ck_retention_attestations_database_kind"),
         sa.CheckConstraint(SHAPE, name="ck_retention_attestations_shape"),
+        sa.CheckConstraint(DIGEST, name="ck_retention_attestations_boundary_digest"),
         sa.CheckConstraint("length(evidence_url) > 0", name="ck_retention_attestations_evidence"),
     )
     op.create_index("uq_retention_attestations_active_kind", TABLE, ["kind"], unique=True, sqlite_where=sa.text(ACTIVE), postgresql_where=sa.text(ACTIVE))
