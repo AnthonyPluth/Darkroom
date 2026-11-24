@@ -634,9 +634,12 @@ def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account |
     ids: dict[str, str] = {}
     blobs: dict[str, bytes] = {}
     sent = datetime(2019, 7, 4, 12, 30, 15, tzinfo=timezone(timedelta(hours=2)))
+    nonce = uuid.uuid4().hex[:8]
 
     def fixture(label: str, data: bytes) -> str:
-        up = run.upload(a, f"e-{label}", "jpg", data)
+        up = run.upload(a, f"e-{nonce}-{label}", "jpg", data)
+        if up.status != "created":
+            raise Failed(f"the fixture {label} was a {up.status} of an existing asset, so it is not an asset with missing fields")
         blobs[label] = data
         ids[label] = up.asset_id
         if run.wait(a, up.asset_id, lambda f: isinstance(f.get("exifInfo"), dict))[1] is None:
@@ -661,7 +664,7 @@ def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account |
         return status, before, after, changed(before, after, expect)
 
     def plain(label: str) -> str:
-        return fixture(label, jpeg(f"{run.run_id}-e-{label}"))
+        return fixture(label, jpeg(f"{run.run_id}-{nonce}-e-{label}"))
 
     def e1() -> tuple[str, str]:
         listed = ", ".join(f"`{g}`" for g in e.grants)
@@ -708,7 +711,7 @@ def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account |
     run.step("e4", e4)
 
     def e5() -> tuple[str, str]:
-        fixture("wall", jpeg(f"{run.run_id}-e-wall", wall_exif(datetime(2021, 6, 15, 14, 30))))
+        fixture("wall", jpeg(f"{run.run_id}-{nonce}-e-wall", wall_exif(datetime(2021, 6, 15, 14, 30))))
         status, before, after, _ = updated("wall", {"dateTimeOriginal": "2021-06-15T14:30:00+02:00"}, ("dateTimeOriginal", "timeZone"))
         moved = instant(after["dateTimeOriginal"]) == datetime(2021, 6, 15, 12, 30, tzinfo=UTC)
         zoned = zone_minutes(after["timeZone"]) == 120

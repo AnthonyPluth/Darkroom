@@ -341,6 +341,23 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(self.row(text, "e2"), "fail")
         self.assertIn("403", text)
 
+    def test_a_second_enrich_run_on_the_same_result_gets_fresh_fixtures_and_passes_again(self):
+        code, printed, _ = self.run_enrich()
+        self.assertEqual(code, 0, printed)
+        first = {asset.id for asset in self.fake.state.assets}
+        code, printed, text = self.run_enrich("--append-results", str(self.folder / "result.md"), out="again.md")
+        self.assertEqual(code, 0, printed + text)
+        self.assertEqual(len(self.fake.state.assets), 2 * len(first))
+        for key in ("e2", "e3", "e4", "e5", "e15"):
+            self.assertEqual(self.row(text, key), "pass", key)
+
+    def test_a_fixture_that_is_a_duplicate_is_refused_as_a_missing_field_experiment(self):
+        self.fake.state.upload_answer = {"id": "0b5e6a43-5b1f-4c7e-9d2a-1f0e2d3c4b5a", "status": "duplicate"}
+        code, printed, text = self.run_enrich()
+        self.assertEqual(code, 1, printed)
+        self.assertIn("not an asset with missing fields", text)
+        self.assertEqual(self.row(text, "e2"), "fail")
+
     def test_the_enrich_rows_that_need_a_key_are_not_run_without_it_and_merge_into_an_earlier_result(self):
         code, printed, _ = self.run_harness()
         self.assertEqual(code, 0, printed)
