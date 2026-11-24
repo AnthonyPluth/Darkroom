@@ -669,8 +669,9 @@ def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account |
     def e3() -> tuple[str, str]:
         plain("place")
         lonely = put(e, ids["place"], {"latitude": 12.5})[0]
+        untouched = view("place")["latitude"] is None
         status, before, after, other = updated("place", {"latitude": 12.5, "longitude": -20.25}, ("latitude", "longitude", "city", "state", "country"))
-        ok = lonely == 400 and near(after["latitude"], 12.5) and near(after["longitude"], -20.25) and not other
+        ok = lonely == 400 and untouched and near(after["latitude"], 12.5) and near(after["longitude"], -20.25) and not other
         return ("pass" if ok else "fail"), f"latitude alone answered {lonely}; both answered {status}; place {before['latitude']},{before['longitude']} to {after['latitude']},{after['longitude']}; `city` {before['city']!r} to {after['city']!r}; other fields changed: {other or 'none'}"
     run.step("e3", e3)
 
@@ -687,7 +688,8 @@ def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account |
         naive = wait_state("naive", datetime(2019, 7, 4, 12, 30, 15, tzinfo=UTC)) if naive_status == 200 else {}
         time.sleep(settle)
         later, naive_later = view("fallback"), view("naive")
-        ok = instant(now["dateTimeOriginal"]) == sent and bool(now["timeZone"])
+        naive_wanted = datetime(2019, 7, 4, 12, 30, 15, tzinfo=UTC)
+        ok = instant(now["dateTimeOriginal"]) == sent and bool(now["timeZone"]) and naive_status == 200 and instant(naive_later["dateTimeOriginal"]) == naive_wanted
         fields = lambda v: f"dateTimeOriginal {v['dateTimeOriginal']}, timeZone {v['timeZone']}, fileCreatedAt {v['fileCreatedAt']}, localDateTime {v['localDateTime']}"
         return ("pass" if ok else "fail"), (f"fresh fallback: {fields(fresh)}; offset edit answered {status}: now {fields(now)}; after {settle:g} s {fields(later)}; "
                                             f"offsetless edit answered {naive_status}: {fields(naive) if naive else 'not read'}; after {settle:g} s {fields(naive_later)}; "
@@ -712,9 +714,12 @@ def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account |
 
     def e9() -> tuple[str, str]:
         plain("nulls")
+        before = view("nulls")
         got = [put(e, ids["nulls"], body)[0] for body in ({"dateTimeOriginal": None}, {"latitude": None, "longitude": None}, {"description": ""})]
-        ok = got == [400, 400, 200]
-        return ("pass" if ok else "fail"), f"null date answered {got[0]}, null place {got[1]}, empty description {got[2]}"
+        after = view("nulls")
+        kept = changed(before, after, ("description",)) == [] and not after["description"]
+        ok = got == [400, 400, 200] and kept
+        return ("pass" if ok else "fail"), f"null date answered {got[0]}, null place {got[1]}, empty description {got[2]}; date and place after the refused nulls unchanged and the description empty: {kept}"
     run.step("e9", e9)
 
     if read is not None:

@@ -145,6 +145,7 @@ class State:
     version: str = VERSION
     permissions: tuple[str, ...] = ("user.read", "server.about", "asset.read", "asset.download")
     ignore_updates: bool = False
+    naive_dates: str = "apply"
     key_permissions: dict[str, tuple[str, ...]] = field(default_factory=dict)
     admins: tuple[str, ...] = ()
     quotas: dict[str, int] = field(default_factory=dict)
@@ -322,7 +323,11 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             if any(sent.get(name, 0) is None for name in ("dateTimeOriginal", "latitude", "longitude")) or ("latitude" in sent) != ("longitude" in sent):
                 self.reply(400, {"message": "Invalid update body", "error": "Bad Request", "statusCode": 400})
                 return
-            if state.ignore_updates:
+            naive = isinstance(sent.get("dateTimeOriginal"), str) and datetime.fromisoformat(sent["dateTimeOriginal"]).tzinfo is None
+            if naive and state.naive_dates == "refuse":
+                self.reply(500, {"message": "Injected failure"})
+                return
+            if state.ignore_updates or (naive and state.naive_dates == "ignore"):
                 self.reply(200, found.json())
                 return
             exif = dict(found.exif or {})

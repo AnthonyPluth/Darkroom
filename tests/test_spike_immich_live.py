@@ -303,6 +303,22 @@ class HarnessTests(unittest.TestCase):
                 self.assertEqual(self.row(text, "e15"), "fail")
                 self.assertEqual(self.row(text, "e18"), "fail")
 
+    def test_the_offsetless_edit_of_e4_must_apply(self):
+        for mode in ("refuse", "ignore"):
+            with self.subTest(mode):
+                self.fake.state.naive_dates = mode
+                code, printed, text = self.run_enrich()
+                self.assertEqual(code, 1, printed)
+                self.assertEqual(self.row(text, "e4"), "fail")
+                self.assertEqual(self.row(text, "e5"), "pass")
+
+    def test_ignored_updates_fail_the_null_row_and_every_fill_row(self):
+        self.fake.state.ignore_updates = True
+        code, printed, text = self.run_enrich()
+        self.assertEqual(code, 1, printed)
+        for key in ("e2", "e3", "e4", "e5", "e6", "e15", "e18"):
+            self.assertEqual(self.row(text, key), "fail", key)
+
     def test_a_key_without_the_update_grant_fails_the_rows_instead_of_passing(self):
         self.fake.state.key_permissions[KEY_AALL] = tuple(sorted(immich_live.GRANTS))
         code, _, text = self.run_enrich()
