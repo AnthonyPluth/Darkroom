@@ -495,6 +495,7 @@ class ReviewSummary(TypedDict):
     reversed: bool
     resolved_at: float | None
     undo_until: float | None
+    kept_in_immich: bool
     name: str | None
     library_name: str | None
     person_id: int | None

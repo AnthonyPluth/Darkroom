@@ -162,6 +162,9 @@ class UploadTests(unittest.TestCase):
         world = ManagedWorld(self)
         export_id = world.run_managed().id
         held = world.opened.execute(select(ReviewItem.id)).scalar_one()
+        pending = world.opened.get(ReviewItem, held)
+        listed = review.summary(world.opened, pending, world.opened.get(DedupeDecision, pending.decision_id))
+        self.assertEqual((pending.status, listed["kept_in_immich"], listed["undo_until"]), ("pending", False, None))
         real = managed_metadata.intend
         with mock.patch.object(managed_metadata, "intend", lambda *args, **kwargs: dataclasses.replace(real(*args, **kwargs), hold="unknown_offset")), \
                 self.assertRaisesRegex(review.WrongState, "offset"):
@@ -180,7 +183,8 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(world.receipts()[f"review:{held}"], ("committed", "created", None))
         self.assertIn("IMG_1005.JPG", [name for name, _ in world.assets()])
         kept = world.opened.get(ReviewItem, held)
-        self.assertEqual((world.google_only(), kept.status, review.summary(world.opened, kept, world.opened.get(DedupeDecision, kept.decision_id))["undo_until"]), (set(), "kept_both", None))
+        listed = review.summary(world.opened, kept, world.opened.get(DedupeDecision, kept.decision_id))
+        self.assertEqual((world.google_only(), kept.status, listed["undo_until"], listed["kept_in_immich"]), (set(), "kept_both", None, True))
         with self.assertRaisesRegex(review.WrongState, "kept in Immich"):
             review.undo(world.opened, world.photos, held, NOW + 20, review.FileEffects())
         self.assertEqual(cleanup.clean(world.opened, world.photos, NOW + 30 * DAY).holds, 0)
