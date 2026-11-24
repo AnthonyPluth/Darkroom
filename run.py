@@ -523,7 +523,7 @@ def retention_action(opened: Session, args: argparse.Namespace, today: str) -> l
 
 
 RECOVERY_NOT_MIGRATED = "recovery-point: the database has no recovery points table yet; run `python run.py migrate` (or start the service once), then run this again"
-RECOVERY_UNREACHABLE = ("recovery-point begin: Immich could not be read for any photo, so recovery point {id} was recorded as failed with an empty manifest; "
+RECOVERY_UNREACHABLE = ("recovery-point begin: Immich answered for no photo, so recovery point {id} was recorded as failed with an empty manifest; "
                         "do not treat the backup that follows as covering anything, and run this again once Immich answers")
 
 

@@ -169,6 +169,50 @@ class ManagedImportReceipt(Base):
     metadata_hold: Mapped[str | None] = mapped_column(String)
 
 
+COMPOUND_HOLDS = ("unknown_offset", "no_instant", "unwritable", "compound_conflict", "unusable")
+COMPOUND_ROLES = ("live_still", "live_video")
+
+
+class ManagedCompound(Base):
+    __tablename__ = "managed_compounds"
+    __table_args__ = (
+        UniqueConstraint("intent_id", "compound_key", name="uq_managed_compounds_key"),
+        UniqueConstraint("id", "intent_id", name="uq_managed_compounds_intent_binding"),
+        CheckConstraint("length(compound_key) > 0", name="ck_managed_compounds_key"),
+        one_of("kind", ("live_photo",), "ck_managed_compounds_kind"),
+        CheckConstraint(f"hold IS NULL OR hold IN ({', '.join(repr(hold) for hold in COMPOUND_HOLDS)})", name="ck_managed_compounds_hold"),
+        CheckConstraint("committed_at IS NULL OR hold IS NULL", name="ck_managed_compounds_committed"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    intent_id: Mapped[int] = mapped_column(ForeignKey("managed_import_intents.id", ondelete="RESTRICT"), nullable=False)
+    compound_key: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    hold: Mapped[str | None] = mapped_column(String)
+    frozen_at: Mapped[float] = mapped_column(Float, nullable=False)
+    committed_at: Mapped[float | None] = mapped_column(Float)
+
+
+class ManagedCompoundMember(Base):
+    __tablename__ = "managed_compound_members"
+    __table_args__ = (
+        ForeignKeyConstraint(["compound_id", "intent_id"], ["managed_compounds.id", "managed_compounds.intent_id"], ondelete="RESTRICT",
+                             name="fk_managed_compound_members_compound"),
+        UniqueConstraint("intent_id", "resource_key", name="uq_managed_compound_members_resource"),
+        UniqueConstraint("compound_id", "role", name="uq_managed_compound_members_role"),
+        one_of("role", COMPOUND_ROLES, "ck_managed_compound_members_role"),
+        CheckConstraint("length(resource_key) > 0", name="ck_managed_compound_members_resource"),
+        CheckConstraint("length(source_sha1) = 40", name="ck_managed_compound_members_source_sha1"),
+        CheckConstraint("expected_bytes >= 0", name="ck_managed_compound_members_bytes"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    compound_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    intent_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    resource_key: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    source_sha1: Mapped[str] = mapped_column(String, nullable=False)
+    expected_bytes: Mapped[int] = mapped_column(Bytes, nullable=False)
+
+
 class ManagedAssetVersion(Base):
     __tablename__ = "managed_asset_versions"
     __table_args__ = (

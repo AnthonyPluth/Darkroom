@@ -328,6 +328,26 @@ class ImmichTroubleTests(RecoveryWorld):
         self.assertEqual(begun.state, "open")
         self.assertEqual([asset for _, asset, *_ in self.manifest()], [asset_id(1), asset_id(2)])
 
+    def test_one_person_whose_second_read_fails_keeps_an_open_point_with_the_first_asset(self):
+        self.stored(3)
+        self.receipt(3)
+        self.fake.state.intercept = lambda method, path, slug: 500 if path == f"/api/assets/{asset_id(3)}" else None
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM managed_import_receipts WHERE intent_id = 2")
+        begun = self.begin()
+        self.assertEqual((begun.state, begun.listed, begun.confirmed, begun.refused), ("open", 2, 1, 1))
+        self.assertEqual(self.points(), [(1, "open", 1, None, None)])
+        self.assertEqual(self.manifest(), [(JO, asset_id(1), sha1_of(1), "receipt")])
+
+    def test_a_first_read_that_fails_with_nothing_read_is_still_a_failed_point(self):
+        self.fake.state.intercept = lambda method, path, slug: 500 if path.startswith("/api/assets/") else None
+        self.assert_failed_point(self.begin())
+
+    def test_a_person_whose_key_is_an_import_key_is_covered_like_any_other(self):
+        self.fake.state.permissions = (*self.fake.state.permissions, "asset.upload")
+        self.assertEqual(self.begin().confirmed, 2)
+        self.assertEqual({method for method, _ in self.fake.requests()}, {"GET"})
+
     def test_a_point_that_cannot_be_written_leaves_nothing_behind(self):
         with mock.patch.object(retention_gate.events, "record", side_effect=RuntimeError("boom")), self.assertRaises(RuntimeError):
             self.begin()

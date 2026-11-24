@@ -271,7 +271,7 @@ def confirmed_in(group: Group, client: immich.Client | None, settings: config.Se
             same = False
         if same:
             kept.setdefault(candidate.asset_id, candidate)
-    return list(kept.values()), reads.complete
+    return list(kept.values()), reads.complete or bool(reads.found)
 
 
 def begin(engine: Engine, settings: config.Settings, opened_at: float, client: immich.Client | None = None) -> Begun:
