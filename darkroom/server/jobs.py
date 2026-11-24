@@ -340,8 +340,10 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
             waiting, queued = len(run.waiting_exports(opened)), len(part_ingest.queued_parts(opened))
             opened.commit()
             with beat.ticking(waiting=waiting, parts=queued):
-                beat.step("managed switch")
-                for person in managed_switch.pausing(opened):
+                switching = managed_switch.pausing(opened)
+                if switching:
+                    beat.step("managed switch")
+                for person in switching:
                     slug = person.slug
                     try:
                         managed_switch.advance(opened, current, person, at)
