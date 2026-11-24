@@ -661,6 +661,60 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
         db.migrate(self.engine)
 
+    def test_0055_managed_compounds_rewrites_schema_one_manifests_leaves_unknown_ones_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        old_takeout = '{"compound": "single", "resource": "takeout_entry", "schema": 1}'
+        old_items = '{"schema": 1, "resource": "media_item", "compound": "single"}'
+        manifests = {1: old_takeout, 2: old_items, 3: ' { } ', 4: '{"compound": "single", "resource": "other", "schema": 1}', 5: 'not json'}
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0054")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            for intent_id, raw in manifests.items():
+                connection.execute(text("INSERT INTO managed_import_intents (id, person_id, owner_id, export_id, kind, resource_manifest, created_at) "
+                                        "VALUES (:id, 1, :owner, :export, :kind, :raw, 1.0)"),
+                                   {"id": intent_id, "owner": f"owner-{intent_id}", "export": None if intent_id == 2 else 1, "kind": "backfill" if intent_id == 2 else "import", "raw": raw})
+        db.migrate(self.engine)
+        new_takeout = '{"compound": "members", "resource": "takeout_entry", "schema": 2}'
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(dict(connection.exec_driver_sql("SELECT id, resource_manifest FROM managed_import_intents ORDER BY id").all()),
+                             manifests | {1: new_takeout, 2: '{"compound": "members", "resource": "media_item", "schema": 2}'})
+            connection.exec_driver_sql("INSERT INTO managed_compounds (id, intent_id, compound_key, kind, frozen_at) VALUES (1, 1, 'takeout-live:7', 'live_photo', 1.0)")
+            connection.execute(text("INSERT INTO managed_compound_members (compound_id, intent_id, resource_key, role, source_sha1, expected_bytes) "
+                                    "VALUES (1, 1, 'takeout-entry:7', 'live_still', :sha1, :bytes)"), {"sha1": "a" * 40, "bytes": 5 * 1024 ** 4})
+            refused = ["INSERT INTO managed_compounds (intent_id, compound_key, kind, frozen_at) VALUES (1, 'takeout-live:7', 'live_photo', 1.0)",
+                       "INSERT INTO managed_compounds (intent_id, compound_key, kind, frozen_at) VALUES (1, 'takeout-live:8', 'burst', 1.0)",
+                       "INSERT INTO managed_compounds (intent_id, compound_key, kind, hold, frozen_at) VALUES (1, 'takeout-live:8', 'live_photo', 'other', 1.0)",
+                       "INSERT INTO managed_compounds (intent_id, compound_key, kind, hold, frozen_at, committed_at) VALUES (1, 'takeout-live:8', 'live_photo', 'unusable', 1.0, 2.0)",
+                       "INSERT INTO managed_compounds (intent_id, compound_key, kind, frozen_at) VALUES (1, '', 'live_photo', 1.0)",
+                       f"INSERT INTO managed_compound_members (compound_id, intent_id, resource_key, role, source_sha1, expected_bytes) VALUES (1, 1, 'takeout-entry:7', 'live_video', '{'b' * 40}', 1)",
+                       f"INSERT INTO managed_compound_members (compound_id, intent_id, resource_key, role, source_sha1, expected_bytes) VALUES (1, 1, 'takeout-entry:8', 'live_still', '{'b' * 40}', 1)",
+                       f"INSERT INTO managed_compound_members (compound_id, intent_id, resource_key, role, source_sha1, expected_bytes) VALUES (1, 3, 'takeout-entry:8', 'live_video', '{'b' * 40}', 1)",
+                       f"INSERT INTO managed_compound_members (compound_id, intent_id, resource_key, role, source_sha1, expected_bytes) VALUES (1, 1, 'takeout-entry:8', 'single', '{'b' * 40}', 1)",
+                       "INSERT INTO managed_compound_members (compound_id, intent_id, resource_key, role, source_sha1, expected_bytes) VALUES (1, 1, 'takeout-entry:8', 'live_video', 'short', 1)",
+                       f"INSERT INTO managed_compound_members (compound_id, intent_id, resource_key, role, source_sha1, expected_bytes) VALUES (1, 1, 'takeout-entry:8', 'live_video', '{'b' * 40}', -1)"]
+            refused.append("DELETE FROM managed_compounds WHERE id = 1")
+            for statement in refused:
+                with self.subTest(statement=statement), self.assertRaises(IntegrityError), connection.begin_nested():
+                    connection.exec_driver_sql(statement)
+            self.assertEqual(connection.exec_driver_sql("SELECT expected_bytes FROM managed_compound_members").scalar_one(), 5 * 1024 ** 4)
+        with self.assertRaises(RuntimeError), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0054")
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM managed_compound_members")
+            connection.exec_driver_sql("DELETE FROM managed_compounds")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0054")
+        self.assertFalse({"managed_compounds", "managed_compound_members"} & set(inspect(self.engine).get_table_names()))
+        with self.engine.connect() as connection:
+            self.assertEqual(dict(connection.exec_driver_sql("SELECT id, resource_manifest FROM managed_import_intents ORDER BY id").all()),
+                             manifests | {1: old_takeout, 2: '{"compound": "single", "resource": "media_item", "schema": 1}'})
+        db.migrate(self.engine)
+
     def test_0051_managed_backfill_keeps_every_intent_receipt_and_origin_as_an_import_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

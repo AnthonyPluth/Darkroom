@@ -91,6 +91,15 @@ The reconcile's own listing takes the same path ([#572](https://github.com/Antho
 
 So `taken_near` sends `{"filter": {"takenAt": {"gte": …, "lte": …}}, "withExif": true, "size": 100, "orderBy": {"field": "fileCreatedAt", "direction": "asc"}}` and then `cursor` for up to 10 pages. The fake Immich filters `takenAt` on `fileCreatedAt`, includes trashed assets for it and refuses a body mixing the two shapes. This is source inspection, not a live result: the row on [#266](https://github.com/AnthonyPluth/Darkroom/issues/266) that same-shot-hold.md asks for is still to be run.
 
+#### Pinned checksum search ([#571](https://github.com/AnthonyPluth/Darkroom/issues/571))
+
+Inspected on 2026-11-24 at tags `v3.3.6` and `v3.4.1` for `Client.search_checksum`, from the same files as the capture-time search above: `server/src/dtos/search.dto.ts` (`f1b4f493ee242971b964e7598a1e593720b6e26e` / `1fe6d1b98fd3a356c64894d194ee5783773aa5f6`), `server/src/services/search.service.ts` (`searchMetadataV3` and the flat path, `aef0183306264651bc494f8ed554535cb86356d4` on v3.4.1), `server/src/utils/database.ts` (`1b73f9eba7b7990c001606cea523dc014c22f255` on v3.4.1) and `server/src/utils/request.ts` (`fromChecksum`).
+
+- The structured `filter` has a `checksum` field (`StringFilterSchema`: `eq`, `ne`, `in`, `notIn`) on both versions, and `checksumPredicates` in `database.ts` turns it into `asset.checksum = …` through `fromChecksum`, which takes base64 (28 characters) or hex. The flat `checksum` is marked deprecated and takes the old path, which pages with `nextPage` and always answers `nextCursor: null`.
+- The old request therefore never showed a second page: `search_checksum` sent `{"checksum": …, "size": 100}`, so a checksum held by more than 100 assets (the key's user and their partners are searched) came back as 100 with no refusal, because its `nextCursor` check could never fire.
+
+So `search_checksum` now sends `{"filter": {"checksum": {"eq": …}}, "size": 100, "orderBy": {"field": "fileCreatedAt", "direction": "asc"}}`, follows `nextCursor` for up to 10 pages and raises `ImmichFailed` when more remain or a page's answer is malformed or repeats its cursor. The structured path adds no `deletedAt is null`, so trashed assets now come back; `managed_with_checksum` already drops them. Source inspection only, as above.
+
 ### Live spike required before enabling imports
 
 Use a disposable instance or dedicated test users, generated media and narrowly scoped keys. Record server version, request field names, status codes and assertions; publish no credentials, real media, names, locations or raw account responses. Provision credentials through environment settings, not an issue or chat. Nothing in this design permits uploading test files into the household's production library.

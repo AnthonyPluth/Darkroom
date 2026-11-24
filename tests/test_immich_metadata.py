@@ -11,11 +11,11 @@ from PIL import ExifTags, Image
 from sqlalchemy import insert, select, update
 from sqlalchemy.orm import Session
 
-from darkroom.domain import managed_metadata, managed_upload, xmp
+from darkroom.domain import managed_compound, managed_manifest, managed_metadata, managed_upload, xmp
 from darkroom.domain.managed_metadata import Resource, complete_live_photo, complete_receipt, intend, snapshot
 from darkroom.providers import immich
 from darkroom.storage import db
-from darkroom.storage.models import Export, GoogleAccount, ManagedImportIntent, ManagedImportReceipt, Person
+from darkroom.storage.models import Export, GoogleAccount, ManagedCompound, ManagedCompoundMember, ManagedImportIntent, ManagedImportReceipt, Person
 from tests.fakes.immich import FakeAsset, FakeImmich, FakePerson, extract
 from tests.privacy import no_leaks
 from tests.shared import own_database_url
@@ -306,6 +306,33 @@ class ManagedMetadataTests(unittest.TestCase):
         self.assertEqual((len(self.fake.state.assets), self.uploads()), (2, 1 + managed_upload.MAX_SENDS + 1))
         self.assertEqual((stored.live_video_id, moving.visibility, moving.kind), (moving.id, "hidden", "VIDEO"))
         self.assertEqual((self.row(video)[0], self.row(still)[0]), ("committed", "committed"))
+
+    def test_a_frozen_live_photo_commits_only_while_its_receipts_equal_its_members_and_records_when(self):
+        with self.engine.begin() as connection:
+            connection.execute(update(ManagedImportIntent).values(resource_manifest=managed_manifest.TAKEOUT))
+        google = xmp.GoogleMetadata(*ROME, SUMMER, None)
+        video_data, (still_data, tags) = b"generated frozen live video bytes", photo("frozen-still", "2019:07:04 14:30:15", "+02:00", ROME)
+        halves = [managed_compound.Planned("takeout-entry:1", "live_still", sha1(still_data), len(still_data), intend(tags, google, "IMAGE", "live_still")),
+                  managed_compound.Planned("takeout-entry:2", "live_video", sha1(video_data), len(video_data), intend({}, google, "VIDEO", "live_video", corrects=False))]
+        frozen = managed_compound.freeze(self.opened, 1, "takeout-live:1", halves, NOW, lambda: True)
+
+        def resource(key, data, name):
+            return Resource(frozen.receipts[key], lambda: immich.UploadSource(io.BytesIO(data), len(data), sha1(data)), name)
+        video, still = resource("takeout-entry:2", video_data, VIDEO_NAME), resource("takeout-entry:1", still_data, FILENAME)
+        self.assertEqual(self.complete(video).outcome, "verified")
+        live_id = self.row(video)[3]
+        self.assertEqual(complete_receipt(self.opened, self.reader, still, NOW, self.paused.append, live_id).outcome, "verified")
+        member = ManagedCompoundMember
+        with self.engine.begin() as connection:
+            connection.execute(update(member).where(member.role == "live_video").values(source_sha1="c" * 40))
+        self.assertEqual((self.commit("takeout-live:1").outcome, self.row(video)[0], self.row(still)[0]), ("pending", "metadata_verified", "metadata_verified"))
+        with self.engine.begin() as connection:
+            connection.execute(update(member).where(member.role == "live_video").values(source_sha1=sha1(video_data)))
+        self.assertEqual(self.commit("takeout-live:1").outcome, "verified")
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.execute(select(ManagedCompound.committed_at)).scalar_one(), NOW)
+        self.assertEqual((self.row(video)[0], self.row(still)[0]), ("committed", "committed"))
+        self.assert_only_reads_and_uploads()
 
     def test_a_still_is_never_sent_before_its_video_and_an_unlinked_still_never_commits(self):
         video, still, _, still_data = self.live_photo()
