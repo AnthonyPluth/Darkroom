@@ -615,6 +615,52 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT id, status, stage FROM exports").all(), [(1, "downloaded", "queued")])
         db.migrate(self.engine)
 
+    def test_0054_retention_attestations_hold_one_active_record_of_each_kind_in_its_shape_and_keep_them_on_undo(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0051")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            before = snapshot(connection, ("people",), " ORDER BY id")
+        db.migrate(self.engine)
+        digest = "'" + "ab12" * 16 + "'"
+        rehearsal = ("INSERT INTO retention_attestations (kind, recorded_at, evidence_url, rehearsed_on, immich_version, darkroom_version, database_kind, withdrawn_at{extra}) "
+                     "VALUES ('restore_rehearsal', 1.0, 'e', '2026-11-20', 'v3.4.1', 'v5.9.0', {database}, {withdrawn}{value})")
+        boundary = "INSERT INTO retention_attestations (kind, recorded_at, evidence_url, boundary_text_sha256{extra}) VALUES ('remote_deletion_boundary', 1.0, {evidence}, {digest}{value})"
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+            connection.exec_driver_sql(rehearsal.format(database="'sqlite'", withdrawn="2.0", extra="", value=""))
+            connection.exec_driver_sql(rehearsal.format(database="'postgresql'", withdrawn="NULL", extra="", value=""))
+            connection.exec_driver_sql(boundary.format(extra="", evidence="'e'", digest=digest, value=""))
+        refused = (rehearsal.format(database="'sqlite'", withdrawn="NULL", extra="", value=""), boundary.format(extra="", evidence="'e'", digest=digest, value=""),
+                   rehearsal.format(database="NULL", withdrawn="5.0", extra="", value=""), rehearsal.format(database="'mysql'", withdrawn="5.0", extra="", value=""),
+                   boundary.format(extra=", withdrawn_at, immich_version", evidence="'e'", digest=digest, value=", 5.0, 'v3.4.1'"),
+                   boundary.format(extra=", withdrawn_at", evidence="''", digest=digest, value=", 5.0"),
+                   boundary.format(extra=", withdrawn_at", evidence="'e'", digest="NULL", value=", 5.0"),
+                   rehearsal.format(database="'sqlite'", withdrawn="5.0", extra=", boundary_text_sha256", value=f", {digest}"),
+                   *(boundary.format(extra=", withdrawn_at", evidence="'e'", digest=f"'{bad}'", value=", 5.0")
+                     for bad in ("", "ab12", "ab12" * 16 + "0", "AB12" * 16, "ab1g" * 16, "ab12" * 15 + "ab1 ", "ab12" * 15 + "ab1\n")),
+                   "INSERT INTO retention_attestations (kind, recorded_at, evidence_url, withdrawn_at) VALUES ('other', 1.0, 'e', 5.0)")
+        for statement in refused:
+            with self.subTest(statement=statement), self.assertRaises(IntegrityError), self.engine.begin() as connection:
+                connection.exec_driver_sql(statement)
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT kind, database_kind, boundary_text_sha256, withdrawn_at FROM retention_attestations ORDER BY id").all(),
+                             [("restore_rehearsal", "sqlite", None, 2.0), ("restore_rehearsal", "postgresql", None, None), ("remote_deletion_boundary", None, "ab12" * 16, None)])
+        with self.assertRaises(RuntimeError), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0051")
+        self.assertIn("retention_attestations", inspect(self.engine).get_table_names())
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM retention_attestations")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0051")
+        self.assertNotIn("retention_attestations", inspect(self.engine).get_table_names())
+        with self.engine.connect() as connection:
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+        db.migrate(self.engine)
+
     def test_0051_managed_backfill_keeps_every_intent_receipt_and_origin_as_an_import_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:
