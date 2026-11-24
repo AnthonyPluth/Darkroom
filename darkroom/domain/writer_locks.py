@@ -14,7 +14,9 @@ from darkroom.storage.models import Export, Person
 
 
 class Busy(RuntimeError):
-    pass
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 def accounts_of(opened: Session, person: Person) -> set[int]:
@@ -29,5 +31,9 @@ def hold(stack: contextlib.ExitStack, opened: Session, settings: config.Settings
         for person in sorted(people, key=lambda found: found.id):
             stack.enter_context(legacy.person_lock(settings, person))
             stack.enter_context(immich_reconcile.person_lock(settings, person))
-    except (ingest_run.Busy, legacy.Busy, immich_reconcile.Busy) as error:
-        raise Busy(str(error)) from error
+    except ingest_run.Busy as error:
+        raise Busy("account", str(error)) from error
+    except legacy.Busy as error:
+        raise Busy("legacy", str(error)) from error
+    except immich_reconcile.Busy as error:
+        raise Busy("reconcile", str(error)) from error

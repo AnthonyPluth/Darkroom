@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from sqlalchemy import event, text
 from sqlalchemy.exc import OperationalError
@@ -88,11 +89,11 @@ class TableTests(unittest.TestCase):
                 self.world.hold(writer)
 
     def test_a_setting_nobody_knows_waits_for_every_writer_and_nothing_runs(self):
-        self.world.set_state("sideways")
         for writer, way in EXPECTED:
             with self.subTest(writer=writer):
                 export = None if way is None else self.world.made(way)
-                self.assertEqual(self.world.result(writer, export), WAIT)
+                with mock.patch.object(managed_switch, "state_of", return_value=None):
+                    self.assertEqual(self.world.result(writer, export), WAIT)
 
     def test_a_pause_is_a_not_ready_and_a_refusal_is_not(self):
         self.assertTrue(issubclass(managed_switch.Paused, run.NotReady))
@@ -101,9 +102,10 @@ class TableTests(unittest.TestCase):
     def test_each_reason_is_a_fixed_text_without_a_name_or_a_path(self):
         reasons = {}
         for state, writer in (("pausing", "cleanup"), ("on", "cleanup"), ("stopped", "cleanup"), ("sideways", "sweep")):
-            self.world.set_state(state)
-            with self.assertRaises(managed_switch.Paused) as raised:
-                self.world.hold(writer)
+            self.world.set_state(None if state == "sideways" else state)
+            with mock.patch.object(managed_switch, "state_of", **({"return_value": None} if state == "sideways" else {"wraps": managed_switch.state_of})):
+                with self.assertRaises(managed_switch.Paused) as raised:
+                    self.world.hold(writer)
             reasons[state] = str(raised.exception)
             self.world.opened.rollback()
         self.assertEqual(reasons, {"pausing": managed_switch.WAITS["pausing"], "on": managed_switch.WAITS["on"], "stopped": managed_switch.WAITS["stopped"],
