@@ -426,6 +426,34 @@ class BackupStaleAlertTests(FinishWorld):
         self.assertFalse(self.watch(NOW + 60.0).backup_stale)
         self.assertEqual((self.stale_rows(True), len(self.stale_rows(False))), ([], 1))
 
+    def test_a_recent_point_that_lists_only_another_persons_photos_does_not_cover_and_one_that_lists_them_all_does(self):
+        jo = self.stored(1, trashed=True)
+        self.stored(2, base.SAM)
+        self.receipt(1, committed_at=self.CANDIDATE)
+        self.receipt(2, intent=2, committed_at=self.CANDIDATE)
+        taken = NOW - DAY
+        only_sam = self.begin(taken - 60.0).point_id
+        self.finish(only_sam, taken + 60.0, taken_at=stamp(taken))
+        self.assertEqual([(owner, asset) for owner, asset, *_ in self.manifest(only_sam)], [(base.SAM, base.asset_id(2))])
+        self.assertTrue(self.watch(NOW).backup_stale)
+        self.watch(NOW + 10.0)
+        self.assertEqual((len(self.stale_rows()), len(self.stale_rows(False))), (1, 0))
+        self.fake.state.assets[:] = [asset for asset in self.fake.state.assets if asset.id != jo]
+        self.stored(1)
+        both = self.begin(NOW - 600.0).point_id
+        self.finish(both, NOW - 500.0, taken_at=stamp(NOW - 550.0))
+        self.assertEqual(len(self.manifest(both)), 2)
+        self.assertFalse(self.watch(NOW + 20.0).backup_stale)
+        self.assertEqual((self.stale_rows(True), len(self.stale_rows(False))), ([], 1))
+
+    def test_a_recent_point_taken_before_a_receipt_committed_does_not_cover_it(self):
+        self.stored(1)
+        self.receipt(1, committed_at=NOW - 50.0)
+        taken = NOW - DAY
+        point = self.begin(taken - 60.0).point_id
+        self.finish(point, taken + 60.0, taken_at=stamp(taken))
+        self.assertTrue(self.watch(NOW).backup_stale)
+
     def test_a_point_older_than_14_days_or_past_its_keeping_or_missing_a_scope_does_not_cover(self):
         for name, point in (("old", lambda: self.covering(taken_days_before_now=15)), ("kept for a day", lambda: self.covering(taken_days_before_now=3, kept_days=1)),
                             ("missing scope", lambda: self.covering(scopes="immich-db,immich-media,darkroom-db"))):

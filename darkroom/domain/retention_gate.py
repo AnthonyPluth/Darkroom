@@ -454,18 +454,38 @@ def latest_finished(opened: Session) -> RecoveryPoint | None:
     return opened.execute(select(RecoveryPoint).where(RecoveryPoint.state != "open").order_by(RecoveryPoint.opened_at.desc(), RecoveryPoint.id.desc()).limit(1)).scalar_one_or_none()
 
 
-def covering_exists(opened: Session, now: float) -> bool:
-    found = opened.execute(select(RecoveryPoint.id).where(
-        RecoveryPoint.state == "succeeded", RecoveryPoint.scopes == ",".join(SCOPES), RecoveryPoint.taken_at >= now - WINDOW, RecoveryPoint.kept_until > now).limit(1)).first()
-    return found is not None
+def waiting_exports(opened: Session, now: float) -> list[int]:
+    done = select(ImportRun.export_id, func.max(ImportRun.finished).label("finished")).where(ImportRun.status == "done").group_by(ImportRun.export_id).subquery()
+    managed = select(ManagedImportIntent.export_id).where(ManagedImportIntent.kind == "import")
+    return list(opened.execute(select(Export.id).join(done, Export.id == done.c.export_id).where(
+        Export.status == "imported", Export.id.in_(managed), done.c.finished <= now - WINDOW).order_by(Export.id)).scalars())
+
+
+def waiting_needs(opened: Session, exports: list[int]) -> set[tuple[str, str, str]]:
+    rows = opened.execute(select(ManagedImportIntent.owner_id, ManagedImportReceipt.asset_id, ManagedImportReceipt.source_sha1).join(
+        ManagedImportReceipt, ManagedImportReceipt.intent_id == ManagedImportIntent.id).where(
+        ManagedImportIntent.export_id.in_(exports), ManagedImportIntent.kind == "import", ManagedImportReceipt.state == "committed",
+        ManagedImportReceipt.asset_id.is_not(None)))
+    return {(owner_id, asset_id, sha1) for owner_id, asset_id, sha1 in rows if asset_id is not None}
+
+
+def covering_exists(opened: Session, now: float, needs: set[tuple[str, str, str]]) -> bool:
+    points = opened.execute(select(RecoveryPoint.id).where(
+        RecoveryPoint.state == "succeeded", RecoveryPoint.scopes == ",".join(SCOPES), RecoveryPoint.taken_at >= now - WINDOW, RecoveryPoint.kept_until > now).order_by(
+        RecoveryPoint.id.desc())).scalars().all()
+    for point_id in points:
+        listed = set(opened.execute(select(RecoveryPointAsset.owner_id, RecoveryPointAsset.asset_id, RecoveryPointAsset.sha1).where(
+            RecoveryPointAsset.recovery_point_id == point_id)).tuples())
+        if needs <= listed:
+            return True
+    return False
 
 
 def waiting_since(opened: Session, now: float) -> float | None:
-    done = select(ImportRun.export_id, func.max(ImportRun.finished).label("finished")).where(ImportRun.status == "done").group_by(ImportRun.export_id).subquery()
-    managed = select(ManagedImportIntent.export_id).where(ManagedImportIntent.kind == "import")
-    oldest = opened.execute(select(func.min(done.c.finished)).join(Export, Export.id == done.c.export_id).where(
-        Export.status == "imported", Export.id.in_(managed), done.c.finished <= now - WINDOW)).scalar_one_or_none()
-    return None if oldest is None else float(oldest) + WINDOW
+    found = opened.execute(select(func.max(ImportRun.finished)).where(ImportRun.status == "done", ImportRun.export_id.in_(waiting_exports(opened, now))).group_by(
+        ImportRun.export_id)).scalars().all()
+    finished = [moment for moment in found if moment is not None]
+    return min(finished) + WINDOW if finished else None
 
 
 FAILED_MESSAGE: Final = ("The last Immich backup Darkroom was told about did not succeed, so Darkroom keeps every Immich import's files in the inbox. "
@@ -486,7 +506,7 @@ def watch(opened: Session, settings: config.Settings, now: float, notifier: aler
     latest = latest_finished(opened)
     failed = latest is not None and latest.state != "succeeded"
     since = waiting_since(opened, now)
-    stale = since is not None and now - since >= STALE_AFTER and not covering_exists(opened, now)
+    stale = since is not None and now - since >= STALE_AFTER and not covering_exists(opened, now, waiting_needs(opened, waiting_exports(opened, now)))
     for key, kind, message, raised in ((FAILED_KEY, FAILED_KIND, FAILED_MESSAGE, failed), (STALE_KEY, STALE_KIND, STALE_MESSAGE, stale)):
         if raised:
             alerts.open_alert(opened, settings, key, kind, "recovery points", alerts.Wording(alerts.TITLES[kind], message), None, now, notifier=notifier, about=alerts.NOBODY)
