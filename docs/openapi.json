@@ -1391,6 +1391,166 @@
         "required": [],
         "type": "object"
       },
+      "HoldReply": {
+        "additionalProperties": false,
+        "properties": {
+          "resolution": {
+            "$ref": "#/components/schemas/HoldResolution"
+          }
+        },
+        "required": [
+          "resolution"
+        ],
+        "type": "object"
+      },
+      "HoldResolution": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "offset",
+              "capture_time",
+              "drop_description",
+              "accept",
+              "record_offset",
+              "recheck",
+              "skip"
+            ]
+          },
+          "applied_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "can_undo": {
+            "type": "boolean"
+          },
+          "decided_at": {
+            "type": "number"
+          },
+          "decided_by_person_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hold": {
+            "enum": [
+              "unknown_offset",
+              "no_instant",
+              "unwritable",
+              "not_enriched",
+              "not_settled",
+              "unusable"
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "offset_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "receipt_id": {
+            "type": "integer"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "recorded",
+              "applied",
+              "undone",
+              "superseded"
+            ]
+          },
+          "taken_local": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "undone_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "action",
+          "applied_at",
+          "can_undo",
+          "decided_at",
+          "decided_by_person_id",
+          "hold",
+          "id",
+          "offset_minutes",
+          "receipt_id",
+          "result",
+          "state",
+          "taken_local",
+          "undone_at"
+        ],
+        "type": "object"
+      },
+      "HoldResolveBody": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "offset",
+              "capture_time",
+              "drop_description",
+              "accept",
+              "record_offset",
+              "recheck",
+              "skip"
+            ]
+          },
+          "offset_minutes": {
+            "type": "integer"
+          },
+          "taken_local": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
       "HoldView": {
         "additionalProperties": false,
         "properties": {
@@ -1459,6 +1619,16 @@
           "reason": {
             "type": "string"
           },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HoldResolution"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "source": {
             "enum": [
               "import",
@@ -1480,6 +1650,7 @@
           "name",
           "person_id",
           "reason",
+          "resolution",
           "source",
           "updated_at"
         ],
@@ -4087,6 +4258,58 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Holds"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/holds/{id}/resolve": {
+      "post": {
+        "operationId": "resolve_hold",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HoldResolveBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HoldReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/holds/{id}/undo": {
+      "post": {
+        "operationId": "undo_hold",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HoldReply"
                 }
               }
             },

@@ -267,6 +267,32 @@ export interface HoldFacts {
   intended_offset?: number | null;
 }
 
+export interface HoldReply {
+  resolution: HoldResolution;
+}
+
+export interface HoldResolution {
+  id: number;
+  receipt_id: number;
+  hold: "unknown_offset" | "no_instant" | "unwritable" | "not_enriched" | "not_settled" | "unusable";
+  action: "offset" | "capture_time" | "drop_description" | "accept" | "record_offset" | "recheck" | "skip";
+  offset_minutes: number | null;
+  taken_local: string | null;
+  state: "recorded" | "applied" | "undone" | "superseded";
+  result: string | null;
+  decided_by_person_id: number | null;
+  decided_at: number;
+  applied_at: number | null;
+  undone_at: number | null;
+  can_undo: boolean;
+}
+
+export interface HoldResolveBody {
+  action: "offset" | "capture_time" | "drop_description" | "accept" | "record_offset" | "recheck" | "skip";
+  offset_minutes?: number;
+  taken_local?: string;
+}
+
 export interface HoldView {
   id: number;
   source: "import" | "kept" | "backfill";
@@ -279,6 +305,7 @@ export interface HoldView {
   actions: string[];
   bytes_verified_at: number | null;
   updated_at: number;
+  resolution: HoldResolution | null;
 }
 
 export interface Holds {
@@ -736,6 +763,8 @@ export interface Endpoints {
   "POST /api/review/{id}/resolve": { body: ResolveBody; reply: ReviewReply };
   "POST /api/review/{id}/undo": { body: never; reply: ReviewReply };
   "GET /api/holds": { body: never; reply: Holds };
+  "POST /api/holds/{id}/resolve": { body: HoldResolveBody; reply: HoldReply };
+  "POST /api/holds/{id}/undo": { body: never; reply: HoldReply };
   "GET /api/decisions": { body: never; reply: Decisions };
   "POST /api/decisions/{id}/reverse": { body: never; reply: DecisionReply };
   "GET /api/media": { body: never; reply: MediaList };
