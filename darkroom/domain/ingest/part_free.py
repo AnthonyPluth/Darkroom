@@ -498,10 +498,10 @@ def put_back_part(photos: Photos, person: Person, export: Export, part: ExportPa
 
 
 def free_part(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, report: FreeReport) -> None:
+    if kept_unchanged(opened, photos, person, export, part, now, report):
+        return
     if kept_by_switch(opened, photos, person, export, f"part {part.number}", KEPT, now, report):
         put_back_part(photos, person, export, part)
-        return
-    if kept_unchanged(opened, photos, person, export, part, now, report):
         return
     lock(opened, export, part)
     try:
@@ -692,13 +692,16 @@ def all_kept_on_the_ledger(opened: Session, photos: Photos, export: Export, rows
 
 
 def free_held(opened: Session, photos: Photos, person: Person, export: Export, now: float, report: FreeReport) -> None:
+    opened.commit()
+    opened.expire_all()
+    rows = held_rows(opened, export)
+    if not rows or all_kept_on_the_ledger(opened, photos, export, rows, now, report):
+        return
     if kept_by_switch(opened, photos, person, export, "held copies", HELD_KEPT, now, report):
         recover_held_claims(photos, export, held_rows(opened, export))
         return
     opened.expire_all()
     rows = held_rows(opened, export)
-    if not rows or all_kept_on_the_ledger(opened, photos, export, rows, now, report):
-        return
     recover_held_claims(photos, export, rows)
     try:
         first = prove_held(opened, photos, export, rows, hashing=True)

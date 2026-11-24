@@ -47,7 +47,7 @@ class WholeExportCleanupTests(Imported):
                 self.assertTrue(all(part.is_file() for part in self.zips))
                 self.assertTrue(self.hold.is_file())
                 self.assertEqual(self.kept_tree(), self.kept)
-        self.assertEqual(kept_events(self.world), [("export 1", FIXED["pausing"])])
+        self.assertEqual(kept_events(self.world), [("export 1", FIXED[state]) for state in PAUSED])
         set_state(self.world, "jo", None)
         report = self.clean()
         self.assertEqual((report.staging, report.parts), (1, 2))
@@ -129,7 +129,7 @@ class ReviewHoldCleanupTests(Imported):
                 self.assertEqual(report.holds, 0)
                 self.assertTrue(self.hold.is_file())
                 self.assertEqual(self.review().hold_path, "_inbox/jo/review/export-1/IMG_1005.JPG")
-        self.assertEqual(kept_events(self.world), [("export 1", FIXED["pausing"]), ("review holds of jo", FIXED["pausing"])])
+        self.assertEqual(kept_events(self.world), [(subject, FIXED[state]) for state in PAUSED for subject in ("export 1", "review holds of jo")])
         set_state(self.world, "jo", None)
         self.assertEqual(self.clean().holds, 1)
         self.assertFalse(self.hold.exists())
@@ -230,6 +230,26 @@ class PartFreeingTests(unittest.TestCase):
         set_state(self.world, "jo", None)
         self.assertEqual(self.world.free(at=NOW + 4 * TICK).held, 1)
         self.assertEqual(self.world.held_store(), {})
+
+    def test_a_finished_exports_zips_are_kept_while_its_owner_is_pausing(self):
+        self.world.finish(self.export, at=NOW + TICK)
+        self.assertEqual(self.world.opened.get(Export, self.export.id).status, "imported")
+        zips = self.world.zips()
+        set_state(self.world, "jo", "pausing")
+        report = self.world.free(at=NOW + 2 * TICK)
+        self.assertEqual((report.parts, report.kept), (0, 2))
+        self.assertEqual((self.world.zips(), self.world.states()), (zips, [(1, None), (2, None)]))
+        self.assertEqual(self.kept(), ["part 1: managed_switch", "part 2: managed_switch"])
+        set_state(self.world, "jo", None)
+        self.assertEqual(self.world.free(at=NOW + 3 * TICK).parts, 2)
+
+    def test_an_imported_export_with_no_held_copies_records_no_switch_keep(self):
+        self.world.free()
+        self.world.finish(self.export, at=NOW + 2 * TICK)
+        self.world.free(at=NOW + 3 * TICK)
+        set_state(self.world, "jo", "on")
+        report = self.world.free(at=NOW + 4 * TICK)
+        self.assertEqual((report.kept, self.kept("export_held_kept")), (0, []))
 
     def test_on_and_stopped_keep_every_zip_and_held_copy_of_an_old_way_export(self):
         for state in ("on", "stopped"):

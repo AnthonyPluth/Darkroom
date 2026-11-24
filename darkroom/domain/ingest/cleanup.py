@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 from typing import Final
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
@@ -170,6 +171,12 @@ def unsafe_reviews(opened: Session, photos: Photos, export: Export, per_part: bo
     )
 
 
+def note_switch_kept(opened: Session, now: float, subject: str, detail: str) -> None:
+    seen = opened.execute(select(Event.id).where(Event.type == "cleanup_kept", Event.subject == subject, Event.detail == detail).limit(1)).first()
+    if seen is None:
+        events.record(opened, now, "cleanup_kept", subject, detail)
+
+
 def switch_allows(opened: Session, photos: Photos, person: Person | None, writer: managed_switch.Writer, export: Export | None, now: float, subject: str,
                   report: CleanupReport) -> bool:
     opened.commit()
@@ -181,7 +188,7 @@ def switch_allows(opened: Session, photos: Photos, person: Person | None, writer
         managed_switch.hold(opened, photos, person, writer, export)
     except managed_switch.Paused as paused:
         report.kept += 1
-        note_once(opened, now, "cleanup_kept", subject, str(paused))
+        note_switch_kept(opened, now, subject, str(paused))
         opened.commit()
         monitoring.log("cleanup kept while the managed switch is not off", writer=writer, state=person.managed_imports or "off")
         return False
@@ -429,7 +436,8 @@ def clean(opened: Session, photos: Photos, now: float, settings: config.Settings
                 export = opened.get(Export, export_id)
                 if export is not None and export.status == "imported":
                     clean_export(opened, photos, export, now, report)
-        except run.Busy:
+        except (run.Busy, OperationalError):
+            opened.rollback()
             report.kept += 1
         except OSError as error:
             opened.rollback()
