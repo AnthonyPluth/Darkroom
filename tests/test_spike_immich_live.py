@@ -11,16 +11,19 @@ from tests.fakes.immich import FakeAsset, FakeImmich, FakePerson
 from tools.spikes import immich_live
 
 KEY_A, KEY_B, KEY_Q = "canary-key-a-7f3e91", "canary-key-b-c41d02", "canary-key-q-9a8b7c"
+KEY_AALL, KEY_BALL, KEY_READ, KEY_REVOKED = "canary-key-aall-31c7d4", "canary-key-ball-8e2f60", "canary-key-read-5b9a13", "canary-revoked-5e4d"
 USER_A, USER_B, USER_Q = "0b5e6a43-5b1f-4c7e-9d2a-1f0e2d3c4b5a", "1c6f7b54-6c2a-4d8f-8e3b-2a1f3e4d5c6b", "2d7a8c65-7d3b-4e9a-9f4c-3b2a4f5e6d7c"
 
 
 class HarnessTests(unittest.TestCase):
     def setUp(self):
-        people = [FakePerson("a", USER_A, "lib-a", KEY_A), FakePerson("b", USER_B, "lib-b", KEY_B), FakePerson("q", USER_Q, "lib-q", KEY_Q)]
+        people = [FakePerson("a", USER_A, "lib-a", KEY_A), FakePerson("b", USER_B, "lib-b", KEY_B), FakePerson("q", USER_Q, "lib-q", KEY_Q),
+                  FakePerson("a-all", USER_A, "lib-a", KEY_AALL), FakePerson("b-all", USER_B, "lib-b", KEY_BALL), FakePerson("a-read", USER_A, "lib-a", KEY_READ)]
         self.fake = FakeImmich(people).start()
         self.addCleanup(self.fake.stop)
         self.fake.state.permissions = tuple(sorted(immich_live.GRANTS))
         self.fake.state.version = "v3.3.6"
+        self.fake.state.key_permissions = {KEY_AALL: ("all",), KEY_BALL: ("all",), KEY_READ: tuple(sorted(immich_live.GRANTS))}
         self.fake.state.extraction_delay = 0.2
         self.folder = Path(tempfile.mkdtemp())
         self.env = {"IMMICH_URL": self.fake.url, "IMMICH_LIVE_KEY_A": KEY_A}
@@ -37,7 +40,7 @@ class HarnessTests(unittest.TestCase):
 
     def assert_no_secret(self, *texts):
         for text in texts:
-            for secret in (KEY_A, KEY_B, KEY_Q, "canary-revoked-5e4d", USER_A, USER_B):
+            for secret in (KEY_A, KEY_B, KEY_Q, KEY_AALL, KEY_BALL, KEY_READ, KEY_REVOKED, USER_A, USER_B):
                 self.assertNotIn(secret, text)
 
     def assert_only_safe_requests(self):
@@ -55,11 +58,11 @@ class HarnessTests(unittest.TestCase):
 
     def test_the_happy_path_with_both_keys_passes_and_reports_what_it_created(self):
         self.fake.state.quotas[USER_Q] = 10
-        code, printed, text = self.run_harness(IMMICH_LIVE_KEY_B=KEY_B, IMMICH_LIVE_QUOTA_KEY=KEY_Q, IMMICH_LIVE_REVOKED_KEY="canary-revoked-5e4d")
+        code, printed, text = self.run_harness(IMMICH_LIVE_KEY_B=KEY_B, IMMICH_LIVE_QUOTA_KEY=KEY_Q, IMMICH_LIVE_REVOKED_KEY=KEY_REVOKED)
         self.assertEqual(code, 0, printed + text)
         for key in ("grants", "new", "extract", "dup_sidecar", "concurrent", "lost", "two_users", "binding", "live", "raw", "quota", "revoked", "no_delete"):
             self.assertEqual(self.row(text, key), "pass", key)
-        for key in ("partner", "trashed", "offline", "edited", "enrich", "video"):
+        for key in ("partner", "trashed", "offline", "edited", "e1", "e2", "e18", "video"):
             self.assertEqual(self.row(text, key), "not run", key)
         self.assertIn("v3.3.6", text)
         self.assertIn("`asset.upload`", text)
@@ -197,6 +200,190 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(self.row(text, "trashed"), "pass")
         self.assertTrue(trash_me.trashed)
         self.assert_only_safe_requests()
+
+    ENRICH_ENV = {"IMMICH_LIVE_ENRICH_KEY": KEY_AALL, "IMMICH_LIVE_ENRICH_KEY_2": KEY_BALL, "IMMICH_LIVE_ENRICH_READ_KEY": KEY_READ, "IMMICH_LIVE_REVOKED_KEY": KEY_REVOKED}
+
+    def run_enrich(self, *argv, **env):
+        return self.run_harness("--enrich", "--settle-seconds", "0.1", *argv, **{**self.ENRICH_ENV, **env})
+
+    def test_the_enrich_phase_runs_only_the_e_rows_and_passes_them(self):
+        updates = []
+        self.fake.state.intercept = lambda method, path, slug: updates.append((slug, method)) if method == "PUT" else None
+        code, printed, text = self.run_enrich()
+        self.assertEqual(code, 0, printed + text)
+        for key in ("grants", "e1", "e2", "e3", "e4", "e5", "e6", "e9", "e10", "e13", "e14", "e15", "e16", "e18"):
+            self.assertEqual(self.row(text, key), "pass", key)
+        for key in ("e7", "e8", "e11", "e12", "e17", "new", "extract", "concurrent", "live", "raw", "no_delete"):
+            self.assertEqual(self.row(text, key), "not run", key)
+        self.assertEqual({slug for slug, _ in updates}, {"a-all", "b-all", "a-read"})
+        self.assertIn("`all`", text)
+        self.assertIn("Missing required permission", text)
+        self.assertIn("Not found or no asset.update access", text)
+        self.assertIn("is the stored instant 12:30Z", text)
+        self.assertIn("overwrites a present value without an error", text)
+        self.assert_no_secret(printed, text)
+
+    def test_the_enrich_phase_sends_nothing_but_reads_searches_fixture_uploads_and_the_one_update_route(self):
+        code, printed, _ = self.run_enrich()
+        self.assertEqual(code, 0, printed)
+        requests = self.fake.requests()
+        self.assertIn(("PUT", next(path for method, path in requests if method == "PUT")), requests)
+        for method, path in requests:
+            self.assertIn(method, ("GET", "POST", "PUT"))
+            if method == "PUT":
+                self.assertRegex(path, rf"^{immich_live.UPDATE_ROUTE.pattern}$")
+            if method == "POST":
+                self.assertIn(path, ("/api/assets", "/api/assets/bulk-upload-check", "/api/search/metadata"))
+            if "api-keys" in path:
+                self.assertEqual((method, path), ("GET", "/api/api-keys/me"))
+            self.assertFalse(any(word in path for word in ("trash", "restore", "jobs", "libraries", "admin", "metadata/", "copy")), path)
+            if method != "POST":
+                self.assertNotIn(path, ("/api/assets", "/api/users"))
+
+    def test_only_the_enrich_accounts_may_send_the_update_route(self):
+        asset = "/api/assets/0b5e6a43-5b1f-4c7e-9d2a-1f0e2d3c4b5a"
+        immich_live.allowed("PUT", asset, enriching=True)
+        immich_live.allowed("GET", f"{asset}/thumbnail", enriching=True)
+        immich_live.allowed("GET", f"/api/albums?assetId={asset.rsplit('/', 1)[1]}", enriching=True)
+        for path in (f"{asset}/thumbnail", f"/api/albums?assetId={asset.rsplit('/', 1)[1]}"):
+            with self.assertRaises(immich_live.Refused):
+                immich_live.allowed("GET", path)
+        with self.assertRaises(immich_live.Refused):
+            immich_live.allowed("PUT", asset)
+        for method, path in (("DELETE", asset), ("DELETE", "/api/assets"), ("PUT", "/api/assets"), ("PATCH", asset), ("PUT", f"{asset}/original"), ("PUT", f"{asset}/metadata"),
+                             ("PUT", "/api/assets/copy"), ("POST", "/api/assets/jobs"), ("POST", "/api/trash/restore"), ("DELETE", "/api/api-keys/x"), ("POST", "/api/api-keys"),
+                             ("GET", "/api/albums"), ("POST", f"{asset}/thumbnail"), ("PUT", "/api/albums/x")):
+            with self.subTest(method=method, path=path):
+                with self.assertRaises(immich_live.Refused):
+                    immich_live.allowed(method, path, enriching=True)
+
+    def test_the_import_key_never_sends_an_update(self):
+        api = immich_live.Api(self.fake.url, KEY_A)
+        with self.assertRaises(immich_live.Refused):
+            api.call("PUT", "/api/assets/0b5e6a43-5b1f-4c7e-9d2a-1f0e2d3c4b5a", {"description": "x"})
+        self.assertEqual(self.fake.requests(), [])
+
+    def test_a_refused_enrich_key_sends_nothing(self):
+        cases = (("an admin user's key", {"IMMICH_LIVE_ENRICH_KEY": KEY_AALL}, ("a-all",), "admin user"),
+                 ("a key of another user", {"IMMICH_LIVE_ENRICH_KEY": KEY_BALL}, (), "same user"),
+                 ("a second key of the same user", {"IMMICH_LIVE_ENRICH_KEY_2": KEY_AALL}, (), "second user"),
+                 ("a read-only key that holds all", {"IMMICH_LIVE_ENRICH_READ_KEY": KEY_AALL}, (), "neither `all` nor `asset.update`"),
+                 ("no enrich key", {"IMMICH_LIVE_ENRICH_KEY": ""}, (), "IMMICH_LIVE_ENRICH_KEY"),
+                 ("a key a header cannot carry", {"IMMICH_LIVE_ENRICH_KEY": "bad key"}, (), "header"))
+        for name, env, admins, wanted in cases:
+            with self.subTest(name):
+                self.fake.state.admins = admins
+                code, printed, text = self.run_enrich(**env)
+                self.assertEqual(code, 2, printed)
+                self.assertIn(wanted, printed)
+                self.assertEqual(text, "")
+                self.assertNotIn("PUT", [method for method, _ in self.fake.requests()])
+                self.assert_no_secret(printed)
+
+    def test_the_enrich_flag_runs_alone(self):
+        for argv in (("--phase", "after-trash"), ("--large-video-mb", "1"), ("--settle-seconds", "100000")):
+            with self.subTest(argv=argv):
+                code, printed, _ = self.run_harness("--enrich", *argv, **self.ENRICH_ENV)
+                self.assertEqual(code, 2, printed)
+        self.assertEqual(self.fake.requests(), [])
+
+    def test_an_update_the_server_ignores_or_refuses_never_passes(self):
+        self.fake.state.intercept = lambda method, path, slug: 500 if method == "PUT" and slug == "a-all" else None
+        code, printed, text = self.run_enrich()
+        self.assertEqual(code, 1, printed)
+        for key in ("e2", "e3", "e4", "e5", "e6", "e15", "e16", "e18"):
+            self.assertEqual(self.row(text, key), "fail", key)
+        self.assertEqual(self.row(text, "e10"), "pass")
+        self.assertIn("answered 500", text)
+
+    def test_repeat_and_album_rows_need_the_update_to_apply(self):
+        for name in ("refused", "ignored"):
+            with self.subTest(name):
+                self.fake.state.ignore_updates = name == "ignored"
+                self.fake.state.intercept = (lambda m, p, slug: 500 if m == "PUT" and slug == "a-all" else None) if name == "refused" else None
+                code, printed, text = self.run_enrich()
+                self.assertEqual(code, 1, printed)
+                self.assertEqual(self.row(text, "e15"), "fail")
+                self.assertEqual(self.row(text, "e18"), "fail")
+
+    def test_the_offsetless_edit_of_e4_must_apply(self):
+        for mode in ("refuse", "ignore"):
+            with self.subTest(mode):
+                self.fake.state.naive_dates = mode
+                code, printed, text = self.run_enrich()
+                self.assertEqual(code, 1, printed)
+                self.assertEqual(self.row(text, "e4"), "fail")
+                self.assertEqual(self.row(text, "e5"), "pass")
+
+    def test_e6_does_not_depend_on_e2(self):
+        fail_first = {"n": 0}
+
+        def refuse_first_description(method, path, slug):
+            if method == "PUT" and slug == "a-all" and fail_first["n"] == 0:
+                fail_first["n"] = 1
+                return 500
+            return None
+        self.fake.state.intercept = refuse_first_description
+        code, printed, text = self.run_enrich()
+        self.assertEqual(code, 1, printed)
+        self.assertEqual(self.row(text, "e2"), "fail")
+        self.assertEqual(self.row(text, "e6"), "pass")
+        self.fake.state.ignore_updates = True
+        code, printed, text = self.run_enrich()
+        self.assertEqual(self.row(text, "e6"), "fail")
+
+    def test_a_wrong_zone_fails_both_date_fill_rows(self):
+        self.fake.state.wrong_zone = True
+        code, printed, text = self.run_enrich()
+        self.assertEqual(code, 1, printed)
+        for key in ("e4", "e5"):
+            self.assertEqual(self.row(text, key), "fail", key)
+        self.assertEqual(self.row(text, "e2"), "pass")
+
+    def test_zone_names_are_read_as_offsets(self):
+        for zone, minutes in (("UTC+2", 120), ("UTC+02:00", 120), ("+05:30", 330), ("UTC-0330", -210), ("UTC", 0), ("Z", 0), ("Europe/Paris", None), (None, None)):
+            self.assertEqual(immich_live.zone_minutes(zone), minutes, zone)
+
+    def test_ignored_updates_fail_every_update_row(self):
+        self.fake.state.ignore_updates = True
+        code, printed, text = self.run_enrich()
+        self.assertEqual(code, 1, printed)
+        for key in ("e2", "e3", "e4", "e5", "e6", "e9", "e15", "e16", "e18"):
+            self.assertEqual(self.row(text, key), "fail", key)
+
+    def test_a_key_without_the_update_grant_fails_the_rows_instead_of_passing(self):
+        self.fake.state.key_permissions[KEY_AALL] = tuple(sorted(immich_live.GRANTS))
+        code, _, text = self.run_enrich()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.row(text, "e2"), "fail")
+        self.assertIn("403", text)
+
+    def test_a_second_enrich_run_on_the_same_result_gets_fresh_fixtures_and_passes_again(self):
+        code, printed, _ = self.run_enrich()
+        self.assertEqual(code, 0, printed)
+        first = {asset.id for asset in self.fake.state.assets}
+        code, printed, text = self.run_enrich("--append-results", str(self.folder / "result.md"), out="again.md")
+        self.assertEqual(code, 0, printed + text)
+        self.assertEqual(len(self.fake.state.assets), 2 * len(first))
+        for key in ("e2", "e3", "e4", "e5", "e15"):
+            self.assertEqual(self.row(text, key), "pass", key)
+
+    def test_a_fixture_that_is_a_duplicate_is_refused_as_a_missing_field_experiment(self):
+        self.fake.state.upload_answer = {"id": "0b5e6a43-5b1f-4c7e-9d2a-1f0e2d3c4b5a", "status": "duplicate"}
+        code, printed, text = self.run_enrich()
+        self.assertEqual(code, 1, printed)
+        self.assertIn("not an asset with missing fields", text)
+        self.assertEqual(self.row(text, "e2"), "fail")
+
+    def test_the_enrich_rows_that_need_a_key_are_not_run_without_it_and_merge_into_an_earlier_result(self):
+        code, printed, _ = self.run_harness()
+        self.assertEqual(code, 0, printed)
+        code, printed, text = self.run_harness("--enrich", "--settle-seconds", "0.1", "--append-results", str(self.folder / "result.md"), out="e.md", IMMICH_LIVE_ENRICH_KEY=KEY_AALL)
+        self.assertEqual(code, 0, printed + text)
+        self.assertEqual(self.row(text, "e2"), "pass")
+        self.assertEqual(self.row(text, "new"), "pass")
+        for key in ("e10", "e13", "e14"):
+            self.assertEqual(self.row(text, key), "not run", key)
 
 
 if __name__ == "__main__":

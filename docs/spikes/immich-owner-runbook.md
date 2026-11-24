@@ -6,21 +6,21 @@
 
 ## What can be run from this repository, and what cannot
 
-`tools/spikes/immich_live.py` ([how it runs](immich-live-run.md)) sends only `GET /api/server/about`, `GET /api/users/me`, `GET /api/api-keys/me`, `POST /api/assets`, `POST /api/assets/bulk-upload-check`, `POST /api/search/metadata` and `GET /api/assets/{id}` (and its `/original?edited=false`), and refuses every other request, an admin user and any key whose grants are not exactly `user.read`, `server.about`, `asset.read`, `asset.download` and `asset.upload`. That decides how each row below is closed:
+`tools/spikes/immich_live.py` ([how it runs](immich-live-run.md)) sends only `GET /api/server/about`, `GET /api/users/me`, `GET /api/api-keys/me`, `POST /api/assets`, `POST /api/assets/bulk-upload-check`, `POST /api/search/metadata` and `GET /api/assets/{id}` (and its `/original?edited=false`), and refuses every other request, an admin user and any key whose grants are not exactly `user.read`, `server.about`, `asset.read`, `asset.download` and `asset.upload`. With `--enrich` (row 4, below) it also reads an asset's thumbnail and its album list, and the all-permission keys of that run send one more request, `PUT /api/assets/{id}`, and nothing else that changes anything. That decides how each row below is closed:
 
 | # | Row | Closed by |
 | --- | --- | --- |
 | 1 | Partner-visible assets | Not runnable with the harness (it never reads another user's asset and the disposable users have no partner sharing). Needs a reviewed harness extension |
 | 2 | Offline or external-library duplicate versus managed upload | Not runnable with the harness (needs an admin key, which it refuses). Needs a reviewed harness extension |
 | 3 | Edited representations | Not runnable with the harness (needs an edit in Immich's editor and `asset.update`, which it refuses) |
-| 4 | Existing-asset metadata enrichment (release gate) | Not runnable with the harness (needs `asset.update`, which it refuses) |
+| 4 | Existing-asset metadata enrichment (release gate of its own path) | Harness, `--enrich`, rows E1 to E18 of [the enrichment design](../design/existing-asset-enrichment.md#16-live-spike-rows-to-add-on-266); E7, E8, E11, E12 and E17 need the owner's hand, see [Row 4](#row-4-existing-asset-enrichment-e1-to-e18) |
 | 5 | Large video and async extraction delay | Harness, `--large-video-mb` |
 | 6 | Quota error | Harness, `IMMICH_LIVE_QUOTA_KEY` |
 | 7 | Revoked-key error | Harness, `IMMICH_LIVE_REVOKED_KEY` |
 | 8 | Restore of Immich and Darkroom | Owner's rehearsal, from the deployment docs |
 | 9 | Acceptance of remote deletion races | Owner's decision, recorded on #266 |
 
-Rows 1 to 4 are not something to improvise around. The repository has no command that closes them, and this page invents none. Either ask for the extension as its own issue (see [Rows 1 to 4](#rows-1-to-4-need-a-reviewed-extension-first)), or record what the Immich web UI shows and say plainly in the report that it is a UI observation and not an API result.
+Rows 1 to 3 are not something to improvise around. The repository has no command that closes them, and this page invents none. Either ask for the extension as its own issue (see [Rows 1 to 3](#rows-1-to-3-need-a-reviewed-extension-first)), or record what the Immich web UI shows and say plainly in the report that it is a UI observation and not an API result.
 
 ## Before anything: the common setup
 
@@ -61,18 +61,54 @@ Notes taken from the harness and its page:
 
 **Record for each of the three rows:** the server version; the result file's row (`pass`, `fail`, `not verified` or `not run`) and its observation text; for row 5 the generated size, the route (LAN, Tailscale, proxied hostname), the time extraction took, whether the original's SHA-1 and size matched and whether duration was read in milliseconds as before; for row 6 the quota set and the answer; for row 7 the answer. Paste the whole result file including its `json immich-live-data` block after checking it contains no key, address, name or real file.
 
-## Rows 1 to 4 need a reviewed extension first
+## Rows 1 to 3 need a reviewed extension first
 
-The design ([section 2](../design/immich-managed-storage.md#live-spike-required-before-enabling-imports)) names what each must show. None can be produced by the current harness, and adding a request type to the harness or the provider is a reviewed change of its own, not a flag.
+The design ([section 2](../design/immich-managed-storage.md#live-spike-required-before-enabling-imports)) names what each must show. None of rows 1 to 3 can be produced by the current harness, and adding a request type to the harness or the provider is a reviewed change of its own, not a flag.
 
 | Row | What the owner must provide | What the design needs shown | What to record |
 | --- | --- | --- | --- |
 | 1. Partner-visible assets | Two disposable users with Immich's partner sharing turned on from one to the other (the setting is in Immich's own account settings), a generated asset owned by the sharing user, and the receiving user's key with the five grants | Ownership stays separate; no import, match, receipt or cleanup is authorised by another owner's asset | The asset's owner as the receiving user's key sees it, its `libraryId`, and whether the receiving user can read or download it |
 | 2. Offline or external-library duplicate | A disposable Immich instance (not a server holding anyone's real library) with an external library over a folder of generated media, an admin user to create it, and a non-admin disposable user whose key has the five grants | Whether uploading the same bytes creates a usable managed asset or returns the external one; an external asset is never counted as migrated; plus what bulk check says (it does not filter external libraries) and how an offline asset (file removed from the library folder, rescanned) is reported | The upload status and ID, whether the result has `libraryId: null`, the bulk check's `action` and `reason`, and the offline asset's `isOffline` |
 | 3. Edited representations | A disposable user, a generated image, an edit made in Immich's own editor, and a key with the permission the extension needs | That the unedited download (`/original?edited=false`) still hashes to the input and that an edit does not change the original's identity or checksum | SHA-1 and size of `edited=false` against the input; the default download for comparison; the asset's checksum before and after |
-| 4. Enrichment of an existing asset (release gate) | A disposable user and a key with `asset.update`, which the harness and the managed reader refuse today | The supported way to add missing date, GPS and description to an existing asset on the deployed version, its missing-value and concurrent-edit behaviour, permission and recovery path. If a concurrent edit cannot be protected, enrichment stays in review. A duplicate upload does not enrich (confirmed) | The endpoint and its documented status on this version (`PUT /api/assets/{id}` is marked deprecated in the pinned API), what changed, whether an edit made in the UI in between was overwritten, and how to undo it |
 
-**To get a harness for these**, open a follow-up issue from the "Agent task" template that names the rows, says which read-only requests (rows 1 to 3) or which `asset.update` call (row 4) the harness may send, keeps the disposable-user and no-delete refusals, and updates `allowed` in `tools/spikes/immich_live.py` and its test `tests/test_spike_immich_live.py`. Until that exists, rows 1 to 4 remain open on #266 and the managed import stays disabled. If you record a UI-only observation meanwhile, label it as that: it does not satisfy the rows.
+**To get a harness for these**, open a follow-up issue from the "Agent task" template that names the rows, says which read-only requests the harness may send, keeps the disposable-user and no-delete refusals, and updates `allowed` in `tools/spikes/immich_live.py` and its test `tests/test_spike_immich_live.py`. Until that exists, rows 1 to 4 remain open on #266 and the managed import stays disabled. If you record a UI-only observation meanwhile, label it as that: it does not satisfy the rows.
+
+## Row 4: existing-asset enrichment, E1 to E18
+
+The owner's reversal of 2026-11-24 on #548 brings enrichment back as [a design](../design/existing-asset-enrichment.md) that gates every code slice from the second on until these rows are recorded on #266 (section 16 there). Run them only on **disposable non-admin users with generated media**, on the version the app will enable (v3.4.1). Nothing here is part of an import: `--enrich` runs alone, never with the upload rows, the large video or another phase.
+
+**What the owner provides, in Immich, signed in as each disposable user:**
+
+- The import key of the first user (the five grants, as above): the harness uploads each generated fixture and downloads its unedited original with it, so the update is judged by a different key than the one that sent it.
+- `IMMICH_LIVE_ENRICH_KEY`: a key of the **same** user with **all permissions** (the form the app will hold). An admin user's key is refused.
+- `IMMICH_LIVE_ENRICH_KEY_2`: an all-permission key of a **second** disposable user, for E13 (optional).
+- `IMMICH_LIVE_ENRICH_READ_KEY`: a key of the first user with only read grants, for E10 (optional; a key holding `all` or `asset.update` is refused).
+- `IMMICH_LIVE_REVOKED_KEY`: a key created and then deleted, for E14 (optional, as in rows 5 to 7).
+
+An all-permission key could delete, so the harness sends no delete, trash, restore, job, bulk-update or key request, whatever a row asks (its allowlist and `tests/test_spike_immich_live.py` hold that), and only a key made for `--enrich` ever sends `PUT /api/assets/{id}`.
+
+```
+export IMMICH_URL=http://192.168.1.20:2283
+export IMMICH_LIVE_KEY_A=...
+export IMMICH_LIVE_ENRICH_KEY=...
+export IMMICH_LIVE_ENRICH_KEY_2=...
+export IMMICH_LIVE_ENRICH_READ_KEY=...
+poetry run python -m tools.spikes.immich_live --enrich --out immich-live-enrich.md
+```
+
+Add `--append-results <earlier result>` to merge the E rows into an earlier result of the same disposable user, `--settle-seconds` for how long E4 waits before it reads the edited dates again (600 by default: the design asks for ten minutes), and `--extraction-timeout` as before. The result lists the all-permission keys' grants **as Immich lists them** (E1), never a key.
+
+**Rows the harness cannot run, and what the owner does:**
+
+| Row | Owner's step | What to record |
+| --- | --- | --- |
+| E7 | In Immich's own interface edit an asset's description in the moment between a read and the update, by timing | Whether anything signals the conflict (a changed `updatedAt`, a precondition) |
+| E8 | After an update, look at the instance's storage for a sidecar beside the original, for an asset uploaded with a sidecar whether it merges, then have an admin run "extract metadata" once from the UI | That a sidecar is written, that the values survive extraction, that the original's checksum is unchanged, and what extraction does to `localDateTime`, `dateTimeOriginal` and `fileCreatedAt` |
+| E11 | Move an asset to the locked folder by hand, then run the update on it | Status and message |
+| E12 | Trash an asset by hand, then run the update on it | Whether it is accepted (Darkroom refuses it regardless) |
+| E17 | Have an admin pause Immich's sidecar job queue, then run an update | Whether the read-back still shows the fields |
+
+E13's partner-shared half and E18's asset-in-an-album half also need the owner's hand (partner sharing; an album made in the UI). **Record for each row** the version, the row's result and its text, and that no key, address or file name is in what is pasted. E4, E5, E8 and E16 gate the date and place fills, and until the owner records them on #266 only the description fill ships. A `fail` row stays a finding: it does not mean the harness is wrong.
 
 ## Row 8: the restore test
 
