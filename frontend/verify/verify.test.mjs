@@ -27,6 +27,13 @@ describe("flowProblems", () => {
     expect(bad[2]).toMatch(/step 3 must have exactly one of/);
   });
 
+  it("takes a mocked reply for an API path and a name for a committed page image", () => {
+    expect(flowProblems({ ...ok, steps: [{ mock_json: { path: "/api/review?status=kept_both", body: { reviews: [] } } }, { page_image: "review-kept-in-immich" }] })).toEqual([]);
+    expect(flowProblems({ ...ok, steps: [{ mock_json: { path: "/people", body: {} } }] })).toEqual(["step 1: mock_json needs a path under /api/ and a body"]);
+    expect(flowProblems({ ...ok, steps: [{ mock_json: { path: "/api/review" } }] })).toEqual(["step 1: mock_json needs a path under /api/ and a body"]);
+    expect(flowProblems({ ...ok, steps: [{ page_image: "a b" }] })).toEqual(["step 1: a page_image name is letters, digits, - or _ (it becomes a file name)"]);
+  });
+
   it("takes a click that only happens when the element shows up", () => {
     expect(flowProblems({ ...ok, steps: [{ click_if_present: "text=People", timeout: 500 }] })).toEqual([]);
     expect(flowProblems({ ...ok, steps: [{ click_if_present: { selector: "a" } }] })).toEqual(["step 1: click_if_present takes a string"]);
@@ -203,7 +210,7 @@ describe("readFlows", () => {
   it("reads every flow of the repository", () => {
     const { flows, error } = readFlows(join(import.meta.dirname, "flows"));
     expect(error).toBeUndefined();
-    expect(flows.map((f) => f.name)).toEqual(["browser-fullscreen", "exports-download", "exports-part-import", "exports-renewal", "exports", "open-people", "people-share-again", "pixel-pairing", "pixel-unpair", "review-item", "sign-out", "status-syncthing"]);
+    expect(flows.map((f) => f.name)).toEqual(["browser-fullscreen", "exports-download", "exports-part-import", "exports-renewal", "exports", "open-people", "people-share-again", "pixel-pairing", "pixel-unpair", "review-item", "review-kept-in-immich", "sign-out", "status-syncthing"]);
   });
 
   it("says which file is not JSON or not a flow, instead of ending the process", () => {

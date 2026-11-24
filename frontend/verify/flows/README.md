@@ -39,12 +39,14 @@ A step has one action and an optional `timeout` in milliseconds (default 10000).
 - `{"sign_out": true}` clears the session cookie and reloads: the page is then the sign-in page, and the flow no longer needs `allow_console` for the 401.
 - `{"reload": true}` reloads the page.
 - `{"demo_post": {"path": "/api/demo/syncthing", "body": {"state": "down"}}}` posts the body, as the demo member, to a route under `/api/demo/`, which only a demo server answers: it puts the demo data in a state no page can reach, such as Syncthing not answering (`down`), the share check failed (`share_check_failed`) and back (`running`). A flow that uses it puts the state back at the end.
+- `{"mock_json": {"path": "/api/review?status=kept_both", "body": {...}}}` answers the browser's GET of that path (with its query) with the body, for a state the demo data can't reach and no `/api/demo/` route sets, such as a pair kept in an Immich-managed export. It lasts until the flow ends and only the browser sees it (the server's data is unchanged); `{"reload": true}` after it loads the page with it.
 
 **Checking and capturing**
 
 - `{"wait_for": selector}` waits for it to appear.
 - `{"expect_text": {"selector": …, "text": …}}` fails unless it contains the text within the timeout; it keeps looking while the page settles.
 - `{"screenshot": "name"}` (letters, digits, `-` or `_`: it becomes part of a file name) saves the full page as `flow-<flow name>-<name>-<viewport>.png` to `artifacts/verify/` (ignored by git), at phone and desktop only. Other widths run the steps and checks and write no image. A flow's images are for you to look at; the committed images are the pages' in `docs/screenshots/`.
+- `{"page_image": "review-kept-in-immich"}` saves the full page as `<name>-<viewport>.png` in `docs/screenshots/`, at phone and desktop only: the committed image of a state that has no page of its own, named like a page's.
 - `{"download": {"selector": "button:has-text('Export')", "name": "export"}}` clicks it, waits for the file the browser downloads and saves it as `flow-<flow name>-<name>-<viewport>.png` in the same place.
 
 ## Writing a flow

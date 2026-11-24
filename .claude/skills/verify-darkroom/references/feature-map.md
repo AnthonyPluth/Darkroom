@@ -148,6 +148,13 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **Expects to see:** `Review queue`, `Likely re-encode`, `In library`, `From export`.
 - **Drive it:** `tools/control flow review-item`; or `poetry run python tools/verify.py run --flow review-item`.
 
+#### `review-kept-in-immich`
+
+- **Starts at:** `review`.
+- **Widths:** phone, desktop.
+- **Expects to see:** `Kept in Immich, so it can't be undone`.
+- **Drive it:** `tools/control flow review-kept-in-immich`; or `poetry run python tools/verify.py run --flow review-kept-in-immich`.
+
 ## Browser (`browser`)
 
 - **Reach it:** the navigation's Browser, at `/browser`; control `tools/control goto browser`.
