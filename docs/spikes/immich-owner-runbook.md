@@ -13,7 +13,7 @@
 | 1 | Partner-visible assets | Not runnable with the harness (it never reads another user's asset and the disposable users have no partner sharing). Needs a reviewed harness extension |
 | 2 | Offline or external-library duplicate versus managed upload | Not runnable with the harness (needs an admin key, which it refuses). Needs a reviewed harness extension |
 | 3 | Edited representations | Not runnable with the harness (needs an edit in Immich's editor and `asset.update`, which it refuses) |
-| 4 | Existing-asset metadata enrichment (release gate) | Not runnable with the harness (needs `asset.update`, which it refuses) |
+| 4 | Existing-asset metadata enrichment | Not built and not run: the owner decided on 2026-11-24 (#548, `docs/DECISIONS.md`) that the Immich key never gets `asset.update`, so there is no enrichment path and this is no longer a release gate |
 | 5 | Large video and async extraction delay | Harness, `--large-video-mb` |
 | 6 | Quota error | Harness, `IMMICH_LIVE_QUOTA_KEY` |
 | 7 | Revoked-key error | Harness, `IMMICH_LIVE_REVOKED_KEY` |
