@@ -10,7 +10,7 @@ import re
 import urllib.error
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, BinaryIO, Literal
 from urllib.parse import quote, urlsplit
 from uuid import UUID, uuid4
@@ -47,6 +47,10 @@ IMPORT_ROUTES = frozenset({("POST", UPLOAD_PATH), ("POST", BULK_CHECK_PATH)})
 UPLOAD_TIMEOUT = 300.0
 BULK_CHECK_ID = "darkroom-source"
 CHECKSUM_PAGE = 100
+NEAR_PAGE = 100
+NEAR_PAGES = 10
+NEAR_PADDING = 1.0
+NEAR_MAX_SECONDS = 60.0
 
 
 def require_allowed_request(method: str, path: str, *, importing: bool = False) -> None:
@@ -311,6 +315,60 @@ def asset_of(entry: object) -> Asset:
                  video if isinstance(video, str) and video else None, entry.get("isTrashed") is True, entry.get("isOffline") is True)
 
 
+@dataclass(frozen=True)
+class Nearby:
+    asset: Asset = field(repr=False)
+    taken: datetime = field(repr=False)
+    make: str | None = field(repr=False)
+    model: str | None = field(repr=False)
+    width: int | None
+    height: int | None
+    duration_ms: int | None
+
+
+@dataclass(frozen=True)
+class NearShots:
+    found: tuple[Nearby, ...]
+    crowded: bool
+
+
+def search_stamp(instant: float) -> str:
+    return datetime.fromtimestamp(instant, UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def instant_of(value: object) -> datetime | None:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(?:Z|[+-][0-9]{2}:[0-9]{2})", value):
+        return None
+    try:
+        return datetime.fromisoformat(value).astimezone(UTC)
+    except ValueError:
+        return None
+
+
+def whole(value: object) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def nearby_of(entry: object) -> Nearby:
+    if not isinstance(entry, dict):
+        raise ImmichFailed("Immich sent an asset that is not an object")
+    asset = asset_of(entry)
+    info = entry.get("exifInfo")
+    exif = info if isinstance(info, dict) else {}
+    taken = instant_of(exif.get("dateTimeOriginal")) or instant_of(entry.get("fileCreatedAt"))
+    if taken is None:
+        raise ImmichFailed("Immich sent an asset without a capture or file time")
+
+    def text(name: str) -> str | None:
+        value = exif.get(name)
+        return value if isinstance(value, str) and value else None
+    width = whole(exif.get("exifImageWidth"))
+    height = whole(exif.get("exifImageHeight"))
+    if width is None or height is None:
+        width, height = whole(entry.get("width")), whole(entry.get("height"))
+    return Nearby(asset, taken, text("make"), text("model"), width, height, whole(entry.get("duration")))
+
+
 def asset_path(asset_id: str) -> str:
     if not asset_id or "/" in asset_id or "?" in asset_id:
         raise ImmichFailed("not an asset id")
@@ -512,6 +570,28 @@ class Client:
             raise ImmichFailed("Immich's checksum search answer was not understood")
         return [asset_of(entry) for entry in page["items"]]
 
+    def search_taken(self, key: str, after: str, before: str) -> NearShots:
+        found: dict[str, Nearby] = {}
+        cursor: str | None = None
+        for _ in range(NEAR_PAGES):
+            body: dict[str, object] = {"filter": {"takenAt": {"gte": after, "lte": before}}, "withExif": True, "size": NEAR_PAGE,
+                                       "orderBy": {"field": "fileCreatedAt", "direction": "asc"}}
+            if cursor is not None:
+                body["cursor"] = cursor
+            answer = self.call("POST", "/api/search/metadata", key=key, body=body)
+            page = answer.get("assets") if isinstance(answer, dict) else None
+            items = page.get("items") if isinstance(page, dict) else None
+            following = page.get("nextCursor") if isinstance(page, dict) else None
+            if (not isinstance(page, dict) or not isinstance(items, list) or len(items) > NEAR_PAGE
+                    or (following is not None and (not isinstance(following, str) or not following or following == cursor))):
+                raise ImmichFailed("Immich's capture time search answer was not understood")
+            for nearby in map(nearby_of, items):
+                found.setdefault(nearby.asset.id, nearby)
+            if following is None:
+                return NearShots(tuple(found.values()), False)
+            cursor = following
+        return NearShots((), True)
+
     def original_chunks(self, key: str, asset: Asset) -> Iterator[bytes]:
         digest = hashlib.sha1(usedforsecurity=False)  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
         total = 0
@@ -609,6 +689,18 @@ class ManagedReader:
         self.check_access()
         return sorted(asset.id for asset in self.client.search_checksum(self.key, sha1) if asset.owner_id == self.owner_id
                       and asset.library_id is None and not asset.trashed and not asset.offline and asset.sha1 == sha1)
+
+    def taken_near(self, instant: float, seconds: float) -> NearShots:
+        if (not isinstance(instant, int | float) or isinstance(instant, bool) or not math.isfinite(instant)
+                or not isinstance(seconds, int | float) or isinstance(seconds, bool) or not 0 <= seconds <= NEAR_MAX_SECONDS):
+            raise ImmichFailed("not a capture time and window")
+        try:
+            after, before = search_stamp(instant - seconds - NEAR_PADDING), search_stamp(instant + seconds + NEAR_PADDING)
+        except (OverflowError, OSError, ValueError):
+            raise ImmichFailed("not a capture time and window") from None
+        self.check_access()
+        shots = self.client.search_taken(self.key, after, before)
+        return NearShots(tuple(nearby for nearby in shots.found if nearby.asset.owner_id == self.owner_id), shots.crowded)
 
     def verify_original(self, asset_id: str, sha1: str, size: int) -> None:
         if not isinstance(sha1, str) or not re.fullmatch(r"[a-f0-9]{40}", sha1) or type(size) is not int or size <= 0:

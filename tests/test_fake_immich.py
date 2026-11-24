@@ -98,6 +98,26 @@ class FakeImmichTests(unittest.TestCase):
         self.fake.state.shared.add("als")
         self.assertEqual(call(self.fake, "GET", "/api/assets/als", "key-jo")[1]["ownerId"], "u-al")
 
+    def test_a_capture_time_search_filters_on_file_created_at_like_the_pinned_builder(self):
+        self.fake.add_asset(FakeAsset("a-exif", "u-jo", b"one", file_created_at="2024-05-01T10:00:00.000Z",
+                                      exif={"dateTimeOriginal": "2024-05-01T12:00:00.000Z"}, ready_at=float("inf")))
+        self.fake.add_asset(FakeAsset("a-extracted", "u-jo", b"two", file_created_at="2024-05-01T10:00:00.000Z",
+                                      exif={"dateTimeOriginal": "2024-05-01T12:00:00.500Z"}))
+        self.fake.add_asset(FakeAsset("a-trashed", "u-jo", b"three", file_created_at="2024-05-01T12:00:01.000Z", trashed=True))
+        self.fake.add_asset(FakeAsset("a-other", "u-al", b"four", file_created_at="2024-05-01T12:00:00.000Z"))
+        window = {"filter": {"takenAt": {"gte": "2024-05-01T11:59:59Z", "lte": "2024-05-01T12:00:01Z"}}, "size": 10}
+        status, found = call(self.fake, "POST", "/api/search/metadata", "key-jo", window)
+        self.assertEqual((status, [a["id"] for a in found["assets"]["items"]]), (200, ["a-extracted", "a-trashed"]))
+        self.assertEqual(found["assets"]["items"][0]["fileCreatedAt"], "2024-05-01T12:00:00.500Z")
+        status, found = call(self.fake, "POST", "/api/search/metadata", "key-jo", window | {"filter": {"takenAt": {"gte": "2024-05-01T09:59:59Z", "lte": "2024-05-01T10:00:01Z"}}})
+        self.assertEqual([a["id"] for a in found["assets"]["items"]], ["a-exif"])
+        self.assertNotIn("exifInfo", found["assets"]["items"][0])
+
+    def test_a_search_mixing_the_new_shape_with_flat_fields_is_refused_like_immich(self):
+        for flat in ({"takenAfter": "2024-05-01T00:00:00Z"}, {"withDeleted": True}, {"checksum": "x"}, {"page": 2}):
+            status, found = call(self.fake, "POST", "/api/search/metadata", "key-jo", {"filter": {"takenAt": {"gte": "2024-05-01T00:00:00Z"}}} | flat)
+            self.assertEqual((status, found["statusCode"]), (400, 400))
+
     def test_mode_500_and_401_apply_to_every_call(self):
         self.fake.mode("500")
         self.assertEqual(call(self.fake, "GET", "/api/server/ping")[0], 500)
