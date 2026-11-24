@@ -17,7 +17,7 @@ from sqlalchemy import MetaData, select
 import run
 from darkroom import tls
 from darkroom.dates import utc_now
-from darkroom.domain import accounts, alerts, browser_jobs, demo, downloads, events, exports, renewal, transport, transport_status
+from darkroom.domain import accounts, alerts, browser_jobs, demo, downloads, events, exports, renewal, review, transport, transport_status
 from darkroom.providers import exiftool
 from darkroom.server import auth
 from darkroom.storage import db
@@ -161,11 +161,11 @@ class SeededDemo(unittest.TestCase):
     def test_one_imported_export_shows_a_run_and_one_pending_review_pair_with_its_held_copy(self):
         exports = self.rows(Export)
         self.assertEqual([(e.status, e.kind) for e in exports], [("imported", "incremental"), ("downloading", "incremental"), ("failed", "incremental"), ("failed", "incremental"),
-                                                                ("downloading", "incremental")])
+                                                                ("downloading", "incremental"), ("imported", "incremental")])
         runs = self.rows(ImportRun)
         self.assertEqual([(r.status, r.added, r.review, r.missing_gps) for r in runs], [("done", 2, 1, 3)])
         reviews = self.rows(ReviewItem)
-        self.assertEqual([r.status for r in reviews], ["pending"])
+        self.assertEqual([r.status for r in reviews], ["pending", "kept_both"])
         hold = Photos(self.root / "photos").root / reviews[0].hold_path
         self.assertTrue(hold.is_file())
         decision = self.rows(DedupeDecision)[0]
@@ -201,7 +201,16 @@ class SeededDemo(unittest.TestCase):
                 engine2, _ = seed_into(Path(again).resolve())
                 self.addCleanup(engine2.dispose)
                 with db.session(engine2) as opened:
-                    self.assertEqual([r.status for r in opened.query(ReviewItem).all()], ["pending"])
+                    self.assertEqual([r.status for r in opened.query(ReviewItem).all()], ["pending", "kept_both"])
+
+    def test_one_kept_pair_of_an_immich_managed_export_cannot_be_undone(self):
+        with db.session(self.engine) as opened:
+            kept = opened.query(ReviewItem).filter(ReviewItem.status == "kept_both").one()
+            summary = review.summary(opened, kept, opened.get(DedupeDecision, kept.decision_id))
+            pending = opened.query(ReviewItem).filter(ReviewItem.status == "pending").one()
+            waiting = review.summary(opened, pending, opened.get(DedupeDecision, pending.decision_id))
+        self.assertEqual((summary["kept_in_immich"], summary["undo_until"]), (True, None))
+        self.assertEqual((waiting["kept_in_immich"], waiting["undo_until"]), (False, None))
 
     def test_the_imported_export_has_its_part_downloaded(self):
         part = self.rows(ExportPart)[0]
@@ -251,7 +260,7 @@ class SeededDemo(unittest.TestCase):
     def test_every_seeded_export_is_pinned_to_its_owner_whatever_the_accounts_default_person_becomes(self):
         with db.session(self.engine) as opened:
             seeded = list(opened.query(Export).order_by(Export.id))
-            self.assertEqual(len(seeded), 5)
+            self.assertEqual(len(seeded), 6)
             for export in seeded:
                 account = opened.get(GoogleAccount, export.account_id)
                 self.assertIsNotNone(export.owner_person_id)

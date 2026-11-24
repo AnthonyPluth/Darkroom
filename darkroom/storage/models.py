@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, ColumnElement, Float, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, ColumnElement, Float, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -749,3 +749,35 @@ class StoredSetting(Base):
     value: Mapped[str | None] = mapped_column(Text)
     value_sealed: Mapped[str | None] = mapped_column(Text)
     updated: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+ATTESTATION_KINDS = ("restore_rehearsal", "remote_deletion_boundary")
+REHEARSAL_DATABASES = ("sqlite", "postgresql")
+ATTESTATION_SHAPE = ("(kind = 'restore_rehearsal' AND rehearsed_on IS NOT NULL AND immich_version IS NOT NULL AND darkroom_version IS NOT NULL AND database_kind IS NOT NULL "
+                     "AND boundary_text_sha256 IS NULL) OR "
+                     "(kind = 'remote_deletion_boundary' AND rehearsed_on IS NULL AND immich_version IS NULL AND darkroom_version IS NULL AND database_kind IS NULL "
+                     "AND boundary_text_sha256 IS NOT NULL)")
+ATTESTATION_DIGEST = "boundary_text_sha256 IS NULL OR (length(boundary_text_sha256) = 64 AND ltrim(boundary_text_sha256, '0123456789abcdef') = '')"
+ACTIVE_ATTESTATION = "withdrawn_at IS NULL"
+
+
+class RetentionAttestation(Base):
+    __tablename__ = "retention_attestations"
+    __table_args__ = (
+        one_of("kind", ATTESTATION_KINDS, "ck_retention_attestations_kind"),
+        one_of("database_kind", REHEARSAL_DATABASES, "ck_retention_attestations_database_kind"),
+        CheckConstraint(ATTESTATION_SHAPE, name="ck_retention_attestations_shape"),
+        CheckConstraint(ATTESTATION_DIGEST, name="ck_retention_attestations_boundary_digest"),
+        CheckConstraint("length(evidence_url) > 0", name="ck_retention_attestations_evidence"),
+        Index("uq_retention_attestations_active_kind", "kind", unique=True, sqlite_where=text(ACTIVE_ATTESTATION), postgresql_where=text(ACTIVE_ATTESTATION)),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    recorded_at: Mapped[float] = mapped_column(Float, nullable=False)
+    evidence_url: Mapped[str] = mapped_column(String, nullable=False)
+    rehearsed_on: Mapped[str | None] = mapped_column(String)
+    immich_version: Mapped[str | None] = mapped_column(String)
+    darkroom_version: Mapped[str | None] = mapped_column(String)
+    database_kind: Mapped[str | None] = mapped_column(String)
+    boundary_text_sha256: Mapped[str | None] = mapped_column(String)
+    withdrawn_at: Mapped[float | None] = mapped_column(Float)

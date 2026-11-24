@@ -8,7 +8,7 @@ import {
 const people = [{ id: 1, name: "Jo", slug: "jo" }, { id: 2, name: "Sam", slug: "sam" }];
 const summary: ReviewSummary = {
   id: 1, status: "kept_both", decision_id: 6, export_id: 1, account_id: 1, tier: 4, reason: "close", decided_at: 1, reversed: false,
-  resolved_at: 100, undo_until: 200, name: "IMG_2102.jpg", library_name: "IMG_2102.HEIC", person_id: 1, kept_item_id: 9, kept_person_id: 1, decided_by_person_id: 1,
+  resolved_at: 100, undo_until: 200, kept_in_immich: false, name: "IMG_2102.jpg", library_name: "IMG_2102.HEIC", person_id: 1, kept_item_id: 9, kept_person_id: 1, decided_by_person_id: 1,
 };
 const run = { stage: "done", status: "done", skipped_t1: 3, skipped_t2: 1, skipped_t3: 1, unmatched_by_person: { jo: 2, sam: 0 }, parts: [], part_count: null } as unknown as ImportView;
 const side = { name: "a", bytes: 1, captured_local: null, make: "Apple", model: "iPhone 15", width: 4032, height: 3024, duration_ms: null, is_video: false };
@@ -80,6 +80,9 @@ describe("review rows", () => {
     expect(canUndo({ ...summary, reversed: true }, 0)).toBe(false);
     expect(undoUnavailable({ ...summary, reversed: true })).toBe("Reversed, so it can't be undone");
     expect(undoUnavailable(summary)).toBe("Too late to undo");
+    expect(undoUnavailable({ ...summary, kept_in_immich: true })).toBe("Kept in Immich, so it can't be undone");
+    expect(undoUnavailable({ ...summary, kept_in_immich: true })).not.toBe("Too late to undo");
+    expect(undoUnavailable({ ...summary, kept_in_immich: true, reversed: true })).toBe("Reversed, so it can't be undone");
     expect(savedSentence("a.jpg")).toBe("Decision saved: kept both for a.jpg.");
     expect(savedSentence(null)).toBe("Decision saved: kept both for the pair.");
   });

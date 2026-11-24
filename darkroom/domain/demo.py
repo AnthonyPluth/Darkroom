@@ -18,7 +18,7 @@ from darkroom.config import Settings, viewer_link
 from darkroom.domain import alerts, browser_jobs, events, index, media, pixel_check, renewal, share_check, transport, transport_status
 from darkroom.providers import syncthing
 from darkroom.storage import db
-from darkroom.storage.models import (Alert, BrowserJob, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, PixelTransport,
+from darkroom.storage.models import (Alert, BrowserJob, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, ManagedImportIntent, MediaItem, Person, Pixel, PixelPerson, PixelTransport,
                                      ReviewItem, TakeoutEntry)
 from darkroom.storage.paths import Photos, write_once
 
@@ -316,6 +316,7 @@ def seed_renewal(opened: Session, settings: Settings, account: GoogleAccount, me
 
 
 DUPLICATE_OF = "IMG_0101"
+KEPT_IN_IMMICH_OF = "IMG_0102"
 DUPLICATE_REASON = "Looks like IMG_0101.JPG, but the two differ slightly (recompressed): worth a look"
 
 
@@ -343,6 +344,23 @@ def seed_import(opened: Session, photos: Photos, people: dict[str, Person], toda
     create_only(hold, encoded(held, local, "JPEG"), utc)
     opened.add(ReviewItem(decision_id=decision.id, status="pending", hold_path=f"_inbox/{blair}/review/export-{export.id}/{hold.name}",
                           hold_sha1=media.sha1_of(hold)[0]))
+
+
+def seed_kept_in_immich(opened: Session, people: dict[str, Person], now: float) -> None:
+    owner = people["avery"]
+    account = opened.execute(select(GoogleAccount).where(GoogleAccount.default_person_id == owner.id)).scalar_one()
+    export = Export(account_id=account.id, kind="incremental", google_id="demo-export-managed", created_at=now - 20 * DAY, ready_at=now - 19 * DAY,
+                    expires_at=now - 12 * DAY, part_count=1, status="imported", stage="done", owner_person_id=owner.id)
+    opened.add(export)
+    opened.flush()
+    opened.add(ManagedImportIntent(person_id=owner.id, export_id=export.id, kind="import", owner_id="demo-immich-user", resource_manifest="[]", created_at=now - 19 * DAY))
+    library = opened.execute(select(MediaItem).where(MediaItem.person_id == owner.id).order_by(MediaItem.id)).scalars().first()
+    decision = DedupeDecision(export_id=export.id, account_id=account.id, source_path=f"Takeout/Google Photos/{KEPT_IN_IMMICH_OF}.JPG", person_id=owner.id,
+                              matched_item_id=None if library is None else library.id, tier=4, decided_by="owner", decided_at=now - 3 * HOUR,
+                              reason=f"Looks like {KEPT_IN_IMMICH_OF}.JPG, but the two differ slightly (recompressed): worth a look")
+    opened.add(decision)
+    opened.flush()
+    opened.add(ReviewItem(decision_id=decision.id, status="kept_both", resolved_at=now - 2 * HOUR))
 
 
 def seed_unpaired(opened: Session, people: dict[str, Person], spec: DemoPixel, now: float) -> None:
@@ -474,6 +492,7 @@ def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Su
     seed_failed_download(opened, now)
     seed_failed_download(opened, now, "casey", 4)
     seed_part_import(opened, now)
+    seed_kept_in_immich(opened, people, now)
     events.record(opened, now - 3 * HOUR, transport.RECOVERED, transport.SUBJECT)
     seed_transport(opened, now)
     transport_status.review_unlocked(opened, settings, now - 2 * HOUR, alerts.recorded)

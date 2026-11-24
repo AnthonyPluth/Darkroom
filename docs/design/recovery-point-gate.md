@@ -1,6 +1,6 @@
 # Recovery-point gate for managed cleanup
 
-Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. **Draft for the owner's review; no code yet.** It fills in the gate that [`immich-managed-storage.md`](immich-managed-storage.md) (sections 4, 8, 9 and 10) requires before Darkroom may delete anything an Immich-managed import left in the inbox. Until the slices in section 9 land and the owner records what section 6 asks for, cleanup keeps every zip, held copy and review hold of a managed export, as it does today.
+Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. The owner accepted its proposed defaults on 2026-11-24 (recorded on #545: https://github.com/AnthonyPluth/Darkroom/issues/545#issuecomment-7131017264); slice A (the owner's records) is built, the other slices are not. It fills in the gate that [`immich-managed-storage.md`](immich-managed-storage.md) (sections 4, 8, 9 and 10) requires before Darkroom may delete anything an Immich-managed import left in the inbox. Until the slices in section 9 land and the owner records what section 6 asks for, cleanup keeps every zip, held copy and review hold of a managed export, as it does today.
 
 ## 1. Where things stand
 
@@ -29,7 +29,7 @@ It cannot make Immich and Darkroom atomic. Another Immich client can trash or de
 
 ## 3. Data model
 
-One new migration, numbered after main's newest when the first slice lands (0052 at the time of writing), with its own `test_<revision>_…` in `tests/test_migrations.py`, on SQLite and PostgreSQL. It adds tables and nullable columns only; no existing row changes. Times are UTC epoch seconds (`Float`), as elsewhere.
+Each slice adds the tables and columns it uses in its own migration, numbered after main's newest when it lands (slice A's is 0054, `retention_attestations`), with its own `test_<revision>_…` in `tests/test_migrations.py`, on SQLite and PostgreSQL. It adds tables and nullable columns only; no existing row changes. Times are UTC epoch seconds (`Float`), as elsewhere.
 
 ### `retention_attestations`: what the owner records
 
@@ -43,9 +43,10 @@ One new migration, numbered after main's newest when the first slice lands (0052
 | `immich_version` | string, null for the boundary | The Immich version restored, which must be in `MANAGED_VERSIONS` when recorded |
 | `darkroom_version` | string, null for the boundary | The Darkroom release restored |
 | `database_kind` | string, one of `sqlite`, `postgresql`, null for the boundary | Which Darkroom database the rehearsal restored |
+| `boundary_text_sha256` | string, 64 lowercase hex characters; null for a rehearsal, required for the boundary | The SHA-256 of the boundary text shown when the owner accepted it (the owner's decision of 2026-11-24). Slice C's G4 counts only an acceptance whose digest equals the digest of the current text; `retention status` shows the digest and whether it equals the current text's, never the text |
 | `withdrawn_at` | float, null | Set by `withdraw`; a withdrawn row never counts again |
 
-Constraints: a check that a `restore_rehearsal` row has all four rehearsal columns and a boundary row none; a partial unique index on `kind` where `withdrawn_at IS NULL` (`sqlite_where` and `postgresql_where`), so at most one active row of each kind. Rows are never deleted; a new record withdraws the old one in the same transaction.
+Constraints: a check that a `restore_rehearsal` row has all four rehearsal columns and a null `boundary_text_sha256`, and a boundary row none of the rehearsal columns and a `boundary_text_sha256`; a check that the digest, when present, is 64 characters of `0-9a-f`; a partial unique index on `kind` where `withdrawn_at IS NULL` (`sqlite_where` and `postgresql_where`), so at most one active row of each kind. Rows are never deleted; a new record withdraws the old one in the same transaction.
 
 ### `recovery_points`: what the backup job reports
 
@@ -98,7 +99,7 @@ Conditions, checked in this order. The first that fails is the refusal, recorded
 | G1 | The export is `imported`, its last run is `done`, and its completion (`cleanup.imported_at`) is at least 14 days ago | `retention_clock` (not recorded: not yet a candidate) | `test_a_managed_zip_is_not_a_candidate_before_14_days` |
 | G2 | The managed release setting is on (section 9, slice D) | `release_off` | `test_the_setting_off_keeps_every_managed_file` |
 | G3 | An active `restore_rehearsal` attestation exists | `no_rehearsal` (keeps `KEPT_ONLY`'s wording) | `test_no_rehearsal_keeps_the_zip`, `test_a_withdrawn_rehearsal_keeps_the_zip` |
-| G4 | An active `remote_deletion_boundary` attestation exists | `boundary_not_accepted` | `test_no_accepted_boundary_keeps_the_zip`, `test_a_withdrawn_boundary_keeps_the_zip` |
+| G4 | An active `remote_deletion_boundary` attestation exists whose `boundary_text_sha256` equals the SHA-256 of the current `BOUNDARY_TEXT` (an acceptance of other text does not count) | `boundary_not_accepted` | `test_no_accepted_boundary_keeps_the_zip`, `test_a_withdrawn_boundary_keeps_the_zip` |
 | G5 | Every receipt the export needs is `committed` and none is held (`managed_ingest.uncommitted` is false; no `metadata_hold`) | `receipt_not_committed` | `test_a_metadata_verified_receipt_keeps_the_zip`, `test_a_missing_receipt_keeps_the_zip`, `test_a_held_receipt_keeps_the_zip` |
 | G6 | Every member of D(U) is known: a committed receipt or a verified managed version of the intent's owner; a tier 1 to 3 keeper with no managed version, a failed entry or an unknown entry pins it | `keeper_not_managed` | `test_a_tier_1_keeper_only_in_google_only_keeps_the_zip`, `test_a_failed_entry_keeps_the_zip`, `test_another_owners_version_keeps_the_zip` |
 | G7 | Metadata handled: a receipt is committed (so `metadata_verified`); for a tier 1 to 3 keeper, every field `managed_metadata.intend` would carry from Google's sidecar (date, offset, place, description) is what Immich already shows, from the fresh read of G12 | `metadata_not_in_immich` | `test_a_keeper_missing_googles_place_keeps_the_zip`, `test_a_keeper_with_every_field_lets_it_go` |
@@ -200,7 +201,7 @@ Each its own pull request under 1,000 added lines including tests, landing in or
 
 | Slice | Change | About |
 | --- | --- | --- |
-| A | Migration (the three tables and the journal columns) with its test; models; `retention_gate.py` for attestations; `run.py retention record-rehearsal`, `accept-boundary`, `withdraw`, `status`; tests. No behaviour change: cleanup still keeps everything | 600 lines |
+| A | Migration 0054 (`retention_attestations` only) with its test; model, with `boundary_text_sha256` stored by `accept-boundary` and shown by `status` (the comparison in G4 is slice C's); `retention_gate.py` for attestations; `run.py retention record-rehearsal`, `accept-boundary`, `withdraw`, `status`; tests. No behaviour change: cleanup still keeps everything. `recovery_points` and `recovery_point_assets` come with slice B's own migration, the journal columns with slice D's and E's | 600 lines |
 | B | `run.py recovery-point begin` and `finish`; `ManagedReader.custody_all`; manifest building; abandonment in the cleanup tick; the two alerts; the deployment docs' hook example; tests and `no_leaks` | 850 lines |
 | C | `retention_gate.refusal(opened, unit, now)` with G1 to G10 and the per-condition negatives; `cleanup.py` records the specific reason instead of `KEPT_ONLY`; `retention status` counts per condition. Still keeps everything | 700 lines |
 | D | Managed zip and held-copy release in `part_free.py`: the managed "placed" clause, the locked re-check, G12 with the deadline, `release_point_id` in the journal; the setting `DARKROOM_MANAGED_RELEASE` (off by default, in `config.py` and `.env.example`); the AGENTS.md promise 2 amendment and Semgrep examples; crash and swap tests. Labelled `safety-critical` | 950 lines |
@@ -210,7 +211,7 @@ If a slice goes over the budget it splits again, D first (held copies can move t
 
 ## 10. Open questions
 
-Each is something a user would notice; this design does not choose them.
+Each is something a user would notice. On 2026-11-24 the owner accepted the proposed defaults (recorded on #545, link above), which settles question 8 (one acceptance for the whole installation) and adds that the accepted boundary stores a SHA-256 of the text shown, which slice C's G4 requires to be the current text. The others without a proposed default (the backup tool, the thresholds) stay open and the design's own constants apply.
 
 1. **The backup integration.** Is the `begin`/`finish` hook from the owner's backup job acceptable, and which tool will back up Immich's database and media together with Darkroom's appdata? Or does the owner want a tool's own API queried instead, or a manual attestation per backup (which would make cleanup depend on the owner running a command every few days)?
 2. **Health thresholds.** `OPEN_LIMIT` (how long a backup may run before it counts as failed), `STALE_AFTER` (how long units may wait on coverage before the stale alert) and whether the stale alert should be pushed or only shown.
@@ -219,5 +220,5 @@ Each is something a user would notice; this design does not choose them.
 5. **Matched photos whose Google metadata is not in Immich.** G7 keeps a zip while a tier 1 to 3 keeper lacks a field Google's sidecar has, because existing-asset enrichment is not built. That may keep many managed zips indefinitely. Should these stay pinned until enrichment exists, or should the owner get an explicit discard (recording that the field was not carried), as section 4 of the managed-storage design allows?
 6. **Keepers not yet in Immich's managed library.** A zip whose matched keeper is a `google-only/` or `originals/` file the backfill has not mapped stays pinned (G6). Is waiting for the backfill right, or should those zips follow the old-folder rules?
 7. **Where the owner records.** Command line only, or also a page in the app (which needs a signed-off design), and should the Exports page say "kept: waiting for a backup" per export?
-8. **Scope of the boundary acceptance.** One acceptance for the whole installation, as designed, or per person (each person whose photos would lose the inbox copy)?
+8. **Decided (2026-11-24): one acceptance for the whole installation.** Scope of the boundary acceptance. One acceptance for the whole installation, as designed, or per person (each person whose photos would lose the inbox copy)?
 9. **How long the write lock may wait on Immich.** `READ_DEADLINE`: other jobs wait while a large zip's assets are read under the lock. A short deadline may mean a large zip never goes; a long one pauses imports and placement for minutes.

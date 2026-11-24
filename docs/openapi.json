@@ -2813,6 +2813,9 @@
           "id": {
             "type": "integer"
           },
+          "kept_in_immich": {
+            "type": "boolean"
+          },
           "kept_item_id": {
             "anyOf": [
               {
@@ -2903,6 +2906,7 @@
           "decision_id",
           "export_id",
           "id",
+          "kept_in_immich",
           "kept_item_id",
           "kept_person_id",
           "library_name",
