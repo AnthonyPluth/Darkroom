@@ -238,13 +238,15 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                      and (not a.trashed or taken is not None or asked.get("withDeleted") is True)
                      and window.get("gte", "") <= a.updated_at <= window.get("lte", "9999")
                      and in_range(a.taken_at(), taken or flat_taken)
-                     and asked.get("checksum") in (None, a.json()["checksum"])]
+                     and (asked.get("filter", {}).get("checksum", {}).get("eq") or asked.get("checksum")) in (None, a.json()["checksum"])]
             if taken is not None:
                 found.sort(key=lambda a: utc(a.taken_at()))
-            start = int(asked.get("cursor") or 0)
+            start = int(asked.get("cursor") or 0) if shaped else (int(asked.get("page", 1)) - 1) * min(int(asked.get("size", 250)), state.page_size)
             size = min(int(asked.get("size", 250)), state.page_size)
             end = start + size
-            self.reply(200, {"assets": {"items": [a.json() for a in found[start:end]], "nextCursor": str(end) if end < len(found) else None}})
+            more = str(end) if end < len(found) else None
+            self.reply(200, {"assets": {"items": [a.json() for a in found[start:end]], "nextCursor": more if shaped else None,
+                                        "nextPage": None if shaped or more is None else str(end // size + 1)}})
 
         def asset(self, person: FakePerson, parts: list[str]) -> None:
             found = next((a for a in state.assets if a.id == parts[3] and (a.owner_id == person.user_id or a.id in state.shared)), None)
