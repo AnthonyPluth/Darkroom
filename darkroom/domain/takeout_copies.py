@@ -309,7 +309,7 @@ def complete(opened: Session, person: Person, row: DuplicateRemoval, loser: Medi
     opened.commit()
 
 
-def resolve_person(opened: Session, photos: Photos, person: Person, now: float, tools: Tools | None = None) -> Resolved:
+def finish_pending(opened: Session, photos: Photos, person: Person, now: float, tools: Tools | None = None) -> Resolved:
     tools = tools or Tools()
     resolved = Resolved()
     pending = opened.execute(
@@ -317,6 +317,12 @@ def resolve_person(opened: Session, photos: Photos, person: Person, now: float, 
     ).scalars().all()
     for row in pending:
         finish(opened, photos, person, row, now, resolved, tools)
+    return resolved
+
+
+def resolve_person(opened: Session, photos: Photos, person: Person, now: float, tools: Tools | None = None) -> Resolved:
+    tools = tools or Tools()
+    resolved = finish_pending(opened, photos, person, now, tools)
     for pair in pairs(opened, person):
         if pair.phone not in opened or pair.takeout not in opened:
             continue

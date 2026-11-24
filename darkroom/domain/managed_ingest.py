@@ -11,7 +11,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, events, immich_reconcile, managed_compound, managed_manifest, managed_metadata, managed_upload, media, same_shot, xmp
+from darkroom.domain import alerts, immich_reconcile, managed_compound, managed_manifest, managed_metadata, managed_upload, media, same_shot, xmp
 from darkroom.domain.ingest import place
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import immich
@@ -47,19 +47,6 @@ class Item:
 
 def intent_of(opened: Session, export: Export) -> ManagedImportIntent | None:
     return opened.execute(select(ManagedImportIntent).where(ManagedImportIntent.export_id == export.id, ManagedImportIntent.kind == "import").order_by(ManagedImportIntent.id).limit(1)).scalar_one_or_none()
-
-
-def begin(opened: Session, export: Export, person: Person, fresh: bool, now: float) -> ManagedImportIntent | None:
-    intent = intent_of(opened, export)
-    if intent is not None or not fresh or person.managed_imports != ON or not immich.is_canonical_id(person.immich_user_id):
-        return intent
-    db.write_lock(opened)
-    intent = ManagedImportIntent(person_id=person.id, export_id=export.id, owner_id=str(person.immich_user_id), resource_manifest=MANIFEST, created_at=now)
-    opened.add(intent)
-    events.record(opened, now, "managed_import_started", f"export {export.id}", person.slug)
-    opened.commit()
-    monitoring.log("export imported to Immich-managed storage", export=export.id)
-    return intent
 
 
 def reader_of(settings: config.Settings, person: Person, intent: ManagedImportIntent, client: immich.Client | None) -> immich.ManagedReader:

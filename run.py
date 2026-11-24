@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from darkroom import config, monitoring, oidc
 from darkroom.providers import exiftool, immich, resend
 from darkroom.dates import local_today, utc_now
-from darkroom.domain import demo, immich_reconcile, index, legacy, retention_gate, share_bind, share_check, video_times
+from darkroom.domain import demo, immich_reconcile, index, legacy, managed_switch, retention_gate, share_bind, share_check, video_times
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs, wizard
@@ -276,10 +276,12 @@ def run_import_legacy(slug: str | None, folder: str | None) -> int:
             now = utc_now().timestamp()
             try:
                 if folder:
+                    managed_switch.hold(opened, Photos(settings.photos_root), person, "legacy")
+                    opened.commit()
                     legacy.set_source(opened, Photos(settings.photos_root), person, folder, now)
                     opened.commit()
                 done = legacy.import_person(opened, settings, person, now, queue=legacy.PixelFolderQueue())
-            except (legacy.BadSource, legacy.NoSource, legacy.NotReady, legacy.Busy) as error:
+            except (legacy.BadSource, legacy.NoSource, legacy.NotReady, legacy.Busy, managed_switch.Refused, managed_switch.Paused) as error:
                 print(f"import-legacy: {error}", file=sys.stderr)
                 code = 1
             else:
@@ -311,6 +313,10 @@ def run_reconcile_immich(slug: str | None) -> int:
                 print(f"reconcile-immich: {person.slug}: {error}", file=sys.stderr)
                 code = 1
             else:
+                if done.paused:
+                    print(f"reconcile-immich: {person.slug}: {managed_switch.RECONCILE_PAUSED}", file=sys.stderr)
+                    code = 1
+                    continue
                 print(f"{person.slug}: {done.listed} listed, {done.stored} stored ({done.copied} copied to originals, {done.already_there} already there), "
                       f"{done.queued} queued for the Pixel folder, {done.ignored} not phone uploads, {done.waiting} waiting, {done.failed} failed")
                 code = 1 if done.failed else code

@@ -7,12 +7,12 @@ from typing import Final, Literal, get_args
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
-from darkroom import config
-from darkroom.domain import alerts, events, writer_locks
+from darkroom import config, monitoring
+from darkroom.domain import alerts, events, managed_ingest, writer_locks
 from darkroom.domain.ingest import run
 from darkroom.providers import immich
 from darkroom.storage import db, paths
-from darkroom.storage.models import DuplicateRemoval, Export, ManagedImportIntent, Person
+from darkroom.storage.models import DuplicateRemoval, Event, Export, ManagedImportIntent, Person
 from darkroom.storage.paths import Photos
 
 State = Literal["off", "pausing", "on", "stopped"]
@@ -29,6 +29,10 @@ WAITS: Final[dict[State, str]] = {
 }
 UNKNOWN_STATE: Final = "this person's managed-imports setting is not one Darkroom knows, so this waits"
 REFUSED: Final = "this person's imports go to Immich, so nothing is written to their old folders"
+RECONCILE_PAUSED: Final = "the Immich reconcile is paused while this person's imports are switched to Immich, so it only finishes removals it had begun"
+NO_USER_WAIT: Final = "this person's imports go to Immich but they have no Immich user saved, so this waits until one is"
+NO_USER_ALERT: Final = "Immich-managed imports of {slug} are on but they have no Immich user saved, so their new Takeout export {export} waits. Open Darkroom for details."
+STOPPED_ALERT: Final = "Immich-managed imports of {slug} are stopped, so their new Takeout export {export} waits until they are on again. Open Darkroom for details."
 NO_KEY: Final = "this person has no Immich user and key saved, so their imports can't go to Immich"
 UNKNOWN_REQUEST: Final = "this person's managed-imports setting is not one Darkroom knows, so it is left as it is"
 WAITING_REASONS: Final[dict[str, str]] = {
@@ -104,6 +108,7 @@ def hold(opened: Session, photos: Photos, person: Person, writer: Writer, export
     claim(opened, person)
     state = state_of(person)
     if state is None:
+        opened.rollback()
         raise Paused(UNKNOWN_STATE)
     way: run.Way | None = None
     if export is not None and (writer in BY_THE_WAY or writer == "part_free"):
@@ -111,9 +116,60 @@ def hold(opened: Session, photos: Photos, person: Person, writer: Writer, export
         way = run.way(opened, photos, export)
     found = outcome(state, writer, way, export)
     if found == "wait":
+        opened.rollback()
         raise Paused(WAITS[state])
     if found == "refuse":
+        opened.rollback()
         raise Refused(REFUSED)
+
+
+def reconcile_paused(opened: Session, person: Person) -> bool:
+    claim(opened, person)
+    return state_of(person) != "off"
+
+
+def note_reconcile_paused(opened: Session, person: Person, now: float) -> None:
+    last = select(Event.time).where(Event.type == "immich_reconcile_paused", Event.subject == person.slug).order_by(Event.id.desc()).limit(1)
+    before = opened.execute(last).scalar_one_or_none()
+    if before is None or person.managed_imports_since is None or before < person.managed_imports_since:
+        events.record(opened, now, "immich_reconcile_paused", person.slug, RECONCILE_PAUSED)
+
+
+def stopped_alert_key(export: Export) -> str:
+    return f"managed:stopped:{export.id}"
+
+
+def begin(opened: Session, settings: config.Settings, export: Export, person: Person, now: float) -> ManagedImportIntent | None:
+    intent = managed_ingest.intent_of(opened, export)
+    if intent is not None:
+        return intent
+    photos = Photos(settings.photos_root)
+    opened.commit()
+    try:
+        hold(opened, photos, person, "route", export)
+    except Paused:
+        if state_of(person) == "stopped":
+            alerts.open_alert_committed(opened, settings, stopped_alert_key(export), "managed_stopped", person.slug,
+                                        alerts.Wording(alerts.TITLES["managed_stopped"], STOPPED_ALERT.format(slug=person.slug, export=export.id)), None, now,
+                                        about=alerts.person(person.id))
+        raise
+    if state_of(person) != "on" or run.way(opened, photos, export) != "fresh":
+        opened.commit()
+        return None
+    if not immich.is_canonical_id(person.immich_user_id):
+        opened.rollback()
+        alerts.open_alert_committed(opened, settings, f"managed:no_user:{export.id}", "managed_no_user", person.slug,
+                                    alerts.Wording(alerts.TITLES["managed_no_user"], NO_USER_ALERT.format(slug=person.slug, export=export.id)), None, now,
+                                    about=alerts.person(person.id))
+        raise Paused(NO_USER_WAIT)
+    intent = ManagedImportIntent(person_id=person.id, export_id=export.id, owner_id=str(person.immich_user_id), resource_manifest=managed_ingest.MANIFEST, created_at=now)
+    opened.add(intent)
+    events.record(opened, now, "managed_import_started", f"export {export.id}", person.slug)
+    alerts.close(opened, stopped_alert_key(export), now)
+    alerts.close(opened, f"managed:no_user:{export.id}", now)
+    opened.commit()
+    monitoring.log("export imported to Immich-managed storage", export=export.id)
+    return intent
 
 
 @dataclass(frozen=True)
