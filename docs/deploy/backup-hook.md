@@ -17,7 +17,7 @@ What `finish` refuses, and records nothing for: a point that is not open (a fini
 
 - A point left `open` for more than 24 hours is marked `abandoned` by the daily cleanup tick; a backup that never reported counts as a failed one.
 - When the latest finished point is `failed` or `abandoned`, one alert, "Immich backup failed", opens ("The last Immich backup Darkroom was told about did not succeed, so Darkroom keeps every Immich import's files in the inbox. Check the backup job."). It closes when a later point succeeds. An older good point does not cover for a newer failed one.
-- When an Immich-managed import has been waiting 14 days plus 3 days for its files to be released and no succeeded point with all four scopes, taken within the last 14 days and still kept by the tool, exists, one alert, "Immich backup out of date", opens. It closes when one does.
+- Once you have recorded a restore rehearsal and accepted the remote-deletion boundary (until then the files stay for that reason alone and no alert is raised), when an Immich-managed import has been waiting 14 days plus 3 days for its files to be released and no succeeded point with all four scopes, taken within the last 14 days and still kept by the tool, exists that lists every photo of the waiting imports, one alert, "Immich backup out of date", opens. It closes when one does.
 
 The alerts name no person, file or photo. They go through the alert channel you set up ([alerts-email.md](alerts-email.md)).
 
@@ -39,8 +39,9 @@ point=$(printf '%s\n' "$begun" | sed -n 's/^recovery point \([0-9][0-9]*\) opene
 
 sleep 1
 
+taken=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
 if backup-tool run; then
-    taken=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     darkroom recovery-point finish "$point" --status succeeded --taken-at "$taken" --kept-for-days 30 \
         --scopes darkroom-db,darkroom-secret,immich-db,immich-media --tool example-tool || exit 1
 else
@@ -52,6 +53,6 @@ fi
 Notes on the example:
 
 - `begin` runs first so every photo it lists is already in Darkroom's database, and so in the Darkroom backup that follows. Never run it after the backup.
-- The one-second pause keeps the snapshot time from falling before the point's own opening time, which `finish` refuses. If your tool reports its own snapshot time, pass that to `--taken-at` instead of the clock.
+- The time passed to `--taken-at` is read before the backup starts, never after it ends: a backup can only hold what existed when it began, and a later time would overstate how recent the coverage is and how long it is kept. The one-second pause keeps that time from falling before the point's own opening time, which `finish` refuses. If your tool reports its own snapshot time, pass that instead.
 - `--kept-for-days` is how long your tool keeps this snapshot (its retention), not how often you back up.
 - Run the hook from the same scheduler as the backup, so a backup that is skipped also skips `begin`.

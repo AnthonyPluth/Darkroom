@@ -454,6 +454,11 @@ def latest_finished(opened: Session) -> RecoveryPoint | None:
     return opened.execute(select(RecoveryPoint).where(RecoveryPoint.state != "open").order_by(RecoveryPoint.opened_at.desc(), RecoveryPoint.id.desc()).limit(1)).scalar_one_or_none()
 
 
+def owner_recorded(opened: Session) -> bool:
+    boundary = active(opened, BOUNDARY)
+    return active(opened, REHEARSAL) is not None and boundary is not None and accepts_current_text(boundary)
+
+
 def waiting_exports(opened: Session, now: float) -> list[int]:
     done = select(ImportRun.export_id, func.max(ImportRun.finished).label("finished")).where(ImportRun.status == "done").group_by(ImportRun.export_id).subquery()
     managed = select(ManagedImportIntent.export_id).where(ManagedImportIntent.kind == "import")
@@ -506,7 +511,7 @@ def watch(opened: Session, settings: config.Settings, now: float, notifier: aler
     latest = latest_finished(opened)
     failed = latest is not None and latest.state != "succeeded"
     since = waiting_since(opened, now)
-    stale = since is not None and now - since >= STALE_AFTER and not covering_exists(opened, now, waiting_needs(opened, waiting_exports(opened, now)))
+    stale = since is not None and now - since >= STALE_AFTER and owner_recorded(opened) and not covering_exists(opened, now, waiting_needs(opened, waiting_exports(opened, now)))
     for key, kind, message, raised in ((FAILED_KEY, FAILED_KIND, FAILED_MESSAGE, failed), (STALE_KEY, STALE_KIND, STALE_MESSAGE, stale)):
         if raised:
             alerts.open_alert(opened, settings, key, kind, "recovery points", alerts.Wording(alerts.TITLES[kind], message), None, now, notifier=notifier, about=alerts.NOBODY)

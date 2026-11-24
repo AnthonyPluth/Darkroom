@@ -13,7 +13,7 @@ import run
 from darkroom.domain import alerts, retention_gate
 from darkroom.domain.ingest import cleanup, part_free
 from darkroom.storage import db
-from darkroom.storage.models import Alert, Event, Export, ImportRun, ManagedImportIntent, RecoveryPoint, RecoveryPointAsset
+from darkroom.storage.models import Alert, Event, Export, ImportRun, ManagedImportIntent, RecoveryPoint, RecoveryPointAsset, RetentionAttestation
 from tests import test_recovery_points as base
 from tests.import_world import tree
 from tests.privacy import no_leaks
@@ -395,6 +395,32 @@ class BackupStaleAlertTests(FinishWorld):
         super().setUp()
         self.import_waiting(self.CANDIDATE)
         self.waiting_since = self.CANDIDATE + retention_gate.WINDOW
+        self.record_owner()
+
+    def record_owner(self, rehearsal=True, boundary=True):
+        url = "https://github.com/AnthonyPluth/Darkroom/issues/266#issuecomment-7100000001"
+        with db.session(self.engine, writing=True) as opened:
+            if rehearsal:
+                retention_gate.record_rehearsal(opened, NOW - 30 * DAY, retention_gate.checked_rehearsal(url, "2026-11-20", "v3.4.1", "v5.9.0", "sqlite", "2026-11-24"))
+            if boundary:
+                retention_gate.accept_boundary(opened, NOW - 30 * DAY, url)
+
+    def test_no_alert_until_a_rehearsal_is_recorded_and_the_boundary_accepted_and_none_when_either_is_withdrawn(self):
+        at = self.waiting_since + retention_gate.STALE_AFTER
+        self.assertTrue(self.watch(at).backup_stale)
+        for which in ("rehearsal", "boundary"):
+            with self.subTest(withdrawn=which):
+                with db.session(self.engine, writing=True) as opened:
+                    retention_gate.withdraw(opened, at, which)
+                self.assertFalse(self.watch(at + 1.0).backup_stale)
+                self.assertEqual(self.stale_rows(), [])
+                self.record_owner(rehearsal=which == "rehearsal", boundary=which == "boundary")
+                self.assertTrue(self.watch(at + 2.0).backup_stale)
+
+    def test_an_acceptance_of_other_boundary_text_does_not_raise_the_alert(self):
+        with db.session(self.engine, writing=True) as opened:
+            opened.execute(update(RetentionAttestation).where(RetentionAttestation.kind == "remote_deletion_boundary").values(boundary_text_sha256="0" * 64))
+        self.assertFalse(self.watch(self.waiting_since + retention_gate.STALE_AFTER).backup_stale)
 
     def stale_rows(self, alive=True):
         return [row for row in self.alert_rows() if row[0] == "retention:backup_stale" and row[3] == alive]
@@ -626,13 +652,13 @@ class HookExampleTests(unittest.TestCase):
         bin_dir.mkdir()
         log = root / "calls.log"
         (bin_dir / "docker").write_text(f'#!/bin/sh\nprintf "%s\\n" "docker $*" >> "{log}"\nif [ "$6" = begin ]; then echo "recovery point 7 opened: 3 photos listed, 3 confirmed"; exit {begin_exit}; fi\nexit 0\n')
-        (bin_dir / "backup-tool").write_text(f'#!/bin/sh\nprintf "%s\\n" "backup-tool $*" >> "{log}"\nexit {backup_exit}\n')
+        (bin_dir / "backup-tool").write_text(f'#!/bin/sh\nprintf "%s\\n" "backup-tool $* started $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "{log}"\nsleep 2\nexit {backup_exit}\n')
         for tool in bin_dir.iterdir():
             tool.chmod(0o755)
         script = root / "hook.sh"
         script.write_text(self.script())
         import subprocess
-        done = subprocess.run(["/bin/sh", str(script)], env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(root)}, capture_output=True, text=True, check=False)  # nosemgrep
+        done = subprocess.run(["/bin/sh", str(script)], env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(root)}, capture_output=True, text=True, check=False)
         return done.returncode, log.read_text().splitlines() if log.exists() else []
 
     def test_the_example_passes_a_good_backup_to_finish_as_succeeded_with_the_point_it_began(self):
@@ -643,6 +669,9 @@ class HookExampleTests(unittest.TestCase):
         self.assertRegex(calls[2], r"^docker exec darkroom python run\.py recovery-point finish 7 --status succeeded --taken-at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ --kept-for-days \d+ "
                                    r"--scopes darkroom-db,darkroom-secret,immich-db,immich-media --tool [a-z0-9-]+")
         self.assertEqual(len(calls), 3)
+        started = calls[1].rsplit(" started ", 1)[1]
+        taken = calls[2].split("--taken-at ", 1)[1].split(" ", 1)[0]
+        self.assertLessEqual(taken, started)
 
     def test_the_example_reports_a_failed_backup_as_failed_and_exits_non_zero(self):
         code, calls = self.run_script(3)
