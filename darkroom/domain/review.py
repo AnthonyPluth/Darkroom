@@ -11,7 +11,7 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import monitoring
-from darkroom.domain import accounts, backfill, dedupe, events, exports, managed_ingest, media, people, pixel_source, thumbs, xmp
+from darkroom.domain import accounts, backfill, dedupe, events, exports, managed_ingest, media, people, pixel_source, same_shot, thumbs, xmp
 from darkroom.domain.ingest import cleanup, finish_export, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
@@ -626,6 +626,8 @@ def reverse(opened: Session, decision_id: int, now: float) -> DedupeDecision:
     review = opened.execute(select(ReviewItem).where(ReviewItem.decision_id == row.id)).scalar_one_or_none()
     if review is not None and review.status == "pending":
         raise WrongState("this pair is waiting in the review queue; decide it there instead")
+    if same_shot.pending_for_decision(opened, row.id):
+        raise WrongState(same_shot.WAITS_FOR_REVERSAL)
     return dedupe.reverse(opened, row.id, now, "owner")
 
 
@@ -649,6 +651,8 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
     export, current, target = reassign_checks(opened, item, person_id)
     if target.id == current.id:
         return item, Changed(export)
+    if same_shot.pending_for_item(opened, item.id):
+        raise WrongState(same_shot.WAITS_FOR_REASSIGNMENT)
     try:
         source = photos.google_only_file(item.path)
     except (paths.NotALibraryCopy, paths.OutsideRoot) as error:

@@ -4,6 +4,8 @@ Design for [#546](https://github.com/AnthonyPluth/Darkroom/issues/546), prepared
 
 The owner's decision: a Takeout photo that is a different-byte same shot of an asset already in the person's Immich library goes into a `same_shot` hold that the owner resolves. Until the owner resolves it, nothing is uploaded and nothing is deleted. The design does not use a catalogue refresh into `managed_asset_versions`, and it does not upload both.
 
+**Status after slice 2 ([#581](https://github.com/AnthonyPluth/Darkroom/pull/581)):** slices 1 and 2 are built. Until the owner answers section 9, the code uses the design's defaults: a 1 second window (question 1) and a hold for trashed, offline and external candidates (question 2). Questions 3 to 6 concern slices 3 to 5, which are not built, so no hold can be resolved yet.
+
 This document builds on [immich-managed-storage.md](immich-managed-storage.md) (sections 2, 3, 4, 5 and 9) and does not change it. Where an implementing slice changes what that design or `AGENTS.md` says, the slice updates them, with its tests.
 
 ## 1. The gap
@@ -68,7 +70,7 @@ Darkroom applies these filters after the query, and each one has a negative test
 | Same kind | `IMAGE` with `IMAGE`, `VIDEO` with `VIDEO` | A still and a clip taken in the same second are different resources |
 | Not a Live Photo's motion video | Skip an asset with `visibility: hidden`, and an asset that another asset in the window names as its `livePhotoVideoId` | A hidden motion video is part of a still, not a shot of its own |
 | Same RAW-ness | `media.CAMERA_RAW_SUFFIXES` on `originalFileName` for both sides | A RAW and its JPEG are two distinct resources by design (the live spike confirmed that they are two unstacked assets) |
-| Not Darkroom's own Takeout upload | Skip an asset whose verified managed version has a `takeout` origin and no `phone` or `other` origin for this person | Google already held both items separately, and Darkroom's tiers kept them apart. Without this rule, two burst frames from one Takeout would hold each other |
+| Not Darkroom's own Takeout upload | Skip an asset whose verified managed version has a `takeout` origin and no `phone` or `other` origin for this person. A managed import records no version or origin yet (only the backfill does), so slice 2 also counts an asset that one of the person's receipts names with upload outcome `created` and a verified state as Darkroom's own upload, under the same `phone`/`other` exception | Google already held both items separately, and Darkroom's tiers kept them apart. Without this rule, two burst frames from one Takeout would hold each other |
 | Any library and any state | Keep external-library, offline and trashed assets of the same owner | A hold loses nothing, and an upload might recreate a photo that the owner trashed on purpose. These candidates can only be resolved by `upload` or by leaving the hold (section 5) |
 
 The rule does **not** require the camera or the size to agree. The owner chose a same-instant hold, and a hold is the safe outcome when the evidence is weaker. The hold records whether the make, model and dimensions (or duration in milliseconds, which is how Immich reports it) agree, and which side has more pixels. The owner sees this when resolving the hold, but it decides nothing by itself (section 5 of the managed-storage design).

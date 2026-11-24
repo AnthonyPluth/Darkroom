@@ -649,6 +649,34 @@ rules:
     paths:
       include: ["/darkroom/domain/transport.py", "/darkroom/providers/syncthing.py"]
 
+  - id: darkroom-recovery-point-one-writer
+    message: >-
+      The owner's retention records and the recovery points that say which backups cover which photos are written only
+      by darkroom/domain/retention_gate.py, which checks them before a managed cleanup relies on them
+      (docs/design/recovery-point-gate.md, section 8; #545). Call retention_gate instead of building or changing a
+      RetentionAttestation, RecoveryPoint or RecoveryPointAsset row here.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: RetentionAttestation(...)
+      - pattern: RecoveryPoint(...)
+      - pattern: RecoveryPointAsset(...)
+      - pattern: insert(RetentionAttestation)
+      - pattern: insert(RecoveryPoint)
+      - pattern: insert(RecoveryPointAsset)
+      - pattern: update(RetentionAttestation)
+      - pattern: update(RecoveryPoint)
+      - pattern: update(RecoveryPointAsset)
+      - pattern: delete(RetentionAttestation)
+      - pattern: delete(RecoveryPoint)
+      - pattern: delete(RecoveryPointAsset)
+      - pattern: $S.get(RetentionAttestation, ...).$A = $V
+      - pattern: $S.get(RecoveryPoint, ...).$A = $V
+      - pattern: $S.get(RecoveryPointAsset, ...).$A = $V
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/domain/retention_gate.py"]
+
   - id: darkroom-immich-upload-one-caller
     message: >-
       Immich's import routes (the upload and its bulk check) are sent only for a managed import receipt, by
@@ -696,3 +724,61 @@ rules:
             ...
     paths:
       include: ["/darkroom/providers/immich.py"]
+
+  - id: darkroom-writer-locks-one-helper
+    message: >-
+      A function that needs more than one of an account's import lock (ingest.run.account_lock), a person's legacy import
+      lock (legacy.person_lock) and a person's Immich reconcile lock (immich_reconcile.person_lock) takes them only through
+      writer_locks.hold, which enters them in the one order every old-folder writer uses: account locks ascending, then each
+      person's legacy lock and reconcile lock (docs/design/per-person-switch.md, section 3). Two callers that take them in
+      different orders each get one lock and fail on the other, every tick.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: $M.account_lock(...)
+              - pattern: account_lock(...)
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... legacy.person_lock(...) ...>
+      - patterns:
+          - pattern-either:
+              - pattern: $M.account_lock(...)
+              - pattern: account_lock(...)
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... immich_reconcile.person_lock(...) ...>
+      - patterns:
+          - pattern-either:
+              - pattern: legacy.person_lock(...)
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... $M.account_lock(...) ...>
+      - patterns:
+          - pattern-either:
+              - pattern: legacy.person_lock(...)
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... immich_reconcile.person_lock(...) ...>
+      - patterns:
+          - pattern-either:
+              - pattern: immich_reconcile.person_lock(...)
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... $M.account_lock(...) ...>
+      - patterns:
+          - pattern-either:
+              - pattern: immich_reconcile.person_lock(...)
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... legacy.person_lock(...) ...>
+    paths:
+      include: ["/darkroom/", "/run.py"]
+      exclude: ["/darkroom/domain/writer_locks.py"]

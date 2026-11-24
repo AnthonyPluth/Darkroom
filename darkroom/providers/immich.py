@@ -7,8 +7,9 @@ import hashlib
 import json
 import math
 import re
+import time
 import urllib.error
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, BinaryIO, Literal
@@ -47,6 +48,7 @@ IMPORT_ROUTES = frozenset({("POST", UPLOAD_PATH), ("POST", BULK_CHECK_PATH)})
 UPLOAD_TIMEOUT = 300.0
 BULK_CHECK_ID = "darkroom-source"
 CHECKSUM_PAGE = 100
+CHECKSUM_PAGES = 10
 NEAR_PAGE = 100
 NEAR_PAGES = 10
 NEAR_PADDING = 1.0
@@ -580,11 +582,25 @@ class Client:
         raise ImmichFailed("Immich's upload check answer was not understood")
 
     def search_checksum(self, key: str, sha1: str) -> list[Asset]:
-        found = self.call("POST", "/api/search/metadata", key=key, body={"checksum": checksum_of(sha1), "size": CHECKSUM_PAGE})
-        page = found.get("assets") if isinstance(found, dict) else None
-        if not isinstance(page, dict) or not isinstance(page.get("items"), list) or page.get("nextCursor"):
-            raise ImmichFailed("Immich's checksum search answer was not understood")
-        return [asset_of(entry) for entry in page["items"]]
+        checksum = checksum_of(sha1)
+        found: list[Asset] = []
+        cursor: str | None = None
+        for _ in range(CHECKSUM_PAGES):
+            body: dict[str, object] = {"filter": {"checksum": {"eq": checksum}}, "size": CHECKSUM_PAGE, "orderBy": {"field": "fileCreatedAt", "direction": "asc"}}
+            if cursor is not None:
+                body["cursor"] = cursor
+            answer = self.call("POST", "/api/search/metadata", key=key, body=body)
+            page = answer.get("assets") if isinstance(answer, dict) else None
+            items = page.get("items") if isinstance(page, dict) else None
+            following = page.get("nextCursor") if isinstance(page, dict) else None
+            if (not isinstance(page, dict) or not isinstance(items, list) or len(items) > CHECKSUM_PAGE
+                    or (following is not None and (not isinstance(following, str) or not following or following == cursor))):
+                raise ImmichFailed("Immich's checksum search answer was not understood")
+            found.extend(asset_of(entry) for entry in items)
+            if following is None:
+                return found
+            cursor = following
+        raise ImmichFailed("Immich's checksum search had more pages than are read")
 
     def search_taken(self, key: str, after: str, before: str) -> NearShots:
         found: dict[str, Nearby] = {}
@@ -630,6 +646,13 @@ class Client:
 
 
 @dataclass(frozen=True)
+class CustodyReads:
+    found: dict[str, dict[str, Any]] = field(repr=False)
+    refused: tuple[str, ...] = field(repr=False)
+    complete: bool
+
+
+@dataclass(frozen=True)
 class ManagedReader:
     client: Client = field(repr=False)
     key: str = field(repr=False)
@@ -672,6 +695,29 @@ class ManagedReader:
         if not is_canonical_id(asset_id):
             raise ImmichFailed("not a managed asset id")
         self.check_access()
+        return self._read_custody(asset_id)
+
+    def custody_all(self, asset_ids: Sequence[str], deadline: float | None = None) -> CustodyReads:
+        self.check_access()
+        found: dict[str, dict[str, Any]] = {}
+        refused: list[str] = []
+        for position, asset_id in enumerate(asset_ids):
+            if deadline is not None and time.monotonic() >= deadline:
+                return CustodyReads(found, (*refused, *asset_ids[position:]), False)
+            if not is_canonical_id(asset_id):
+                refused.append(asset_id)
+                continue
+            try:
+                found[asset_id] = self._read_custody(asset_id)
+            except (NotCustody, NotVisible):
+                refused.append(asset_id)
+            except ImmichFailed as failure:
+                if failure.status != 404:
+                    return CustodyReads(found, (*refused, *asset_ids[position:]), False)
+                refused.append(asset_id)
+        return CustodyReads(found, tuple(refused), True)
+
+    def _read_custody(self, asset_id: str) -> dict[str, Any]:
         found = self.client.call("GET", asset_path(asset_id), key=self.key)
         if (not isinstance(found, dict) or found.get("id") != asset_id or found.get("ownerId") != self.owner_id
                 or "libraryId" not in found or found["libraryId"] is not None

@@ -17,6 +17,7 @@ def one_of(column: str, values: tuple[str, ...], name: str) -> CheckConstraint:
 
 class Person(Base):
     __tablename__ = "people"
+    __table_args__ = (one_of("managed_imports", ("pausing", "on", "stopped"), "ck_people_managed_imports"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     slug: Mapped[str] = mapped_column(String, nullable=False, unique=True)
@@ -30,6 +31,8 @@ class Person(Base):
     immich_reconciled_until: Mapped[float | None] = mapped_column(Float)
     created: Mapped[float] = mapped_column(Float, nullable=False)
     managed_imports: Mapped[str | None] = mapped_column(String)
+    managed_imports_since: Mapped[float | None] = mapped_column(Float)
+    managed_switch_waiting: Mapped[str | None] = mapped_column(String)
     managed_backfill: Mapped[str | None] = mapped_column(String)
 
 
@@ -170,6 +173,50 @@ class ManagedImportReceipt(Base):
     hold_facts: Mapped[str | None] = mapped_column(Text)
 
 
+COMPOUND_HOLDS = ("unknown_offset", "no_instant", "unwritable", "compound_conflict", "unusable")
+COMPOUND_ROLES = ("live_still", "live_video")
+
+
+class ManagedCompound(Base):
+    __tablename__ = "managed_compounds"
+    __table_args__ = (
+        UniqueConstraint("intent_id", "compound_key", name="uq_managed_compounds_key"),
+        UniqueConstraint("id", "intent_id", name="uq_managed_compounds_intent_binding"),
+        CheckConstraint("length(compound_key) > 0", name="ck_managed_compounds_key"),
+        one_of("kind", ("live_photo",), "ck_managed_compounds_kind"),
+        CheckConstraint(f"hold IS NULL OR hold IN ({', '.join(repr(hold) for hold in COMPOUND_HOLDS)})", name="ck_managed_compounds_hold"),
+        CheckConstraint("committed_at IS NULL OR hold IS NULL", name="ck_managed_compounds_committed"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    intent_id: Mapped[int] = mapped_column(ForeignKey("managed_import_intents.id", ondelete="RESTRICT"), nullable=False)
+    compound_key: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    hold: Mapped[str | None] = mapped_column(String)
+    frozen_at: Mapped[float] = mapped_column(Float, nullable=False)
+    committed_at: Mapped[float | None] = mapped_column(Float)
+
+
+class ManagedCompoundMember(Base):
+    __tablename__ = "managed_compound_members"
+    __table_args__ = (
+        ForeignKeyConstraint(["compound_id", "intent_id"], ["managed_compounds.id", "managed_compounds.intent_id"], ondelete="RESTRICT",
+                             name="fk_managed_compound_members_compound"),
+        UniqueConstraint("intent_id", "resource_key", name="uq_managed_compound_members_resource"),
+        UniqueConstraint("compound_id", "role", name="uq_managed_compound_members_role"),
+        one_of("role", COMPOUND_ROLES, "ck_managed_compound_members_role"),
+        CheckConstraint("length(resource_key) > 0", name="ck_managed_compound_members_resource"),
+        CheckConstraint("length(source_sha1) = 40", name="ck_managed_compound_members_source_sha1"),
+        CheckConstraint("expected_bytes >= 0", name="ck_managed_compound_members_bytes"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    compound_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    intent_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    resource_key: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    source_sha1: Mapped[str] = mapped_column(String, nullable=False)
+    expected_bytes: Mapped[int] = mapped_column(Bytes, nullable=False)
+
+
 class ManagedAssetVersion(Base):
     __tablename__ = "managed_asset_versions"
     __table_args__ = (
@@ -238,6 +285,32 @@ class ManagedAssetOrigin(Base):
     receipt_state: Mapped[str | None] = mapped_column(String)
     evidence_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
     recorded_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+SAME_SHOT_STATUSES = ("pending", "upload", "represented", "void")
+
+
+class ManagedSameShotHold(Base):
+    __tablename__ = "managed_same_shot_holds"
+    __table_args__ = (
+        UniqueConstraint("receipt_id", name="uq_managed_same_shot_holds_receipt"),
+        one_of("status", SAME_SHOT_STATUSES, "ck_managed_same_shot_holds_status"),
+        CheckConstraint("length(owner_id) > 0", name="ck_managed_same_shot_holds_owner"),
+        CheckConstraint("(status = 'pending' AND resolved_at IS NULL AND resolved_by IS NULL AND asset_id IS NULL) OR "
+                        "(status != 'pending' AND resolved_at IS NOT NULL)", name="ck_managed_same_shot_holds_resolution"),
+        CheckConstraint("asset_id IS NULL OR (status = 'represented' AND length(asset_id) > 0)", name="ck_managed_same_shot_holds_asset"),
+        Index("ix_managed_same_shot_holds_person_status", "person_id", "status"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="RESTRICT"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False)
+    receipt_id: Mapped[int] = mapped_column(ForeignKey("managed_import_receipts.id", ondelete="RESTRICT"), nullable=False)
+    found_at: Mapped[float] = mapped_column(Float, nullable=False)
+    candidates: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending", server_default="pending")
+    resolved_at: Mapped[float | None] = mapped_column(Float)
+    resolved_by: Mapped[int | None] = mapped_column(ForeignKey("people.id", ondelete="SET NULL"))
+    asset_id: Mapped[str | None] = mapped_column(String)
 
 
 class ManagedBackfillItem(Base):
@@ -738,3 +811,53 @@ class RetentionAttestation(Base):
     database_kind: Mapped[str | None] = mapped_column(String)
     boundary_text_sha256: Mapped[str | None] = mapped_column(String)
     withdrawn_at: Mapped[float | None] = mapped_column(Float)
+
+
+RECOVERY_POINT_STATES = ("open", "succeeded", "failed", "abandoned")
+RECOVERY_POINT_FAILURES = ("reported_failed", "scopes_missing", "not_finished", "immich_unreachable")
+MANIFEST_SOURCES = ("receipt", "version")
+HEX_DIGEST = "length({column}) = {size} AND ltrim({column}, '0123456789abcdef') = ''"
+RECOVERY_POINT_SHAPE = ("(state = 'open' AND finished_at IS NULL AND taken_at IS NULL AND kept_until IS NULL AND scopes IS NULL AND failure IS NULL) OR "
+                        "(state = 'succeeded' AND finished_at IS NOT NULL AND taken_at IS NOT NULL AND kept_until IS NOT NULL AND scopes IS NOT NULL AND failure IS NULL) OR "
+                        "(state IN ('failed', 'abandoned') AND failure IS NOT NULL)")
+RECOVERY_POINT_TIMES = "taken_at IS NULL OR (finished_at IS NOT NULL AND opened_at <= taken_at AND taken_at <= finished_at)"
+RECOVERY_POINT_FAILURE_CODES = f"failure IS NULL OR failure IN ({', '.join(repr(v) for v in RECOVERY_POINT_FAILURES)})"
+
+
+class RecoveryPoint(Base):
+    __tablename__ = "recovery_points"
+    __table_args__ = (
+        one_of("state", RECOVERY_POINT_STATES, "ck_recovery_points_state"),
+        CheckConstraint(RECOVERY_POINT_SHAPE, name="ck_recovery_points_shape"),
+        CheckConstraint(RECOVERY_POINT_TIMES, name="ck_recovery_points_times"),
+        CheckConstraint(RECOVERY_POINT_FAILURE_CODES, name="ck_recovery_points_failure"),
+        CheckConstraint("manifest_count >= 0", name="ck_recovery_points_manifest_count"),
+        CheckConstraint(HEX_DIGEST.format(column="manifest_sha256", size=64), name="ck_recovery_points_manifest_digest"),
+        Index("ix_recovery_points_state_opened", "state", "opened_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    opened_at: Mapped[float] = mapped_column(Float, nullable=False)
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    manifest_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    finished_at: Mapped[float | None] = mapped_column(Float)
+    taken_at: Mapped[float | None] = mapped_column(Float)
+    kept_until: Mapped[float | None] = mapped_column(Float)
+    scopes: Mapped[str | None] = mapped_column(String)
+    tool: Mapped[str | None] = mapped_column(String(32))
+    snapshot_ref: Mapped[str | None] = mapped_column(String(128))
+    failure: Mapped[str | None] = mapped_column(String)
+
+
+class RecoveryPointAsset(Base):
+    __tablename__ = "recovery_point_assets"
+    __table_args__ = (
+        one_of("source", MANIFEST_SOURCES, "ck_recovery_point_assets_source"),
+        CheckConstraint("length(owner_id) > 0 AND length(asset_id) > 0", name="ck_recovery_point_assets_identity"),
+        CheckConstraint(HEX_DIGEST.format(column="sha1", size=40), name="ck_recovery_point_assets_sha1"),
+    )
+    recovery_point_id: Mapped[int] = mapped_column(ForeignKey("recovery_points.id", ondelete="CASCADE"), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String, primary_key=True)
+    asset_id: Mapped[str] = mapped_column(String, primary_key=True)
+    sha1: Mapped[str] = mapped_column(String(40), nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False)

@@ -6,6 +6,7 @@ import json
 import math
 import re
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
@@ -15,12 +16,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from darkroom.domain import managed_upload, media, xmp
+from darkroom.domain import managed_manifest, managed_upload, media, xmp
 from darkroom.domain.ingest import metadata as ingest_metadata
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import immich
 from darkroom.storage import db
-from darkroom.storage.models import ManagedImportReceipt
+from darkroom.storage.models import ManagedCompound, ManagedCompoundMember, ManagedImportIntent, ManagedImportReceipt
 
 Role = Literal["single", "live_still", "live_video"]
 Kind = Literal["IMAGE", "VIDEO"]
@@ -350,6 +351,35 @@ def linked(intents: list[Intended], assets: list[immich.Asset]) -> bool:
     return not any(asset.live_video_id in ids for asset in assets)
 
 
+def role_of(row: ManagedImportReceipt) -> str | None:
+    intended = intended_of(row.expected_metadata)
+    return None if intended is None else intended.role
+
+
+def manifest_refusal(opened: Session, intent_id: int, compound_key: str) -> Report | None:
+    intent = opened.get(ManagedImportIntent, intent_id, populate_existing=True)
+    if intent is None or not managed_manifest.known(intent.resource_manifest):
+        return None
+    receipt, member = ManagedImportReceipt, ManagedCompoundMember
+    rows = list(opened.execute(select(receipt).where(receipt.intent_id == intent_id, receipt.compound_key == compound_key)
+                               .execution_options(populate_existing=True)).scalars())
+    compound = opened.execute(select(ManagedCompound).where(ManagedCompound.intent_id == intent_id, ManagedCompound.compound_key == compound_key)
+                              .execution_options(populate_existing=True)).scalar_one_or_none()
+    if compound is None:
+        named = opened.execute(select(member.id).where(member.intent_id == intent_id, member.resource_key == compound_key).limit(1)).first()
+        if len(rows) == 1 and rows[0].resource_key == compound_key and named is None:
+            return None
+        return Report("pending", "the item's receipts are not one single resource, as its manifest requires")
+    if compound.hold is not None:
+        return Report("held", "the Live Photo is held, so nothing of it is committed")
+    frozen = [(found.resource_key, found.role, found.source_sha1, found.expected_bytes)
+              for found in opened.execute(select(member).where(member.compound_id == compound.id).execution_options(populate_existing=True)).scalars()]
+    present = [(row.resource_key, role_of(row), row.source_sha1, row.expected_bytes) for row in rows]
+    if Counter(frozen) != Counter(present):
+        return Report("pending", "the Live Photo's receipts differ from its frozen members")
+    return None
+
+
 def commit_compound(opened: Session, reader: immich.ManagedReader, intent_id: int, compound_key: str, now: float) -> Report:
     rows = members(opened, intent_id, compound_key)
     if rows and all(row.state == "committed" for row in rows):
@@ -376,6 +406,10 @@ def commit_compound(opened: Session, reader: immich.ManagedReader, intent_id: in
         return Report("pending", REASONS["not_linked"] if "live_still" in roles else "separate assets of the item are linked")
     opened.commit()
     db.write_lock(opened)
+    refusal = manifest_refusal(opened, intent_id, compound_key)
+    if refusal is not None:
+        opened.rollback()
+        return refusal
     receipt = ManagedImportReceipt
     changed = 0
     for row in rows:
@@ -386,6 +420,8 @@ def commit_compound(opened: Session, reader: immich.ManagedReader, intent_id: in
     if changed != sum(row.state == "metadata_verified" for row in rows) or present != {row.id for row in rows}:
         opened.rollback()
         return Report("pending", "the item changed while it was checked")
+    opened.connection().execute(update(ManagedCompound).where(ManagedCompound.intent_id == intent_id, ManagedCompound.compound_key == compound_key,
+                                                              ManagedCompound.committed_at.is_(None)).values(committed_at=now))
     opened.commit()
     return Report("verified", "every resource of the item is committed")
 

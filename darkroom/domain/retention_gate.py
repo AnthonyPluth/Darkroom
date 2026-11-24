@@ -2,18 +2,28 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Final, Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import events
+from darkroom.domain import events, immich_reconcile
 from darkroom.providers import immich
 from darkroom.storage import db
-from darkroom.storage.models import REHEARSAL_DATABASES, RetentionAttestation
+from darkroom.storage.models import (
+    REHEARSAL_DATABASES,
+    ManagedAssetVersion,
+    ManagedImportIntent,
+    ManagedImportReceipt,
+    Person,
+    RecoveryPoint,
+    RecoveryPointAsset,
+    RetentionAttestation,
+)
 
 Kind = Literal["restore_rehearsal", "remote_deletion_boundary"]
 REHEARSAL: Final[Kind] = "restore_rehearsal"
@@ -176,3 +186,114 @@ def active(opened: Session, kind: Kind) -> Attestation | None:
 def status(opened: Session) -> Status:
     withdrawn = opened.execute(select(func.count()).select_from(RetentionAttestation).where(RetentionAttestation.withdrawn_at.is_not(None))).scalar_one()
     return Status(active(opened, REHEARSAL), active(opened, BOUNDARY), withdrawn)
+
+
+OPENED: Final = "recovery_point_opened"
+FAILED: Final = "recovery_point_failed"
+UNREACHABLE: Final = "immich_unreachable"
+RECEIPT: Final = "receipt"
+VERSION: Final = "version"
+
+
+@dataclass(frozen=True)
+class Candidate:
+    owner_id: str = field(repr=False)
+    asset_id: str = field(repr=False)
+    sha1: str = field(repr=False)
+    source: str
+
+
+@dataclass(frozen=True)
+class Group:
+    person_id: int
+    owner_id: str = field(repr=False)
+    candidates: tuple[Candidate, ...]
+    key: str | None = field(repr=False)
+
+
+@dataclass(frozen=True)
+class Begun:
+    point_id: int
+    state: str
+    listed: int
+    confirmed: int
+    refused: int
+
+
+def manifest_sha256(rows: Iterable[tuple[str, str, str]]) -> str:
+    return hashlib.sha256("".join(f"{owner} {asset} {sha1}\n" for owner, asset, sha1 in sorted(rows)).encode()).hexdigest()
+
+
+def committed_by(opened: Session, opened_at: float) -> dict[tuple[int, str], dict[tuple[str, str], Candidate]]:
+    found: dict[tuple[int, str], dict[tuple[str, str], Candidate]] = {}
+    receipts = select(ManagedImportIntent.person_id, ManagedImportIntent.owner_id, ManagedImportReceipt.asset_id, ManagedImportReceipt.source_sha1).join(
+        ManagedImportReceipt, ManagedImportReceipt.intent_id == ManagedImportIntent.id).where(
+        ManagedImportReceipt.state == "committed", ManagedImportReceipt.committed_at <= opened_at, ManagedImportReceipt.asset_id.is_not(None)).order_by(
+        ManagedImportReceipt.id)
+    versions = select(ManagedAssetVersion.person_id, ManagedAssetVersion.owner_id, ManagedAssetVersion.asset_id, ManagedAssetVersion.sha1).where(
+        ManagedAssetVersion.state == "bytes_verified", ManagedAssetVersion.bytes_verified_at <= opened_at).order_by(
+        ManagedAssetVersion.id)
+    for source, query in ((RECEIPT, receipts), (VERSION, versions)):
+        for person_id, owner_id, asset_id, sha1 in opened.execute(query):
+            if asset_id is None:
+                continue
+            found.setdefault((person_id, owner_id), {}).setdefault((asset_id, sha1), Candidate(owner_id, asset_id, sha1, source))
+    return found
+
+
+def key_of(settings: config.Settings, person: Person) -> str | None:
+    try:
+        return immich_reconcile.person_key(settings, person)
+    except (immich_reconcile.NotReady, immich.ImmichFailed):
+        return None
+
+
+def groups_at(engine: Engine, settings: config.Settings, opened_at: float) -> list[Group]:
+    with db.session(engine) as opened:
+        return [Group(person_id, owner_id, tuple(candidates.values()), key_of(settings, opened.get_one(Person, person_id)))
+                for (person_id, owner_id), candidates in sorted(committed_by(opened, opened_at).items())]
+
+
+def confirmed_in(group: Group, client: immich.Client | None, settings: config.Settings) -> tuple[list[Candidate], bool]:
+    if group.key is None:
+        return [], False
+    try:
+        reader = immich.ManagedReader(client or immich.Client.at(settings), group.key, group.owner_id, access="read_or_import")
+        reads = reader.custody_all(sorted({candidate.asset_id for candidate in group.candidates}))
+    except immich.ImmichFailed:
+        return [], False
+    kept: dict[str, Candidate] = {}
+    for candidate in group.candidates:
+        found = reads.found.get(candidate.asset_id)
+        try:
+            same = found is not None and immich.asset_of(found).sha1 == candidate.sha1
+        except immich.ImmichFailed:
+            same = False
+        if same:
+            kept.setdefault(candidate.asset_id, candidate)
+    return list(kept.values()), reads.complete or bool(reads.found)
+
+
+def begin(engine: Engine, settings: config.Settings, opened_at: float, client: immich.Client | None = None) -> Begun:
+    groups = groups_at(engine, settings, opened_at)
+    listed = sum(len({candidate.asset_id for candidate in group.candidates}) for group in groups)
+    confirmed: dict[tuple[str, str], Candidate] = {}
+    answered = False
+    for group in groups:
+        kept, complete = confirmed_in(group, client, settings)
+        for candidate in kept:
+            confirmed.setdefault((candidate.owner_id, candidate.asset_id), candidate)
+        answered = answered or complete
+    unreachable = bool(groups) and not answered
+    manifest = [] if unreachable else list(confirmed.values())
+    rows = [(candidate.owner_id, candidate.asset_id, candidate.sha1) for candidate in manifest]
+    with db.session(engine, writing=True) as opened:
+        point = RecoveryPoint(opened_at=opened_at, state="failed" if unreachable else "open", manifest_count=len(rows), manifest_sha256=manifest_sha256(rows),
+                              finished_at=opened_at if unreachable else None, failure=UNREACHABLE if unreachable else None)
+        opened.add(point)
+        opened.flush()
+        opened.add_all(RecoveryPointAsset(recovery_point_id=point.id, owner_id=candidate.owner_id, asset_id=candidate.asset_id, sha1=candidate.sha1, source=candidate.source)
+                       for candidate in manifest)
+        events.record(opened, opened_at, FAILED if unreachable else OPENED, f"recovery point {point.id}", f"listed {listed}, confirmed {len(rows)}")
+        monitoring.log("recovery point " + ("failed" if unreachable else "opened"), id=point.id, listed=listed, confirmed=len(rows))
+        return Begun(point.id, point.state, listed, len(rows), listed - len(rows))
