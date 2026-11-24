@@ -1,6 +1,6 @@
 # Recovery-point gate for managed cleanup
 
-Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. The owner accepted its proposed defaults on 2026-11-24 (recorded on #545: https://github.com/AnthonyPluth/Darkroom/issues/545#issuecomment-7131017264); slice A (the owner's records) is built, the other slices are not. It fills in the gate that [`immich-managed-storage.md`](immich-managed-storage.md) (sections 4, 8, 9 and 10) requires before Darkroom may delete anything an Immich-managed import left in the inbox. Until the slices in section 9 land and the owner records what section 6 asks for, cleanup keeps every zip, held copy and review hold of a managed export, as it does today.
+Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. The owner accepted its proposed defaults on 2026-11-24 (recorded on #545: https://github.com/AnthonyPluth/Darkroom/issues/545#issuecomment-7131017264); slice A (the owner's records) is built, and so is the first part of slice B (the `recovery_points` and `recovery_point_assets` tables of migration 0059, the manifest, `ManagedReader.custody_all` and `run.py recovery-point begin`); `recovery-point finish`, the abandonment of an open point, the two alerts and the deployment docs' hook example, and the other slices, are not. It fills in the gate that [`immich-managed-storage.md`](immich-managed-storage.md) (sections 4, 8, 9 and 10) requires before Darkroom may delete anything an Immich-managed import left in the inbox. Until the slices in section 9 land and the owner records what section 6 asks for, cleanup keeps every zip, held copy and review hold of a managed export, as it does today.
 
 ## 1. Where things stand
 
@@ -63,7 +63,7 @@ Constraints: a check that a `restore_rehearsal` row has all four rehearsal colum
 | `scopes` | string, null | Sorted comma list from `immich-db`, `immich-media`, `darkroom-db`, `darkroom-secret`; the gate counts a point only when all four are there |
 | `tool` | string, null | A short label for the backup tool (`[a-z0-9-]{1,32}`); display only |
 | `snapshot_ref` | string, null | The tool's snapshot identifier (`[A-Za-z0-9._:-]{1,128}`, never a path); display only, never logged |
-| `failure` | string, null | A fixed code: `reported_failed`, `scopes_missing`, `not_finished` |
+| `failure` | string, null | A fixed code: `reported_failed`, `scopes_missing`, `not_finished`, `immich_unreachable` |
 
 Checks: `succeeded` needs `finished_at`, `taken_at`, `kept_until` and `scopes`; `open` has none of them; `failed` and `abandoned` have a `failure`. Index on `(state, opened_at)`.
 
@@ -152,7 +152,7 @@ An asset is covered by R when it is in R's manifest. That means it was committed
 | --- | --- | --- |
 | The latest finished point is `failed` or `abandoned` | Pauses every managed release (G8), even where an older point would cover | An alert `retention:backup_failed`, opened once, "The last Immich backup Darkroom was told about did not succeed, so Darkroom keeps every Immich import's files in the inbox. Check the backup job." It closes when a later point succeeds |
 | No succeeded point inside the window, but units are waiting on G9 or G10 | Keeps them | After `STALE_AFTER` with units waiting, an alert `retention:backup_stale`: "No recent Immich backup covers the photos Darkroom is keeping, so their inbox files stay." Closes when a covering point succeeds |
-| `begin` cannot reach Immich | Writes no point; nothing else changes | The command's output; the stale alert follows if it keeps happening |
+| `begin` cannot read any asset from Immich | Writes a point already `failed` with `immich_unreachable` and no manifest, so the latest attempt counts as failed (G8); a read that fails after others succeeded leaves only the unread assets out of an `open` point | The command's output and exit status; the stale alert follows if it keeps happening |
 | A tick's G12 cannot reach Immich or the key is refused | Keeps the unit, stops this person's releases this tick | A `cleanup_kept` event with `immich_unconfirmed`; after a day of that, the existing per-person Immich alert path |
 | No rehearsal or no accepted boundary | Keeps everything | One `cleanup_kept` event per export with the fixed reason, as today; no alert (it is the expected state until the owner records them) |
 | Disk pressure while files are kept | Unchanged: new downloads pause (design section 4) | The existing disk alert |

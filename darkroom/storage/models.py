@@ -807,3 +807,53 @@ class RetentionAttestation(Base):
     database_kind: Mapped[str | None] = mapped_column(String)
     boundary_text_sha256: Mapped[str | None] = mapped_column(String)
     withdrawn_at: Mapped[float | None] = mapped_column(Float)
+
+
+RECOVERY_POINT_STATES = ("open", "succeeded", "failed", "abandoned")
+RECOVERY_POINT_FAILURES = ("reported_failed", "scopes_missing", "not_finished", "immich_unreachable")
+MANIFEST_SOURCES = ("receipt", "version")
+HEX_DIGEST = "length({column}) = {size} AND ltrim({column}, '0123456789abcdef') = ''"
+RECOVERY_POINT_SHAPE = ("(state = 'open' AND finished_at IS NULL AND taken_at IS NULL AND kept_until IS NULL AND scopes IS NULL AND failure IS NULL) OR "
+                        "(state = 'succeeded' AND finished_at IS NOT NULL AND taken_at IS NOT NULL AND kept_until IS NOT NULL AND scopes IS NOT NULL AND failure IS NULL) OR "
+                        "(state IN ('failed', 'abandoned') AND failure IS NOT NULL)")
+RECOVERY_POINT_TIMES = "taken_at IS NULL OR (finished_at IS NOT NULL AND opened_at <= taken_at AND taken_at <= finished_at)"
+RECOVERY_POINT_FAILURE_CODES = f"failure IS NULL OR failure IN ({', '.join(repr(v) for v in RECOVERY_POINT_FAILURES)})"
+
+
+class RecoveryPoint(Base):
+    __tablename__ = "recovery_points"
+    __table_args__ = (
+        one_of("state", RECOVERY_POINT_STATES, "ck_recovery_points_state"),
+        CheckConstraint(RECOVERY_POINT_SHAPE, name="ck_recovery_points_shape"),
+        CheckConstraint(RECOVERY_POINT_TIMES, name="ck_recovery_points_times"),
+        CheckConstraint(RECOVERY_POINT_FAILURE_CODES, name="ck_recovery_points_failure"),
+        CheckConstraint("manifest_count >= 0", name="ck_recovery_points_manifest_count"),
+        CheckConstraint(HEX_DIGEST.format(column="manifest_sha256", size=64), name="ck_recovery_points_manifest_digest"),
+        Index("ix_recovery_points_state_opened", "state", "opened_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    opened_at: Mapped[float] = mapped_column(Float, nullable=False)
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    manifest_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    finished_at: Mapped[float | None] = mapped_column(Float)
+    taken_at: Mapped[float | None] = mapped_column(Float)
+    kept_until: Mapped[float | None] = mapped_column(Float)
+    scopes: Mapped[str | None] = mapped_column(String)
+    tool: Mapped[str | None] = mapped_column(String(32))
+    snapshot_ref: Mapped[str | None] = mapped_column(String(128))
+    failure: Mapped[str | None] = mapped_column(String)
+
+
+class RecoveryPointAsset(Base):
+    __tablename__ = "recovery_point_assets"
+    __table_args__ = (
+        one_of("source", MANIFEST_SOURCES, "ck_recovery_point_assets_source"),
+        CheckConstraint("length(owner_id) > 0 AND length(asset_id) > 0", name="ck_recovery_point_assets_identity"),
+        CheckConstraint(HEX_DIGEST.format(column="sha1", size=40), name="ck_recovery_point_assets_sha1"),
+    )
+    recovery_point_id: Mapped[int] = mapped_column(ForeignKey("recovery_points.id", ondelete="CASCADE"), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String, primary_key=True)
+    asset_id: Mapped[str] = mapped_column(String, primary_key=True)
+    sha1: Mapped[str] = mapped_column(String(40), nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False)
