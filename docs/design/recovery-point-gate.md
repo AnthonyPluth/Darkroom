@@ -1,6 +1,6 @@
 # Recovery-point gate for managed cleanup
 
-Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. The owner accepted its proposed defaults; slice A (the owner's records) is built, the other slices are not. It fills in the gate that [`immich-managed-storage.md`](immich-managed-storage.md) (sections 4, 8, 9 and 10) requires before Darkroom may delete anything an Immich-managed import left in the inbox. Until the slices in section 9 land and the owner records what section 6 asks for, cleanup keeps every zip, held copy and review hold of a managed export, as it does today.
+Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. The owner accepted its proposed defaults on 2026-11-24 (recorded on #545: https://github.com/AnthonyPluth/Darkroom/issues/545#issuecomment-7131017264); slice A (the owner's records) is built, the other slices are not. It fills in the gate that [`immich-managed-storage.md`](immich-managed-storage.md) (sections 4, 8, 9 and 10) requires before Darkroom may delete anything an Immich-managed import left in the inbox. Until the slices in section 9 land and the owner records what section 6 asks for, cleanup keeps every zip, held copy and review hold of a managed export, as it does today.
 
 ## 1. Where things stand
 
@@ -210,7 +210,7 @@ If a slice goes over the budget it splits again, D first (held copies can move t
 
 ## 10. Open questions
 
-Each is something a user would notice; this design does not choose them.
+Each is something a user would notice. On 2026-11-24 the owner accepted the proposed defaults (recorded on #545, link above), which settles question 8 (one acceptance for the whole installation) and adds that the accepted boundary stores a SHA-256 of the text shown, which slice C's G4 requires to be the current text. The others without a proposed default (the backup tool, the thresholds) stay open and the design's own constants apply.
 
 1. **The backup integration.** Is the `begin`/`finish` hook from the owner's backup job acceptable, and which tool will back up Immich's database and media together with Darkroom's appdata? Or does the owner want a tool's own API queried instead, or a manual attestation per backup (which would make cleanup depend on the owner running a command every few days)?
 2. **Health thresholds.** `OPEN_LIMIT` (how long a backup may run before it counts as failed), `STALE_AFTER` (how long units may wait on coverage before the stale alert) and whether the stale alert should be pushed or only shown.
@@ -219,5 +219,5 @@ Each is something a user would notice; this design does not choose them.
 5. **Matched photos whose Google metadata is not in Immich.** G7 keeps a zip while a tier 1 to 3 keeper lacks a field Google's sidecar has, because existing-asset enrichment is not built. That may keep many managed zips indefinitely. Should these stay pinned until enrichment exists, or should the owner get an explicit discard (recording that the field was not carried), as section 4 of the managed-storage design allows?
 6. **Keepers not yet in Immich's managed library.** A zip whose matched keeper is a `google-only/` or `originals/` file the backfill has not mapped stays pinned (G6). Is waiting for the backfill right, or should those zips follow the old-folder rules?
 7. **Where the owner records.** Command line only, or also a page in the app (which needs a signed-off design), and should the Exports page say "kept: waiting for a backup" per export?
-8. **Scope of the boundary acceptance.** One acceptance for the whole installation, as designed, or per person (each person whose photos would lose the inbox copy)?
+8. **Decided (2026-11-24): one acceptance for the whole installation.** Scope of the boundary acceptance. One acceptance for the whole installation, as designed, or per person (each person whose photos would lose the inbox copy)?
 9. **How long the write lock may wait on Immich.** `READ_DEADLINE`: other jobs wait while a large zip's assets are read under the lock. A short deadline may mean a large zip never goes; a long one pauses imports and placement for minutes.
