@@ -1407,17 +1407,17 @@ class ParallelFingerprintTests(unittest.TestCase):
                      for row in world.opened.execute(select(DedupeDecision).order_by(DedupeDecision.id)).scalars()]
         return world.state(), entries, items, decisions
 
-    def test_four_workers_give_the_one_thread_ledger_items_decisions_and_files_in_the_same_order(self):
-        serial, parallel = self.ingested_with(1), self.ingested_with(4)
+    def test_the_full_pool_gives_the_one_thread_ledger_items_decisions_and_files_in_the_same_order(self):
+        serial, parallel = self.ingested_with(1), self.ingested_with(part_ingest.FINGERPRINT_WORKERS)
         self.assertEqual(parallel, serial)
         self.assertEqual(sum(1 for entry in serial[1] if entry[1].endswith(".JPG") and "PXL_" in entry[1] and entry[4] is not None), 6)
 
-    def test_the_workers_are_capped_at_four_and_at_the_machines_cores(self):
-        for cores, workers in ((1, 1), (2, 2), (4, 4), (16, 4), (None, 1)):
+    def test_the_workers_are_capped_at_twelve_and_at_the_machines_cores(self):
+        for cores, workers in ((1, 1), (2, 2), (4, 4), (12, 12), (16, 12), (None, 1)):
             with self.subTest(cores=cores), mock.patch.object(part_ingest.os, "cpu_count", return_value=cores):
                 self.assertEqual(part_ingest.fingerprint_workers(), workers)
 
-    def test_at_most_four_files_are_decoded_at_once(self):
+    def test_at_most_twelve_files_are_decoded_at_once(self):
         world = PartWorld(self)
         export = world.create(self.photos(world))
         busy, high = [0], [0]
@@ -1448,7 +1448,7 @@ class ParallelFingerprintTests(unittest.TestCase):
             return real(path, named, *args, **kwargs)
 
         seen = []
-        for workers in (1, 4):
+        for workers in (1, part_ingest.FINGERPRINT_WORKERS):
             world = PartWorld(self)
             export = world.create(world.scenario)
             with (mock.patch.object(part_ingest, "fingerprint_workers", return_value=workers), mock.patch.object(media, "perceptual_hashes", side_effect=broken),
