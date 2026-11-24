@@ -622,7 +622,7 @@ class NothingIsRemovedTests(unittest.TestCase):
         for at in (NOW + 30 * DAY, NOW + 90 * DAY):
             with db.session(engine, writing=True) as opened:
                 retention_gate.watch(opened, world.settings, at, lambda *_: alerts.SENT)
-            self.assertEqual(cleanup.clean(world.opened, world.photos, at).parts, 0)
+            self.assertEqual(cleanup.clean(world.opened, world.photos, at, world.settings).parts, 0)
             self.assertEqual(part_free.free_ready(world.opened, world.settings, at).parts, 0)
         self.assertEqual((tree(world.root), world.zips(export)), (before, zips))
 

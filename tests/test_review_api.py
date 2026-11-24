@@ -228,7 +228,7 @@ class ResolveTests(ReviewCase):
         staged, found_sidecar = review.staged_sidecar(self.world.opened, self.world.photos, hit.export, hit.decision.source_path)
         self.assertIsNotNone(staged)
         raw = found_sidecar.read_text(encoding="utf-8")
-        cleanup.clean(self.world.opened, self.world.photos, NOW + 15 * DAY)
+        cleanup.clean(self.world.opened, self.world.photos, NOW + 15 * DAY, self.world.settings)
         self.world.opened.commit()
         self.assertFalse(staging.exists())
         return raw
@@ -394,7 +394,7 @@ class ResolveTests(ReviewCase):
         staging = self.world.root / "_inbox" / "jo" / "export-1" / "staging"
         with mock.patch.object(review_api, "now", return_value=NOW + 5 * DAY):
             self.assertEqual(self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})[0], 200)
-        cleanup.clean(self.world.opened, self.world.photos, NOW + 15 * DAY)
+        cleanup.clean(self.world.opened, self.world.photos, NOW + 15 * DAY, self.world.settings)
         self.world.opened.commit()
         self.assertFalse(staging.exists())
         with mock.patch.object(review_api, "now", return_value=NOW + 16 * DAY):
@@ -803,10 +803,10 @@ class UndoTests(ReviewCase):
     def test_cleanup_removes_the_hold_only_after_the_window_so_undo_and_cleanup_never_overlap(self):
         review_id, resolved = self.resolve("keep_both")
         hold = self.world.root / self.opened.get(ReviewItem, review_id).hold_path
-        cleanup.clean(self.world.reopen(), self.world.photos, resolved + 14 * DAY - 1)
+        cleanup.clean(self.world.reopen(), self.world.photos, resolved + 14 * DAY - 1, self.world.settings)
         self.world.opened.commit()
         self.assertTrue(hold.is_file())
-        cleanup.clean(self.world.reopen(), self.world.photos, resolved + 14 * DAY)
+        cleanup.clean(self.world.reopen(), self.world.photos, resolved + 14 * DAY, self.world.settings)
         self.world.opened.commit()
         self.assertFalse(hold.exists())
         with mock.patch.object(review_api, "now", return_value=resolved + 14 * DAY):
@@ -878,7 +878,7 @@ class UndoTests(ReviewCase):
         self.assertFalse(sidecar.exists())
         (aside,) = photo.parent.glob(f"{paths.DROPPING}*{paths.SIDECAR_SUFFIX}")
         opened = self.opened
-        report = cleanup.clean(opened, self.world.photos, aside.stat().st_ctime + cleanup.DROPPING_GRACE + 1)
+        report = cleanup.clean(opened, self.world.photos, aside.stat().st_ctime + cleanup.DROPPING_GRACE + 1, self.world.settings)
         opened.commit()
         self.assertEqual(report.restored, 1)
         self.assertEqual((photo.read_bytes(), sidecar.read_bytes()), (data, xmp_data))
@@ -912,7 +912,7 @@ class UndoTests(ReviewCase):
         (aside,) = named.parent.glob(f"{paths.DROPPING}*{paths.SIDECAR_SUFFIX}")
         self.assertEqual(len(aside.name), 255)
         opened = self.opened
-        report = cleanup.clean(opened, self.world.photos, aside.stat().st_ctime + cleanup.DROPPING_GRACE + 1)
+        report = cleanup.clean(opened, self.world.photos, aside.stat().st_ctime + cleanup.DROPPING_GRACE + 1, self.world.settings)
         opened.commit()
         self.assertEqual(report.restored, 1)
         self.assertEqual((named.read_bytes(), long_sidecar.read_bytes()), (data, xmp_data))
@@ -944,7 +944,7 @@ class UndoTests(ReviewCase):
                     sidecar.unlink(missing_ok=True)
                 data, rows = photo.read_bytes(), self.opened.execute(select(MediaItem.id).where(MediaItem.path == relative)).scalars().all()
                 opened = self.opened
-                report = cleanup.clean(opened, self.world.photos, aside.stat().st_ctime + cleanup.DROPPING_GRACE + 1)
+                report = cleanup.clean(opened, self.world.photos, aside.stat().st_ctime + cleanup.DROPPING_GRACE + 1, self.world.settings)
                 opened.commit()
                 self.assertEqual((report.restored, report.dropped), (0, 1))
                 self.assertFalse(aside.exists())
@@ -1121,7 +1121,7 @@ class AdoptedPhotoMovesBackTests(ReviewCase):
 
     def clean(self):
         opened = self.opened
-        report = cleanup.clean(opened, self.world.photos, time.time() + cleanup.DROPPING_GRACE + 60)
+        report = cleanup.clean(opened, self.world.photos, time.time() + cleanup.DROPPING_GRACE + 60, self.world.settings)
         opened.commit()
         return report
 

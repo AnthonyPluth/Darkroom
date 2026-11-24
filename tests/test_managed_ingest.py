@@ -189,7 +189,7 @@ class UploadTests(unittest.TestCase):
         self.assertEqual((world.google_only(), kept.status, listed["undo_until"], listed["kept_in_immich"]), (set(), "kept_both", None, True))
         with self.assertRaisesRegex(review.WrongState, "kept in Immich"):
             review.undo(world.opened, world.photos, held, NOW + 20, review.FileEffects())
-        self.assertEqual(cleanup.clean(world.opened, world.photos, NOW + 30 * DAY).holds, 0)
+        self.assertEqual(cleanup.clean(world.opened, world.photos, NOW + 30 * DAY, world.settings).holds, 0)
         self.assertEqual((len(world.zips(world.opened.get(Export, export_id))), (world.root / world.opened.get(ReviewItem, held).hold_path).is_file()), (3, True))
 
     def test_an_intent_whose_manifest_schema_is_unknown_sends_nothing_and_its_export_and_kept_photo_wait(self):
@@ -372,7 +372,7 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(world.assets(), [])
         self.assertEqual(world.receipts()["IMG_2001.JPG"][0], "outcome_unknown")
         self.assertIn("2 uploads of export 1", world.alert("managed:pending:1").message)
-        self.assertEqual(cleanup.clean(world.opened, world.photos, NOW + 30 * DAY).parts, 0)
+        self.assertEqual(cleanup.clean(world.opened, world.photos, NOW + 30 * DAY, world.settings).parts, 0)
         self.assertEqual(part_free.free_ready(world.opened, world.settings, NOW + 30 * DAY).parts, 0)
         self.assertEqual(len(world.zips(export)), 3)
         world.fake.state.quotas.clear()

@@ -7,10 +7,12 @@ from pathlib import Path, PurePosixPath
 from typing import Final
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from darkroom.domain import events, managed_ingest
-from darkroom.domain.ingest import place, unpack
+from darkroom import config, monitoring
+from darkroom.domain import events, exports, managed_ingest, managed_switch
+from darkroom.domain.ingest import place, run, unpack
 from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem, TakeoutEntry
 from darkroom.storage.paths import Photos
@@ -169,6 +171,30 @@ def unsafe_reviews(opened: Session, photos: Photos, export: Export, per_part: bo
     )
 
 
+def note_switch_kept(opened: Session, now: float, subject: str, detail: str) -> None:
+    last = opened.execute(select(Event.detail).where(Event.type == "cleanup_kept", Event.subject == subject).order_by(Event.id.desc()).limit(1)).scalar_one_or_none()
+    if last != detail:
+        events.record(opened, now, "cleanup_kept", subject, detail)
+
+
+def switch_allows(opened: Session, photos: Photos, person: Person | None, writer: managed_switch.Writer, export: Export | None, now: float, subject: str,
+                  report: CleanupReport) -> bool:
+    opened.commit()
+    if person is None:
+        db.write_lock(opened)
+        opened.expire_all()
+        return True
+    try:
+        managed_switch.hold(opened, photos, person, writer, export)
+    except managed_switch.Paused as paused:
+        report.kept += 1
+        note_switch_kept(opened, now, subject, str(paused))
+        opened.commit()
+        monitoring.log("cleanup kept while the managed switch is not off", writer=writer, state=person.managed_imports or "off")
+        return False
+    return True
+
+
 def remove(photos: Photos, path: Path, folder: bool, report: CleanupReport) -> bool:
     try:
         return paths.remove_inbox_tree(photos, path) if folder else paths.remove_inbox_file(photos, path)
@@ -240,10 +266,9 @@ def remove_parts(opened: Session, photos: Photos, export: Export, report: Cleanu
             report.parts += 1
 
 
-def clean_per_part(opened: Session, photos: Photos, export: Export, report: CleanupReport) -> None:
-    opened.flush()
-    db.write_lock(opened)
-    opened.expire_all()
+def clean_per_part(opened: Session, photos: Photos, export: Export, person: Person | None, now: float, report: CleanupReport) -> None:
+    if not switch_allows(opened, photos, person, "cleanup", export, now, f"export {export.id}", report):
+        return
     try:
         if export.status != "imported":
             return
@@ -256,6 +281,7 @@ def clean_per_part(opened: Session, photos: Photos, export: Export, report: Clea
 
 
 def clean_export(opened: Session, photos: Photos, export: Export, now: float, report: CleanupReport) -> None:
+    person = exports.owner_of(opened, export)
     if place.managed_import(opened, export):
         report.kept += 1
         note_once(opened, now, "cleanup_kept", f"export {export.id}", managed_ingest.KEPT_ONLY)
@@ -266,7 +292,9 @@ def clean_export(opened: Session, photos: Photos, export: Export, now: float, re
         note_once(opened, now, "cleanup_kept", f"export {export.id}", f"staging and zip parts kept: {done.failed} items could not be imported")
         return
     if ingested_by_part(opened, export):
-        clean_per_part(opened, photos, export, report)
+        clean_per_part(opened, photos, export, person, now, report)
+        return
+    if not switch_allows(opened, photos, person, "cleanup", export, now, f"export {export.id}", report):
         return
     trees = staging_trees(opened, photos, export)
     verified = holds_verified(opened, export)
@@ -276,7 +304,8 @@ def clean_export(opened: Session, photos: Photos, export: Export, now: float, re
             return
         if not verified:
             events.record(opened, now, VERIFIED, f"export {export.id}", json.dumps(verified_hashes(opened, photos, export), sort_keys=True))
-            opened.commit()
+            if not switch_allows(opened, photos, person, "cleanup", export, now, f"export {export.id}", report):
+                return
     elif not verified or not holds_still_match(opened, photos, export):
         report.kept += 1
         return
@@ -284,6 +313,7 @@ def clean_export(opened: Session, photos: Photos, export: Export, now: float, re
         if remove(photos, tree, True, report):
             report.staging += 1
     remove_parts(opened, photos, export, report)
+    opened.commit()
 
 
 def shared_hold(opened: Session, review: ReviewItem, cutoff: float) -> bool:
@@ -291,19 +321,41 @@ def shared_hold(opened: Session, review: ReviewItem, cutoff: float) -> bool:
     return any(other.status == "pending" or other.resolved_at is None or other.resolved_at > cutoff for other in others)
 
 
+def hold_owner(opened: Session, hold_path: str) -> Person | None:
+    parts = PurePosixPath(hold_path).parts
+    if len(parts) < 2:
+        return None
+    return opened.execute(select(Person).where(Person.slug == parts[1])).scalar_one_or_none()
+
+
+def resolved_holds(opened: Session, cutoff: float) -> list[int]:
+    return list(opened.execute(
+        select(ReviewItem.id).where(ReviewItem.status != "pending", ReviewItem.resolved_at.is_not(None), ReviewItem.resolved_at <= cutoff,
+                                    ReviewItem.hold_path.is_not(None)).order_by(ReviewItem.id)
+    ).scalars())
+
+
 def clean_holds(opened: Session, photos: Photos, now: float, report: CleanupReport) -> None:
     cutoff = now - KEEP_FOR
-    resolved = opened.execute(
-        select(ReviewItem).where(ReviewItem.status != "pending", ReviewItem.resolved_at.is_not(None), ReviewItem.resolved_at <= cutoff,
-                                 ReviewItem.hold_path.is_not(None)).order_by(ReviewItem.id)
-    ).scalars().all()
-    for review in resolved:
-        if review.hold_path is None or shared_hold(opened, review, cutoff) or managed_ingest.hold_pinned(opened, review):
+    for review_id in resolved_holds(opened, cutoff):
+        review = opened.get(ReviewItem, review_id)
+        if review is None or review.hold_path is None:
+            continue
+        person = hold_owner(opened, review.hold_path)
+        if not switch_allows(opened, photos, person, "holds", None, now, f"review holds of {person.slug}" if person is not None else "review holds", report):
+            continue
+        review = opened.get(ReviewItem, review_id)
+        if review is None or review.hold_path is None or review.status == "pending" or review.resolved_at is None or review.resolved_at > cutoff:
+            opened.commit()
+            continue
+        if shared_hold(opened, review, cutoff) or managed_ingest.hold_pinned(opened, review):
             report.kept += 1
+            opened.commit()
             continue
         relative = PurePosixPath(review.hold_path)
         if relative.is_absolute() or ".." in relative.parts or len(relative.parts) < 5 or relative.parts[0] != "_inbox" or relative.parts[2] != "review":
             report.refused += 1
+            opened.commit()
             continue
         path = photos.root.joinpath(*relative.parts)
         try:
@@ -311,10 +363,12 @@ def clean_holds(opened: Session, photos: Photos, now: float, report: CleanupRepo
         except OSError as error:
             report.failed += 1
             events.record(opened, now, "cleanup_failed", f"review {review.id}", type(error).__name__)
+            opened.commit()
             continue
         if removed:
             report.holds += 1
             review.hold_path = None
+        opened.commit()
 
 
 def same_file_elsewhere(path: Path, sha1: str, dropping: Path) -> bool:
@@ -367,18 +421,34 @@ def undo_committed(opened: Session) -> Callable[[int, int], bool | None]:
     return committed
 
 
-def clean(opened: Session, photos: Photos, now: float) -> CleanupReport:
+def clean(opened: Session, photos: Photos, now: float, settings: config.Settings) -> CleanupReport:
     report = CleanupReport()
     cutoff = now - KEEP_FOR
-    for export in opened.execute(select(Export).where(Export.status == "imported").order_by(Export.id)).scalars().all():
-        finished = imported_at(opened, export)
-        if finished is None or finished > cutoff:
+    for export_id in opened.execute(select(Export.id).where(Export.status == "imported").order_by(Export.id)).scalars().all():
+        export = opened.get(Export, export_id)
+        finished = None if export is None else imported_at(opened, export)
+        if export is None or finished is None or finished > cutoff:
             continue
+        account_id = export.account_id
+        opened.commit()
         try:
-            clean_export(opened, photos, export, now, report)
+            with run.account_lock(settings, account_id):
+                export = opened.get(Export, export_id)
+                if export is not None and export.status == "imported":
+                    clean_export(opened, photos, export, now, report)
+        except run.Busy:
+            report.kept += 1
+        except OperationalError as error:
+            if not db.is_busy(error):
+                raise
+            opened.rollback()
+            report.kept += 1
         except OSError as error:
+            opened.rollback()
             report.failed += 1
-            events.record(opened, now, "cleanup_failed", f"export {export.id}", type(error).__name__)
+            events.record(opened, now, "cleanup_failed", f"export {export_id}", type(error).__name__)
+            opened.commit()
+    opened.commit()
     clean_holds(opened, photos, now, report)
     try:
         swept = paths.sweep_dropping(photos, now - DROPPING_GRACE, copy_kept(opened, photos), still_recorded(opened, photos),

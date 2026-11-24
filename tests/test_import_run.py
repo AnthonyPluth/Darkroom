@@ -393,7 +393,7 @@ class RetryTests(unittest.TestCase):
         return self.world.root / "_inbox/jo" / f"export-{self.export_id}"
 
     def clean(self, at):
-        return cleanup.clean(self.world.opened, self.world.photos, at)
+        return cleanup.clean(self.world.opened, self.world.photos, at, self.world.settings)
 
     def retry(self, at=NOW + DAY):
         run.request_import(self.world.opened, self.export_id, self.world.photos, at)
@@ -499,7 +499,7 @@ class RetryTests(unittest.TestCase):
                 self.assertEqual(world.state(), clean)
 
     def clean_never_touches_staging(self, world):
-        cleanup.clean(world.opened, world.photos, NOW + 60 * DAY)
+        cleanup.clean(world.opened, world.photos, NOW + 60 * DAY, world.settings)
         self.assertTrue((world.root / "_inbox/jo" / "export-1").is_dir())
 
 
