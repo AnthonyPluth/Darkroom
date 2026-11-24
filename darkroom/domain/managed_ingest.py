@@ -11,7 +11,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, events, immich_reconcile, managed_manifest, managed_metadata, managed_upload, media, same_shot, xmp
+from darkroom.domain import alerts, events, immich_reconcile, managed_compound, managed_manifest, managed_metadata, managed_upload, media, same_shot, xmp
 from darkroom.domain.ingest import place
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import immich
@@ -40,6 +40,9 @@ class Item:
     sidecar: str | None = field(repr=False)
     live: bool
     borrowed: bool
+    pair: managed_compound.Pair | None = None
+    role: managed_compound.MemberRole | None = None
+    hold: managed_compound.Hold | None = None
 
 
 def intent_of(opened: Session, export: Export) -> ManagedImportIntent | None:
@@ -104,25 +107,45 @@ class Uploads:
         self.now, self.pause = now, pause or time.sleep
         self.committed = self.held = self.pending = self.same = 0
 
-    def due(self, items: Sequence[Item]) -> list[Item]:
+    def due(self, items: Sequence[Item]) -> list[tuple[Item, ...]]:
         if not managed_manifest.known(self.intent.resource_manifest):
             self.pending += 1
             monitoring.log("managed uploads not started", export=self.export.id, reason=managed_manifest.UNKNOWN)
             return []
         known = receipts_of(self.opened, self.intent)
-        found = []
+        roots = {item.root.id: item for item in items}
+        found: list[tuple[Item, ...]] = []
         for item in items:
             if not wanted(self.opened, self.export, item.root):
+                continue
+            if item.pair is not None:
+                other = item.pair.video if item.role == "live_still" else item.pair.still
+                if not wanted(self.opened, self.export, other.root):
+                    self.held += 1
+                    monitoring.log("a Live Photo half is held", export=self.export.id, reason="live_partial")
+                elif item.role == "live_still":
+                    self.pair_due(item, roots[other.root.id], found)
                 continue
             row = known.get(resource_key(item.root))
             if row is not None and row.state == "committed":
                 self.committed += 1
-            elif (row is not None and row.metadata_hold == UNUSABLE) or item.live or item.root.bytes <= 0 or not nameable(item.name):
+            elif (row is not None and (row.metadata_hold == UNUSABLE or row.compound_key != row.resource_key)) or item.live or item.root.bytes <= 0 or not nameable(item.name):
                 self.held += 1
+                if item.hold is not None:
+                    monitoring.log("a Live Photo half is held", export=self.export.id, reason=item.hold)
             else:
-                found.append(item)
+                found.append((item,))
         self.opened.commit()
         return found
+
+    def pair_due(self, still: Item, video: Item, found: list[tuple[Item, ...]]) -> None:
+        compound = None if still.pair is None else managed_compound.settled(self.opened, self.intent.id, still.pair.key)
+        if compound is not None and compound.committed_at is not None:
+            self.committed += 2
+        elif (compound is not None and compound.hold is not None) or any(half.root.bytes <= 0 or not nameable(half.name) for half in (still, video)):
+            self.held += 2
+        else:
+            found.append((still, video))
 
     def receipt(self, item: Item, tags: dict[str, object] | None) -> int | None:
         key = resource_key(item.root)
@@ -170,6 +193,78 @@ class Uploads:
         if report.outcome == "verified":
             report = managed_metadata.commit_compound(self.opened, self.reader, self.intent.id, resource_key(item.root), self.now)
         self.count(receipt_id, report)
+
+    def send_pair(self, still: Item, video: Item, sources: dict[int, Path], tags: dict[int, dict[str, object] | None]) -> None:
+        pair = still.pair
+        still_tags, video_tags = tags[still.root.id], tags[video.root.id]
+        if pair is None or still_tags is None or video_tags is None or managed_compound.embedded_motion(still_tags):
+            self.held += 2
+            monitoring.log("a Live Photo is held", export=self.export.id, reason="embedded_motion" if still_tags and managed_compound.embedded_motion(still_tags) else "unreadable")
+            return
+        planned_still = managed_compound.planned(pair.still, "live_still", still_tags, still.sidecar, False)
+        planned_video = managed_compound.planned(pair.video, "live_video", video_tags, video.sidecar, video.borrowed)
+        if planned_still is None or planned_video is None:
+            self.held += 2
+            return
+        try:
+            frozen = managed_compound.freeze(self.opened, self.intent.id, pair.key, [planned_still, planned_video], self.now,
+                                             lambda: self.both_wanted(still, video))
+        except managed_compound.Refused:
+            self.held += 2
+            return
+        still_id, video_id = frozen.receipts.get(planned_still.resource_key), frozen.receipts.get(planned_video.resource_key)
+        if frozen.hold is not None or still_id is None or video_id is None:
+            self.held += 2
+            return
+        if not self.cleared(pair, still, still_id, video_id):
+            return
+        with contextlib.ExitStack() as handles:
+            def resource(receipt_id: int, item: Item) -> managed_metadata.Resource:
+                def original() -> immich.UploadSource:
+                    return immich.UploadSource(handles.enter_context(paths.open_inbox_file(self.photos, sources[item.root.id])), item.root.bytes, str(item.root.sha1))
+                return managed_metadata.Resource(receipt_id, original, Path(item.name).name)
+            report = managed_metadata.complete_live_photo(self.opened, self.reader, resource(video_id, video), resource(still_id, still), self.now, self.pause)
+        if report.outcome == "unusable":
+            managed_compound.set_hold(self.opened, self.intent.id, pair.key, managed_compound.UNUSABLE)
+        self.count_pair((still_id, video_id), report)
+
+    def both_wanted(self, still: Item, video: Item) -> bool:
+        self.opened.expire_all()
+        return wanted(self.opened, self.export, still.root) and wanted(self.opened, self.export, video.root)
+
+    def cleared(self, pair: managed_compound.Pair, still: Item, still_id: int, video_id: int) -> bool:
+        try:
+            rows = [managed_upload.fresh(self.opened, still_id), managed_upload.fresh(self.opened, video_id)]
+            if managed_upload.preflight(self.reader, rows[0], rows[1]) == "conflict":
+                managed_compound.set_hold(self.opened, self.intent.id, pair.key, managed_compound.CONFLICT)
+                self.held += 2
+                monitoring.log("a Live Photo conflicts with what Immich holds", export=self.export.id)
+                return False
+        except immich.ImmichFailed:
+            self.opened.rollback()
+            self.pending += 2
+            return False
+        if rows[0].metadata_hold != same_shot.HOLD and (rows[1].state != "prepared" or rows[1].send_attempts != 0):
+            return True
+        outcome = same_shot.gate(self.opened, self.reader, self.intent, still_id, still.root, Path(still.name).name, self.now)
+        if outcome == "clear":
+            return True
+        if outcome == "pending":
+            self.pending += 2
+        elif outcome == "held":
+            self.same += 1
+        else:
+            self.held += 2
+        return False
+
+    def count_pair(self, receipt_ids: tuple[int, int], report: Report) -> None:
+        rows = [managed_upload.fresh(self.opened, receipt_id) for receipt_id in receipt_ids]
+        if all(row.state == "committed" for row in rows):
+            self.committed += 2
+        elif report.outcome in ("held", "unusable") or any(row.metadata_hold in TERMINAL or gave_up(self.opened, row, self.now) for row in rows):
+            self.held += 2
+        else:
+            self.pending += 2
 
     def count(self, receipt_id: int, report: Report) -> None:
         row = managed_upload.fresh(self.opened, receipt_id)
@@ -273,7 +368,7 @@ def once(opened: Session, settings: config.Settings, key: str, subject: str, mes
 
 
 def gave_up(opened: Session, row: ManagedImportReceipt, now: float) -> bool:
-    if row.metadata_hold != "mismatch" or row.bytes_verified_at is None or now - row.bytes_verified_at < SETTLE_SECONDS:
+    if row.metadata_hold not in ("mismatch", "not_linked") or row.bytes_verified_at is None or now - row.bytes_verified_at < SETTLE_SECONDS:
         return False
     managed_upload.move(opened, row, ("bytes_verified",), now, metadata_hold=NOT_SETTLED)
     return True

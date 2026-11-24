@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal, Protocol
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from darkroom.domain import managed_metadata, media, xmp
@@ -16,6 +16,8 @@ from darkroom.storage.models import ManagedCompound, ManagedCompoundMember, Mana
 Hold = Literal["live_partial", "live_ambiguous", "embedded_motion"]
 MemberRole = Literal["live_still", "live_video"]
 KIND: Final = "live_photo"
+CONFLICT: Final = "compound_conflict"
+UNUSABLE: Final = "unusable"
 TAKEOUT_LIVE: Final = "takeout-live:"
 TAKEOUT_ENTRY: Final = "takeout-entry:"
 EMBEDDED_MOTION_TAGS: Final = frozenset({"MotionPhoto", "MicroVideo", "MotionPhotoVideo", "EmbeddedVideoFile", "EmbeddedVideoType"})
@@ -206,3 +208,20 @@ def freeze(opened: Session, intent_id: int, compound_key: str, members: Sequence
     result = frozen(opened, compound)
     opened.commit()
     return result
+
+
+def settled(opened: Session, intent_id: int, compound_key: str) -> ManagedCompound | None:
+    query = select(ManagedCompound).where(ManagedCompound.intent_id == intent_id, ManagedCompound.compound_key == compound_key)
+    found = opened.execute(query.execution_options(populate_existing=True)).scalar_one_or_none()
+    if found is not None:
+        opened.expunge(found)
+    opened.commit()
+    return found
+
+
+def set_hold(opened: Session, intent_id: int, compound_key: str, reason: str) -> None:
+    opened.commit()
+    db.write_lock(opened)
+    opened.connection().execute(update(ManagedCompound).where(ManagedCompound.intent_id == intent_id, ManagedCompound.compound_key == compound_key,
+                                                              ManagedCompound.committed_at.is_(None), ManagedCompound.hold.is_(None)).values(hold=reason))
+    opened.commit()

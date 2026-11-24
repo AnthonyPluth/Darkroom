@@ -321,6 +321,21 @@ def batches_of(rows: list[TakeoutEntry], files: int, size: int) -> Iterator[list
         yield batch
 
 
+def grouped_batches_of(groups: Sequence[Sequence[TakeoutEntry]], files: int, size: int) -> Iterator[list[Sequence[TakeoutEntry]]]:
+    batch: list[Sequence[TakeoutEntry]] = []
+    count = held = 0
+    for group in groups:
+        weight = sum(row.bytes for row in group)
+        if batch and (count + len(group) > files or held + weight > size):
+            yield batch
+            batch, count, held = [], 0, 0
+        batch.append(group)
+        count += len(group)
+        held += weight
+    if batch:
+        yield batch
+
+
 def read_chunk(source: IO[bytes], number: int) -> bytes:
     try:
         return source.read(unpack.CHUNK)

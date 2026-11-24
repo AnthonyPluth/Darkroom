@@ -14,7 +14,7 @@ from sqlalchemy import select, update
 from darkroom.domain import managed_ingest, managed_manifest, managed_metadata, managed_upload, review
 from darkroom.domain.ingest import cleanup, finish_export, part_free, place
 from darkroom.storage import secretbox
-from darkroom.storage.models import Alert, DedupeDecision, Export, ImportRun, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry
+from darkroom.storage.models import Alert, DedupeDecision, Export, ImportRun, ManagedCompound, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry
 from tests.fakes.immich import FakeAsset, FakePerson, extract
 from tests.fixtures import media as media_fixtures
 from tests.import_world import DAY, NOW
@@ -101,7 +101,9 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(world.status(export), ("imported", "done"))
         self.assertEqual([name for name, _ in world.assets()], ["IMG_2001.JPG", "IMG_2002.JPG"])
         self.assertEqual(world.receipts(), {"IMG_2001.JPG": ("committed", "created", None), "IMG_2002.JPG": ("committed", "created", None),
-                                            "IMG_2003.JPG": ("prepared", None, "no_instant")})
+                                            "IMG_2003.JPG": ("prepared", None, "no_instant"), "IMG_3001.HEIC": ("prepared", None, None),
+                                            "IMG_3001.MOV": ("prepared", None, None)})
+        self.assertEqual(world.opened.execute(select(ManagedCompound.hold)).scalar_one(), "unknown_offset")
         self.assertEqual(world.google_only(), set())
         self.assertEqual([key for key in world.files() if key.endswith(".xmp")], [])
         self.assertEqual(len(world.zips(export)), 3)

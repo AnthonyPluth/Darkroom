@@ -158,9 +158,9 @@ class TakeoutBuilder:
                         sidecar_name=f"{cut}{tag}.json")
 
     def live_photo(self, base: str, still_extension: str = ".HEIC", video_extension: str = ".MOV", year: int = 2019, part: int = 0,
-                   video_sidecar: bool = True) -> tuple[Item, Item]:
+                   video_sidecar: bool = True, video_gps: tuple[float, float] | None = None) -> tuple[Item, Item]:
         still = self.photo(f"{base}{still_extension}", year, part=part)
-        video = self.add(f"{base}{video_extension}", self.video_bytes(), f"Photos from {year}", part, "json" if video_sidecar else None, None, None, "")
+        video = self.add(f"{base}{video_extension}", self.video_bytes(), f"Photos from {year}", part, "json" if video_sidecar else None, None, video_gps, "")
         self.manifest.live_pairs[video.media_name] = still.media_name
         return still, video
 

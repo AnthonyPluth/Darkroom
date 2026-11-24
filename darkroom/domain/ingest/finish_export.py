@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, dedupe, events, exports, managed_ingest, same_shot
+from darkroom.domain import alerts, dedupe, events, exports, managed_compound, managed_ingest, same_shot
 from darkroom.domain.ingest import pairing, part_ingest, part_pairing, run
 from darkroom.providers import immich
 from darkroom.storage import db, paths
@@ -295,33 +295,50 @@ class Finish(part_ingest.Ingest):
 
     def items(self, canon: Canon) -> list[managed_ingest.Item]:
         live = live_roots(canon)
-        return [managed_ingest.Item(unit.root, unit.path, self.text_of(unit.sidecar_id), unit.root.id in live, unit.item.sidecar_from_still) for unit in canon.units]
+        grouping = managed_compound.groups(canon)
+        pairs: dict[int, tuple[managed_compound.Pair, managed_compound.MemberRole]] = {}
+        for each in grouping.pairs:
+            pairs[each.still.root.id], pairs[each.video.root.id] = (each, "live_still"), (each, "live_video")
+        sidecars = {unit.root.id: unit.sidecar_id for unit in canon.units}
+        found = []
+        for unit in canon.units:
+            pair, role = pairs.get(unit.root.id, (None, None))
+            sidecar_id = sidecars[pair.still.root.id] if pair is not None and role == "live_video" and unit.item.sidecar_from_still else unit.sidecar_id
+            found.append(managed_ingest.Item(unit.root, unit.path, self.text_of(sidecar_id), unit.root.id in live, unit.item.sidecar_from_still, pair, role,
+                                             grouping.held.get(unit.root.id)))
+        return found
 
     def send_to_immich(self) -> None:
         intent = managed_ingest.intent_of(self.opened, self.export)
         if intent is None:
             return
         self.sidecar_rows()
-        due: dict[int, managed_ingest.Item] = {}
+        due: list[tuple[managed_ingest.Item, ...]] = []
         try:
             reader = managed_ingest.reader_of(self.settings, self.person, intent, self.tools.immich)
             uploads = managed_ingest.Uploads(self.opened, self.photos, self.export, intent, reader, self.now)
-            due = {item.root.id: item for item in uploads.due(self.items(canonical(self.opened, self.export)))}
+            due = uploads.due(self.items(canonical(self.opened, self.export)))
             if due:
                 reader.check_access()
         except immich.ImmichFailed as error:
             self.opened.rollback()
             managed_ingest.alert(self.opened, self.settings, self.export, 0, max(len(due), 1), self.now, self.tools.notifier)
             raise UploadsPending(str(error)) from None
-        for chunk in self.in_batches([item.root for item in due.values()]):
+        by_root = {item.root.id: item for group in due for item in group}
+        for chunk in self.in_grouped_batches([[item.root for item in group] for group in due]):
             try:
                 self.release_scratch()
-                sources = {entry.id: self.scratch_of(entry) for entry in chunk}
+                entries = [entry for group in chunk for entry in group]
+                sources = {entry.id: self.scratch_of(entry) for entry in entries}
                 with paths.pinned_inbox_files(self.photos, list(sources.values())) as pinned:
                     read = self.tools.read(list(pinned.values())) if pinned else {}
                     tags = {entry_id: read.get(pinned[source]) if source in pinned else None for entry_id, source in sources.items()}
-                for entry in chunk:
-                    uploads.send(due[entry.id], sources[entry.id], tags[entry.id])
+                for group in chunk:
+                    items = [by_root[entry.id] for entry in group]
+                    if len(items) == 2:
+                        uploads.send_pair(items[0], items[1], sources, tags)
+                    else:
+                        uploads.send(items[0], sources[items[0].root.id], tags[items[0].root.id])
             finally:
                 self.close_archive()
                 self.release_scratch()

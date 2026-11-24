@@ -154,6 +154,7 @@ class State:
     shared: set[str] = field(default_factory=set)
     search_shared: bool = False
     lose_uploads: int = 0
+    keep_unlinked: bool = False
     upload_answer: dict[str, object] | None = None
 
 
@@ -334,9 +335,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 video_id = (fields.get("livePhotoVideoId") or b"").decode()
                 video = next((a for a in state.assets if a.id == video_id and a.owner_id == person.user_id and a.kind == "VIDEO"), None)
                 if video_id and video is None:
-                    self.reply(400, {"message": "Live photo video not found"})
+                    self.reply(400, {"message": "Not found or no asset.update permission"})
                     return
-                if video is not None:
+                if video is not None and not state.keep_unlinked:
                     asset.live_video_id, video.visibility = video.id, "hidden"
                 state.assets.append(asset)
                 lost, state.lose_uploads = state.lose_uploads > 0, max(state.lose_uploads - 1, 0)

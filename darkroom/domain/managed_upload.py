@@ -19,6 +19,7 @@ UNUSABLE = "unusable"
 SAME_SHOT_HOLD = "same_shot"
 UNAVAILABLE = "Immich's asset is not an available managed original of this person"
 Outcome = Literal["verified", "unusable", "pending", "held"]
+Preflight = Literal["go", "conflict"]
 Body = Callable[[], immich.MultipartUpload]
 
 
@@ -152,3 +153,31 @@ def upload_receipt(opened: Session, reader: immich.ManagedReader, receipt_id: in
             return report
         row = fresh(opened, receipt_id)
     return Report("pending", "the upload's outcome stayed unknown")
+
+
+def explained(match: immich.BulkMatch | None, row: ManagedImportReceipt) -> bool:
+    return match is not None and not match.trashed and (row.asset_id == match.asset_id or (row.asset_id is None and row.state == "outcome_unknown"))
+
+
+def whole(reader: immich.ManagedReader, still: immich.BulkMatch, video: immich.BulkMatch) -> bool:
+    try:
+        seen_still, seen_video = reader.get_asset(still.asset_id), reader.get_asset(video.asset_id)
+    except (immich.NotCustody, immich.NotVisible):
+        return False
+    return (seen_still.kind == "IMAGE" and seen_video.kind == "VIDEO" and seen_still.id != seen_video.id and seen_still.live_video_id == seen_video.id
+            and seen_video.visibility == "hidden")
+
+
+def preflight(reader: immich.ManagedReader, still: ManagedImportReceipt, video: ManagedImportReceipt) -> Preflight:
+    seen_video, seen_still = reader.bulk_check(video.source_sha1), reader.bulk_check(still.source_sha1)
+    if seen_video is None and seen_still is None:
+        return "go"
+    if any(seen is not None and seen.trashed for seen in (seen_video, seen_still)):
+        return "conflict"
+    if seen_still is None:
+        return "go" if explained(seen_video, video) else "conflict"
+    if seen_video is None:
+        return "conflict"
+    if explained(seen_video, video) and explained(seen_still, still):
+        return "go"
+    return "go" if whole(reader, seen_still, seen_video) else "conflict"
