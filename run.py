@@ -468,7 +468,7 @@ def reopen_setup() -> int:
 RETENTION_KEPT = "Cleanup keeps every file of an Immich-managed import: this version of Darkroom releases none of them, whatever is recorded here."
 RETENTION_NOT_MIGRATED = "retention: the database has no retention records table yet; run `python run.py migrate` (or start the service once), then run this again"
 BOUNDARY_NOT_STORED = "Nothing was recorded. Run this again with --accept to record that you accept this boundary."
-KIND_NAMES = {retention_gate.REHEARSAL: "Restore rehearsal", retention_gate.BOUNDARY: "Remote-deletion boundary"}
+KIND_NAMES: dict[str, str] = {retention_gate.REHEARSAL: "Restore rehearsal", retention_gate.BOUNDARY: "Remote-deletion boundary"}
 
 
 def retention_parser() -> argparse.ArgumentParser:

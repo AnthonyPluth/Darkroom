@@ -36,6 +36,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     connection = op.get_bind()
+    if TABLE not in sa.inspect(connection).get_table_names():
+        return
     attestations = sa.table(TABLE, sa.column("id"))
     if connection.execute(sa.select(attestations.c.id).limit(1)).first() is not None:
         raise RuntimeError("the owner's retention records are kept; roll the schema forward instead of downgrading past 0054")
