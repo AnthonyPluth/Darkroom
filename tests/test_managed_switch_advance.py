@@ -2,7 +2,7 @@ import unittest
 import uuid
 from unittest import mock
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from darkroom.domain import alerts, immich_reconcile, legacy, managed_switch, writer_locks
 from darkroom.domain.ingest import run
@@ -363,6 +363,14 @@ class AlertTests(unittest.TestCase):
         self.assertEqual(self.world.alerts(), [])
         self.assertEqual(self.world.state()[2], None)
         self.assertIs(real, writer_locks.hold)
+
+
+    def test_the_state_check_and_the_alert_insert_share_one_transaction(self):
+        commits = []
+        event.listen(self.world.opened, "after_commit", lambda opened: commits.append(1))
+        managed_switch.note(self.world.opened, self.world.settings, self.world.ids["jo"], managed_switch.Waiting("legacy"), NOW + DAY)
+        self.assertEqual(len(self.world.alerts()), 1)
+        self.assertEqual(len(commits), 1)
 
 
 class PrivacyTests(unittest.TestCase):

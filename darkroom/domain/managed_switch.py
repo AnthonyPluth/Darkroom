@@ -217,12 +217,10 @@ def flip(opened: Session, settings: config.Settings, person: Person, accounts: s
 def note(opened: Session, settings: config.Settings, person_id: int, waiting: Waiting, now: float) -> None:
     db.write_lock(opened)
     opened.execute(update(Person).where(Person.id == person_id, Person.managed_imports == "pausing").values(managed_switch_waiting=waiting.reason))
-    opened.commit()
+    opened.expire_all()
     person = opened.get(Person, person_id)
-    if person is None:
-        return
-    opened.refresh(person)
-    if state_of(person) != "pausing" or person.managed_imports_since is None or now - person.managed_imports_since < PAUSING_ALERT_AFTER:
+    if person is None or state_of(person) != "pausing" or person.managed_imports_since is None or now - person.managed_imports_since < PAUSING_ALERT_AFTER:
+        opened.commit()
         return
     message = f"Switching {person.slug}'s imports to Immich has been waiting for a day: {waiting.sentence}. Open Darkroom for details."
     alerts.open_alert_committed(opened, settings, alert_key(person), "managed_pausing", person.slug, alerts.Wording(alerts.TITLES["managed_pausing"], message), None, now,
