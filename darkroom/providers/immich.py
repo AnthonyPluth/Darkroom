@@ -47,6 +47,7 @@ IMPORT_ROUTES = frozenset({("POST", UPLOAD_PATH), ("POST", BULK_CHECK_PATH)})
 UPLOAD_TIMEOUT = 300.0
 BULK_CHECK_ID = "darkroom-source"
 CHECKSUM_PAGE = 100
+CHECKSUM_PAGES = 10
 NEAR_PAGE = 100
 NEAR_PAGES = 10
 NEAR_PADDING = 1.0
@@ -564,11 +565,25 @@ class Client:
         raise ImmichFailed("Immich's upload check answer was not understood")
 
     def search_checksum(self, key: str, sha1: str) -> list[Asset]:
-        found = self.call("POST", "/api/search/metadata", key=key, body={"checksum": checksum_of(sha1), "size": CHECKSUM_PAGE})
-        page = found.get("assets") if isinstance(found, dict) else None
-        if not isinstance(page, dict) or not isinstance(page.get("items"), list) or page.get("nextCursor"):
-            raise ImmichFailed("Immich's checksum search answer was not understood")
-        return [asset_of(entry) for entry in page["items"]]
+        checksum = checksum_of(sha1)
+        found: list[Asset] = []
+        cursor: str | None = None
+        for _ in range(CHECKSUM_PAGES):
+            body: dict[str, object] = {"filter": {"checksum": {"eq": checksum}}, "size": CHECKSUM_PAGE, "orderBy": {"field": "fileCreatedAt", "direction": "asc"}}
+            if cursor is not None:
+                body["cursor"] = cursor
+            answer = self.call("POST", "/api/search/metadata", key=key, body=body)
+            page = answer.get("assets") if isinstance(answer, dict) else None
+            items = page.get("items") if isinstance(page, dict) else None
+            following = page.get("nextCursor") if isinstance(page, dict) else None
+            if (not isinstance(page, dict) or not isinstance(items, list) or len(items) > CHECKSUM_PAGE
+                    or (following is not None and (not isinstance(following, str) or not following or following == cursor))):
+                raise ImmichFailed("Immich's checksum search answer was not understood")
+            found.extend(asset_of(entry) for entry in items)
+            if following is None:
+                return found
+            cursor = following
+        raise ImmichFailed("Immich's checksum search had more pages than are read")
 
     def search_taken(self, key: str, after: str, before: str) -> NearShots:
         found: dict[str, Nearby] = {}

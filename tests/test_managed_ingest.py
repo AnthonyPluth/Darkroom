@@ -9,9 +9,9 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
-from darkroom.domain import managed_ingest, managed_metadata, managed_upload, review
+from darkroom.domain import managed_ingest, managed_manifest, managed_metadata, managed_upload, review
 from darkroom.domain.ingest import cleanup, finish_export, part_free, place
 from darkroom.storage import secretbox
 from darkroom.storage.models import Alert, DedupeDecision, Export, ImportRun, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry
@@ -189,6 +189,31 @@ class UploadTests(unittest.TestCase):
             review.undo(world.opened, world.photos, held, NOW + 20, review.FileEffects())
         self.assertEqual(cleanup.clean(world.opened, world.photos, NOW + 30 * DAY).holds, 0)
         self.assertEqual((len(world.zips(world.opened.get(Export, export_id))), (world.root / world.opened.get(ReviewItem, held).hold_path).is_file()), (3, True))
+
+    def test_an_intent_whose_manifest_schema_is_unknown_sends_nothing_and_its_export_and_kept_photo_wait(self):
+        world = ManagedWorld(self)
+        export = world.create(world.scenario)
+        world.ingest_all(export)
+        world.opened.execute(update(ManagedImportIntent).values(resource_manifest='{"compound": "members", "resource": "takeout_entry", "schema": 3}'))
+        world.opened.commit()
+        with no_leaks(self, KEY, SECRET, "IMG_2001.JPG", world.fake.url):
+            world.finish(export)
+        self.assertEqual((world.status(export), world.assets(), world.receipts()), (("downloading", "placed"), [], {}))
+        self.assertNotIn(("POST", "/api/assets"), world.fake.requests())
+        self.assertIn("1 upload of export 1", world.alert("managed:pending:1").message)
+        held = world.opened.execute(select(ReviewItem.id)).scalar_one()
+        world.opened.execute(update(ManagedImportIntent).values(resource_manifest=managed_manifest.TAKEOUT))
+        world.opened.commit()
+        world.finish(export, at=NOW + 10)
+        review.resolve(world.opened, world.photos, held, "keep_both", NOW + 20, review.FileEffects())
+        world.opened.commit()
+        world.opened.execute(update(ManagedImportIntent).values(resource_manifest="{}"))
+        world.opened.commit()
+        before = world.fake.requests().count(("POST", "/api/assets"))
+        finish_export.finish_ready(world.opened, world.settings, NOW + 30, world.tools)
+        finish_export.finish_ready(world.opened, world.settings, NOW + 2 * DAY, world.tools)
+        self.assertEqual((world.receipts()[f"review:{held}"][0], world.fake.requests().count(("POST", "/api/assets"))), ("prepared", before))
+        self.assertIn("is not committed to Immich", world.alert(f"managed:kept:{held}").message)
 
     def test_a_kept_photo_that_never_shows_its_metadata_alerts_once_and_is_not_polled_again(self):
         world = ManagedWorld(self)
