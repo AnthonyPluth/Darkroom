@@ -118,6 +118,15 @@ class RefusalTests(LockWorld):
                 self.hold()
         self.assertEqual(str(raised.exception), "a legacy import is already running for this person")
 
+    def test_the_refusal_carries_the_kind_of_writer_that_was_busy(self):
+        locks_dir = self.settings.data_dir / "locks"
+        elsewhere = {"account": ingest_run.lock_file(self.settings, 2), "legacy": locks_dir / "legacy-import-bo.lock", "reconcile": locks_dir / "immich-reconcile-cy.lock"}
+        for kind, path in elsewhere.items():
+            with self.subTest(kind), locks.exclusive(path):
+                with self.assertRaises(writer_locks.Busy) as raised:
+                    self.hold()
+                self.assertEqual(raised.exception.kind, kind)
+
     def test_taking_them_again_after_a_refusal_works(self):
         with locks.exclusive(self.settings.data_dir / "locks" / "immich-reconcile-ann.lock"):
             with self.assertRaises(writer_locks.Busy):

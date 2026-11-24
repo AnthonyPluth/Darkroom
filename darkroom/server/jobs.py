@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alert_push, alerts, backfill, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check, syncthing_version, transport, transport_status
+from darkroom.domain import alert_push, alerts, backfill, browser_jobs, downloads, events, exports, immich_reconcile, index, managed_switch, pixel_check, pixel_folder, renewal, share_check, syncthing_version, transport, transport_status
 from darkroom.domain.ingest import cleanup, finish_export, heartbeat, part_free, part_ingest, run
 from darkroom.providers import immich, resend, syncthing
 from darkroom.providers.push_note import Pusher
@@ -340,6 +340,16 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
             waiting, queued = len(run.waiting_exports(opened)), len(part_ingest.queued_parts(opened))
             opened.commit()
             with beat.ticking(waiting=waiting, parts=queued):
+                switching = managed_switch.pausing(opened)
+                if switching:
+                    beat.step("managed switch")
+                for person in switching:
+                    slug = person.slug
+                    try:
+                        managed_switch.advance(opened, current, person, at)
+                    except Exception as error:
+                        opened.rollback()
+                        monitoring.log("managed switch not advanced this tick", person=slug, error=type(error).__name__)
                 beat.step("whole exports", **({"exports": waiting} if waiting else {}))
                 run.run_waiting(opened, current, at)
                 beat.step("freeing zips")

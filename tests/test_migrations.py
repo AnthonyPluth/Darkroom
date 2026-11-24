@@ -615,6 +615,48 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT id, status, stage FROM exports").all(), [(1, "downloaded", "queued")])
         db.migrate(self.engine)
 
+    def test_0060_managed_switch_adds_the_since_and_waiting_columns_and_the_state_rule_keeps_every_row_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0059")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, immich_user_id, managed_imports, created) "
+                                       "VALUES (1, 'Jo', 'jo', 'o', 'g', 'owner', 'on', 1.0), (2, 'Sam', 'sam', 'o2', 'g2', NULL, NULL, 2.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO pixels (id, name, google_account_id, created) VALUES (1, 'One', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO pixel_people (pixel_id, person_id) VALUES (1, 1), (1, 2)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind, status, owner_person_id) VALUES (1, 1, 'initial', 'downloading', 1)")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT id, slug, immich_user_id, managed_imports, managed_imports_since, managed_switch_waiting FROM people ORDER BY id").all(),
+                             [(1, "jo", "owner", "on", None, None), (2, "sam", None, None, None, None)])
+            self.assertEqual(connection.exec_driver_sql("SELECT default_person_id FROM google_accounts").all(), [(1,)])
+            self.assertEqual(connection.exec_driver_sql("SELECT pixel_id, person_id FROM pixel_people ORDER BY person_id").all(), [(1, 1), (1, 2)])
+            self.assertEqual(connection.exec_driver_sql("SELECT owner_person_id FROM exports").all(), [(1,)])
+            for state in ("pausing", "on", "stopped", None):
+                connection.exec_driver_sql("UPDATE people SET managed_imports = %s WHERE id = 2" % ("NULL" if state is None else f"'{state}'"))
+            connection.exec_driver_sql("UPDATE people SET managed_imports_since = 5.0, managed_switch_waiting = 'recovery' WHERE id = 1")
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("UPDATE people SET managed_imports = 'sideways' WHERE id = 2")
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("UPDATE people SET managed_imports = '' WHERE id = 2")
+            self.assertEqual(connection.exec_driver_sql("SELECT managed_imports_since, managed_switch_waiting FROM people WHERE id = 1").one(), (5.0, "recovery"))
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0059")
+        self.assertFalse({"managed_imports_since", "managed_switch_waiting"} & {column["name"] for column in inspect(self.engine).get_columns("people")})
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT id, slug, managed_imports FROM people ORDER BY id").all(), [(1, "jo", "on"), (2, "sam", None)])
+            self.assertEqual(connection.exec_driver_sql("SELECT person_id FROM pixel_people ORDER BY person_id").all(), [(1,), (2,)])
+            self.assertEqual(connection.exec_driver_sql("SELECT owner_person_id FROM exports").all(), [(1,)])
+            connection.exec_driver_sql("UPDATE people SET managed_imports = 'sideways' WHERE id = 2")
+        with self.assertRaises(RuntimeError):
+            db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT managed_imports FROM people ORDER BY id").all(), [("on",), ("sideways",)])
+            connection.exec_driver_sql("UPDATE people SET managed_imports = NULL WHERE id = 2")
+        db.migrate(self.engine)
+
     def test_0054_retention_attestations_hold_one_active_record_of_each_kind_in_its_shape_and_keep_them_on_undo(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

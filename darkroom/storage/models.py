@@ -17,6 +17,7 @@ def one_of(column: str, values: tuple[str, ...], name: str) -> CheckConstraint:
 
 class Person(Base):
     __tablename__ = "people"
+    __table_args__ = (one_of("managed_imports", ("pausing", "on", "stopped"), "ck_people_managed_imports"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     slug: Mapped[str] = mapped_column(String, nullable=False, unique=True)
@@ -30,6 +31,8 @@ class Person(Base):
     immich_reconciled_until: Mapped[float | None] = mapped_column(Float)
     created: Mapped[float] = mapped_column(Float, nullable=False)
     managed_imports: Mapped[str | None] = mapped_column(String)
+    managed_imports_since: Mapped[float | None] = mapped_column(Float)
+    managed_switch_waiting: Mapped[str | None] = mapped_column(String)
     managed_backfill: Mapped[str | None] = mapped_column(String)
 
 
