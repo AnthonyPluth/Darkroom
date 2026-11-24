@@ -612,6 +612,14 @@ def preflight_enrich(run: Run, account: Account, owner: Account, same_user: bool
     run.accounts[account.label] = {"owner": owner_hash(account.user_id), "grants": account.grants}
 
 
+def zone_minutes(zone: object) -> int | None:
+    text = str(zone or "").strip()
+    if text.upper() in ("UTC", "Z", "GMT"):
+        return 0
+    found = re.fullmatch(r"(?:UTC|GMT)?([+-])(\d{1,2})(?::?(\d{2}))?", text)
+    return None if found is None else (1 if found.group(1) == "+" else -1) * (int(found.group(2)) * 60 + int(found.group(3) or 0))
+
+
 def changed(before: dict[str, Any], after: dict[str, Any], expected: tuple[str, ...]) -> list[str]:
     return [name for name in sorted(set(before) | set(after)) if name not in expected and before.get(name) != after.get(name)]
 
@@ -686,15 +694,16 @@ def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account |
         plain("naive")
         fresh = view("fallback")
         status, _, now, _ = updated("fallback", {"dateTimeOriginal": sent.isoformat()}, ("dateTimeOriginal", "timeZone"))
+        naive_fresh = view("naive")
         naive_status = put(e, ids["naive"], {"dateTimeOriginal": "2019-07-04T12:30:15"})[0]
         naive = wait_state("naive", datetime(2019, 7, 4, 12, 30, 15, tzinfo=UTC)) if naive_status == 200 else {}
         time.sleep(settle)
         later, naive_later = view("fallback"), view("naive")
-        naive_wanted = datetime(2019, 7, 4, 12, 30, 15, tzinfo=UTC)
-        ok = instant(now["dateTimeOriginal"]) == sent and bool(now["timeZone"]) and naive_status == 200 and instant(naive_later["dateTimeOriginal"]) == naive_wanted
+        zoned = zone_minutes(now["timeZone"]) == 120
+        ok = instant(now["dateTimeOriginal"]) == sent and zoned and naive_status == 200 and naive_later["dateTimeOriginal"] != naive_fresh["dateTimeOriginal"]
         fields = lambda v: f"dateTimeOriginal {v['dateTimeOriginal']}, timeZone {v['timeZone']}, fileCreatedAt {v['fileCreatedAt']}, localDateTime {v['localDateTime']}"
         return ("pass" if ok else "fail"), (f"fresh fallback: {fields(fresh)}; offset edit answered {status}: now {fields(now)}; after {settle:g} s {fields(later)}; "
-                                            f"offsetless edit answered {naive_status}: {fields(naive) if naive else 'not read'}; after {settle:g} s {fields(naive_later)}; "
+                                            f"zone as sent (+02:00): {zoned}; offsetless edit answered {naive_status}: {fields(naive) if naive else 'not read'}; after {settle:g} s {fields(naive_later)}; "
                                             f"`dateTimeOriginal` equals `fileCreatedAt` on the fresh fallback: {instant(fresh['dateTimeOriginal']) == instant(fresh['fileCreatedAt'])}, after the offset edit: {instant(later['dateTimeOriginal']) == instant(later['fileCreatedAt'])}")
     run.step("e4", e4)
 
@@ -702,7 +711,8 @@ def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account |
         fixture("wall", jpeg(f"{run.run_id}-e-wall", wall_exif(datetime(2021, 6, 15, 14, 30))))
         status, before, after, _ = updated("wall", {"dateTimeOriginal": "2021-06-15T14:30:00+02:00"}, ("dateTimeOriginal", "timeZone"))
         moved = instant(after["dateTimeOriginal"]) == datetime(2021, 6, 15, 12, 30, tzinfo=UTC)
-        return ("pass" if moved and after["timeZone"] else "fail"), (f"{status}; instant {before['dateTimeOriginal']} (zone {before['timeZone']}) to {after['dateTimeOriginal']} (zone {after['timeZone']}); "
+        zoned = zone_minutes(after["timeZone"]) == 120
+        return ("pass" if moved and zoned else "fail"), (f"{status}; instant {before['dateTimeOriginal']} (zone {before['timeZone']}) to {after['dateTimeOriginal']} (zone {after['timeZone']}, +02:00: {zoned}); "
                                                                        f"wall clock 14:30 at +02:00 {'is' if moved else 'is not'} the stored instant 12:30Z; `localDateTime` {before['localDateTime']} to {after['localDateTime']}")
     run.step("e5", e5)
 
@@ -716,6 +726,9 @@ def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account |
 
     def e9() -> tuple[str, str]:
         plain("nulls")
+        seeded = f"{MARKER} {run.run_id} seeded"
+        if put(e, ids["nulls"], {"description": seeded})[0] != 200 or view("nulls")["description"] != seeded:
+            raise Failed("the seeding update did not apply, so the empty description proves nothing")
         before = view("nulls")
         got = [put(e, ids["nulls"], body)[0] for body in ({"dateTimeOriginal": None}, {"latitude": None, "longitude": None}, {"description": ""})]
         after = view("nulls")

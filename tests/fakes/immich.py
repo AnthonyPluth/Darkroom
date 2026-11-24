@@ -146,6 +146,7 @@ class State:
     permissions: tuple[str, ...] = ("user.read", "server.about", "asset.read", "asset.download")
     ignore_updates: bool = False
     naive_dates: str = "apply"
+    wrong_zone: bool = False
     key_permissions: dict[str, tuple[str, ...]] = field(default_factory=dict)
     admins: tuple[str, ...] = ()
     quotas: dict[str, int] = field(default_factory=dict)
@@ -339,6 +340,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 exif["dateTimeOriginal"] = (taken if taken.tzinfo else taken.replace(tzinfo=UTC)).astimezone(UTC).isoformat().replace("+00:00", "Z")
                 if taken.tzinfo:
                     exif["timeZone"] = f"UTC{taken.strftime('%z')[:3]}:{taken.strftime('%z')[3:]}"
+                    if state.wrong_zone:
+                        exif["timeZone"] = "UTC"
             found.exif, found.ready_at = exif, 0.0
             found.updated_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
             self.reply(200, found.json())

@@ -315,11 +315,23 @@ class HarnessTests(unittest.TestCase):
                 self.assertEqual(self.row(text, "e4"), "fail")
                 self.assertEqual(self.row(text, "e5"), "pass")
 
-    def test_ignored_updates_fail_the_null_row_and_every_fill_row(self):
+    def test_a_wrong_zone_fails_both_date_fill_rows(self):
+        self.fake.state.wrong_zone = True
+        code, printed, text = self.run_enrich()
+        self.assertEqual(code, 1, printed)
+        for key in ("e4", "e5"):
+            self.assertEqual(self.row(text, key), "fail", key)
+        self.assertEqual(self.row(text, "e2"), "pass")
+
+    def test_zone_names_are_read_as_offsets(self):
+        for zone, minutes in (("UTC+2", 120), ("UTC+02:00", 120), ("+05:30", 330), ("UTC-0330", -210), ("UTC", 0), ("Z", 0), ("Europe/Paris", None), (None, None)):
+            self.assertEqual(immich_live.zone_minutes(zone), minutes, zone)
+
+    def test_ignored_updates_fail_every_update_row(self):
         self.fake.state.ignore_updates = True
         code, printed, text = self.run_enrich()
         self.assertEqual(code, 1, printed)
-        for key in ("e2", "e3", "e4", "e5", "e6", "e15", "e16", "e18"):
+        for key in ("e2", "e3", "e4", "e5", "e6", "e9", "e15", "e16", "e18"):
             self.assertEqual(self.row(text, key), "fail", key)
 
     def test_a_key_without_the_update_grant_fails_the_rows_instead_of_passing(self):
