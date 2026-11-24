@@ -82,7 +82,7 @@ export async function blockOtherHosts(ctx, base, also = []) {
   return blocked;
 }
 
-const ACTIONS = { goto: "string", click: "string", click_if_present: "string", hover: "string", select: "object", fill: "object", press: "object", upload: "object", download: "object", scroll_to: "string", sign_out: "boolean", reload: "boolean", demo_post: "object", mock_json: "object", page_image: "string", wait_for: "string", expect_text: "object", screenshot: "string" };
+const ACTIONS = { goto: "string", click: "string", click_if_present: "string", hover: "string", select: "object", fill: "object", press: "object", upload: "object", download: "object", scroll_to: "string", sign_out: "boolean", reload: "boolean", demo_post: "object", wait_for: "string", expect_text: "object", screenshot: "string" };
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const unknownPages = (names) => names.filter((n) => !PAGES.includes(n) && n !== SETUP_PAGE);
@@ -97,8 +97,6 @@ export function flowProblems(flow) {
     else if (typeof s[keys[0]] !== ACTIONS[keys[0]]) out.push(`step ${i + 1}: ${keys[0]} takes a ${ACTIONS[keys[0]]}`);
     else if (keys[0] === "screenshot" && !/^[\w-]+$/.test(s.screenshot)) out.push(`step ${i + 1}: a screenshot name is letters, digits, - or _ (it becomes a file name)`);
     else if (keys[0] === "demo_post" && !demoPostOk(s.demo_post)) out.push(`step ${i + 1}: demo_post needs a path under /api/demo/ and a body object`);
-    else if (keys[0] === "mock_json" && !mockJsonOk(s.mock_json)) out.push(`step ${i + 1}: mock_json needs a path under /api/ and a body`);
-    else if (keys[0] === "page_image" && !/^[\w-]+$/.test(s.page_image)) out.push(`step ${i + 1}: a page_image name is letters, digits, - or _ (it becomes a file name)`);
     else if (keys[0] === "download" && (typeof s.download?.selector !== "string" || !/^[\w-]+$/.test(s.download?.name ?? ""))) out.push(`step ${i + 1}: download needs a selector and a name of letters, digits, - or _`);
   }
   if (flow?.page !== undefined && !PAGES.includes(flow.page)) out.push(`unknown page ${flow.page}`);
@@ -112,9 +110,7 @@ export function flowProblems(flow) {
 
 export const demoPostOk = (post) => typeof post?.path === "string" && /^\/api\/demo\/[\w/-]+$/.test(post.path) && typeof post.body === "object" && post.body !== null;
 
-export const mockJsonOk = (mock) => typeof mock?.path === "string" && /^\/api\/[\w/?=&-]+$/.test(mock.path) && mock.body !== undefined;
-
-export async function runStep(page, step, shot, saveDownload, onSignOut, saveImage) {
+export async function runStep(page, step, shot, saveDownload, onSignOut) {
   const timeout = step.timeout ?? 10000;
   if ("sign_out" in step) {
     await page.context().clearCookies();
@@ -125,11 +121,6 @@ export async function runStep(page, step, shot, saveDownload, onSignOut, saveIma
   } else if ("demo_post" in step) {
     const reply = await page.request.post(new URL(step.demo_post.path, page.url()).href, { data: step.demo_post.body, timeout });
     if (!reply.ok()) throw new Error(`${step.demo_post.path} answered ${reply.status()}`);
-  } else if ("mock_json" in step) {
-    const { path, body } = step.mock_json;
-    await page.route((url) => url.pathname + url.search === path, (route) => (route.request().method() === "GET" ? route.fulfill({ json: body }) : route.fallback()));
-  } else if ("page_image" in step) {
-    await saveImage(step.page_image);
   } else if ("goto" in step) {
     await page.goto(step.goto.startsWith("/") ? new URL(step.goto, page.url()).href : step.goto);
   } else if ("click" in step) {
@@ -170,7 +161,7 @@ export async function runStep(page, step, shot, saveDownload, onSignOut, saveIma
   }
 }
 
-const NEUTRAL_STEPS = ["wait_for", "screenshot", "page_image", "scroll_to"];
+const NEUTRAL_STEPS = ["wait_for", "screenshot", "scroll_to"];
 
 export function checksAfter(checks, step) {
   const action = Object.keys(step).find((k) => k !== "timeout");
@@ -274,7 +265,7 @@ export function runVisit(env, v) {
         if (lost) throw new Error(lost);
       };
       for (const [i, step] of flow.steps.entries()) {
-        try { await runStep(page, step, (n) => shotChecked(`flow-${flow.name}-${n}`), (n, d) => saveDownload(`flow-${flow.name}-${n}`, d, env.out), markSignedOut, (n) => shot(n, env.images)); }
+        try { await runStep(page, step, (n) => shotChecked(`flow-${flow.name}-${n}`), (n, d) => saveDownload(`flow-${flow.name}-${n}`, d, env.out), markSignedOut); }
         catch (e) { throw new Error(`step ${i + 1} (${JSON.stringify(step).slice(0, 80)}): ${String(e.message).split("\n")[0]}`, { cause: e }); }
         checks = checksAfter(checks, step);
       }
