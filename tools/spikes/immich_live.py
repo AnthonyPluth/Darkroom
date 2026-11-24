@@ -720,10 +720,14 @@ def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account |
     run.step("e5", e5)
 
     def e6() -> tuple[str, str]:
-        if "desc" not in ids:
-            raise Failed("no asset from the description row")
+        plain("overwrite")
+        seeded = f"{MARKER} {run.run_id} present"
+        if put(e, ids["overwrite"], {"description": seeded})[0] != 200 or view("overwrite")["description"] != seeded:
+            raise Failed("the seeding update did not apply, so no value was present to overwrite")
         text = f"{MARKER} {run.run_id} overwritten"
-        status, before, after, _ = updated("desc", {"description": text}, ("description",))
+        status, before, after, _ = updated("overwrite", {"description": text}, ("description",))
+        if before["description"] != seeded:
+            raise Failed("the description present before the update is not the seeded one")
         return ("pass" if after["description"] == text else "fail"), f"{status}; description {before['description']!r} to {after['description']!r}: the server {'overwrites a present value without an error' if after['description'] == text else 'kept the value'}"
     run.step("e6", e6)
 

@@ -315,6 +315,23 @@ class HarnessTests(unittest.TestCase):
                 self.assertEqual(self.row(text, "e4"), "fail")
                 self.assertEqual(self.row(text, "e5"), "pass")
 
+    def test_e6_does_not_depend_on_e2(self):
+        fail_first = {"n": 0}
+
+        def refuse_first_description(method, path, slug):
+            if method == "PUT" and slug == "a-all" and fail_first["n"] == 0:
+                fail_first["n"] = 1
+                return 500
+            return None
+        self.fake.state.intercept = refuse_first_description
+        code, printed, text = self.run_enrich()
+        self.assertEqual(code, 1, printed)
+        self.assertEqual(self.row(text, "e2"), "fail")
+        self.assertEqual(self.row(text, "e6"), "pass")
+        self.fake.state.ignore_updates = True
+        code, printed, text = self.run_enrich()
+        self.assertEqual(self.row(text, "e6"), "fail")
+
     def test_a_wrong_zone_fails_both_date_fill_rows(self):
         self.fake.state.wrong_zone = True
         code, printed, text = self.run_enrich()
