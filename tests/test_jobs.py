@@ -416,6 +416,39 @@ class BuildTests(unittest.TestCase):
                 jobs.build(settings_from(DARKROOM_PHOTOS_ROOT=folder, DARKROOM_DATA_DIR=folder, IMMICH_URL="http://127.0.0.1:9"), engine).run_one("immich.reconcile", 5.0)
             called.assert_called_once()
 
+    def test_the_tend_job_checks_day_old_held_copies_with_the_immich_source_off(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        from tests.shared import settings_from
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            engine = own_database(self)
+            settings = settings_from(DARKROOM_PHOTOS_ROOT=folder, DARKROOM_DATA_DIR=folder)
+            self.assertFalse(settings.pixel_immich_source)
+            bound_share(engine, root)
+            scheduler = jobs.build(settings, engine)
+            with mock.patch.object(jobs.pixel_folder, "alert_held", return_value=0) as checked:
+                scheduler.run_one("pixels.tend", 5.0)
+            self.assertEqual([call.args[2] for call in checked.call_args_list], [5.0])
+
+    def test_the_reconcile_job_runs_the_backfill_only_while_the_share_check_passes(self):
+        import tempfile
+        from unittest import mock
+        from darkroom.domain import backfill
+        from tests.shared import settings_from
+
+        with tempfile.TemporaryDirectory() as folder:
+            engine = own_database(self)
+            scheduler = jobs.build(settings_from(DARKROOM_PHOTOS_ROOT=folder, DARKROOM_DATA_DIR=folder, IMMICH_URL="http://127.0.0.1:9"), engine)
+            for problem, runs in (("moved", 0), (None, 1)):
+                with self.subTest(problem=problem), mock.patch.object(jobs.immich_reconcile, "reconcile_all", return_value={}), \
+                        mock.patch.object(scheduler.share, "problem", return_value=problem), \
+                        mock.patch.object(jobs.backfill, "run_all", return_value=backfill.Summary()) as ran:
+                    scheduler.run_one("immich.reconcile", 5.0)
+                self.assertEqual(ran.call_count, runs)
+
     def test_the_cleanup_job_runs_daily_and_removes_old_staging(self):
         from darkroom.storage.models import Export
         from tests.import_world import DAY, NOW, World

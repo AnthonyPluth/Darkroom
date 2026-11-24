@@ -615,6 +615,50 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT id, status, stage FROM exports").all(), [(1, "downloaded", "queued")])
         db.migrate(self.engine)
 
+    def test_0051_managed_backfill_keeps_every_intent_receipt_and_origin_as_an_import_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0050")
+            seed_pixel_source_parents(connection)
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO managed_import_intents (id, person_id, owner_id, export_id, resource_manifest, created_at) VALUES (1, 1, 'owner-a', 1, ' { } ', -0.125)")
+            connection.execute(text("INSERT INTO managed_import_receipts (id, intent_id, resource_key, compound_key, source_sha1, expected_bytes, expected_metadata, state, "
+                                    "asset_id, upload_outcome, verified_sha1, verified_bytes, bytes_verified_at, metadata_evidence, metadata_verified_at, committed_at, updated_at) "
+                                    "VALUES (1, 1, 'generated-resource', 'generated-group', :sha1, :bytes, ' { } ', 'committed', 'asset-a', 'created', :sha1, :bytes, 1.0, "
+                                    "' { } ', 1.0, 1.0, 1.125)"), {"sha1": "a" * 40, "bytes": 5 * 1024 ** 4 + 17})
+            connection.execute(text("INSERT INTO managed_asset_origins (version_id, person_id, owner_id, asset_id, sha1, kind, source_key, intent_id, receipt_id, receipt_state, "
+                                    "evidence_snapshot, recorded_at) VALUES (1, 1, 'owner-a', 'asset-a', :sha1, 'takeout', 'generated-takeout', 1, 1, 'committed', ' { } ', -0.125)"),
+                               {"sha1": "a" * 40})
+            tables = ("people", "exports", "managed_import_intents", "managed_import_receipts", "managed_asset_versions", "managed_asset_origins", "pixel_copies")
+            before = snapshot(connection, tables, " ORDER BY id")
+        db.migrate(self.engine)
+        with self.engine.connect() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+            self.assertEqual(connection.exec_driver_sql("SELECT kind, export_id FROM managed_import_intents").all(), [("import", 1)])
+            self.assertEqual(connection.exec_driver_sql("SELECT managed_backfill FROM people ORDER BY id").scalars().all(), [None, None])
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("INSERT INTO managed_import_intents (id, person_id, owner_id, export_id, kind, resource_manifest, created_at) "
+                                       "VALUES (2, 1, 'owner-a', NULL, 'backfill', ' { } ', 2.0)")
+        for kind in ("import", "other"):
+            with self.subTest(kind=kind), self.assertRaises(IntegrityError), self.engine.begin() as connection:
+                connection.exec_driver_sql("INSERT INTO managed_import_intents (id, person_id, owner_id, export_id, kind, resource_manifest, created_at) "
+                                           f"VALUES (3, 1, 'owner-a', NULL, '{kind}', ' {{ }} ', 2.0)")
+        with self.assertRaises(RuntimeError), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0050")
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM managed_import_intents WHERE kind = 'backfill'")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0050")
+        self.assertNotIn("managed_backfill_items", inspect(self.engine).get_table_names())
+        self.assertNotIn("kind", {column["name"] for column in inspect(self.engine).get_columns("managed_import_intents")})
+        self.assertNotIn("managed_backfill", {column["name"] for column in inspect(self.engine).get_columns("people")})
+        with self.engine.connect() as connection:
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+        db.migrate(self.engine)
+
     def test_0050_parts_start_without_a_failure_reason_only_fixed_codes_and_short_names_are_stored_and_it_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

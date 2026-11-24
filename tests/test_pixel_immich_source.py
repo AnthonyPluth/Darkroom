@@ -4,6 +4,7 @@ import itertools
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
@@ -12,7 +13,7 @@ from darkroom.domain import accounts, dedupe, pixel_folder, pixel_source, pixels
 from darkroom.providers import immich
 from darkroom.server import jobs
 from darkroom.storage import paths, secretbox
-from darkroom.storage.models import (DedupeDecision, Event, Export, GoogleAccount, ManagedAssetOrigin, ManagedAssetVersion, ManagedImportIntent,
+from darkroom.storage.models import (Alert, DedupeDecision, Event, Export, GoogleAccount, ManagedAssetOrigin, ManagedAssetVersion, ManagedBackfillItem, ManagedImportIntent,
                                      ManagedImportReceipt, ManagedPixelSource, MediaItem, Person, Pixel, PixelCopy, PixelPerson)
 from darkroom.storage.paths import Photos
 from tests.fakes.immich import FakeAsset, FakeImmich, FakePerson
@@ -124,7 +125,7 @@ class PixelImmichSourceTests(unittest.TestCase):
         return sorted(entry.name for entry in incoming.iterdir()) if incoming.exists() else []
 
     def held_events(self, row: PixelCopy) -> int:
-        return len(self.opened.execute(select(Event.id).where(Event.type == "pixel_copy_source_held", Event.detail == f"copy {row.id}")).all())
+        return len(self.opened.execute(select(Event.id).where(Event.type == "pixel_copy_source_held", Event.detail.startswith(f"copy {row.id}: "))).all())
 
     def match(self, item: MediaItem, account_id: int, at: float) -> int:
         export = Export(account_id=account_id, kind="manual")
@@ -255,6 +256,152 @@ class PixelImmichSourceTests(unittest.TestCase):
         self.assertEqual((tended.placed, tended.blocked), (0, 1))
         self.assertEqual(self.fake.requests(), [])
         self.assertEqual(self.held_events(self.copy(self.jo_pixel, item)), 1)
+
+    def test_a_held_copy_records_a_fixed_reason_and_one_held_for_a_day_opens_one_alert(self):
+        item, version_id, asset_id = self.managed()
+        self.queue(item, version_id)
+        self.assets[asset_id].trashed = True
+        sends = lambda settings, title, message, link: "sent"
+        settings = settings_from()
+        with no_leaks(self, KEY, CANARY, asset_id, self.fake.url):
+            self.assertEqual(self.tend().blocked, 1)
+            row = self.copy(self.jo_pixel, item)
+            details = self.opened.execute(select(Event.detail).where(Event.type == "pixel_copy_source_held")).scalars().all()
+            self.assertEqual(details, [f"copy {row.id}: source_not_custody"])
+            self.assertEqual(pixel_folder.alert_held(self.opened, settings, NOW + 3600, sends), 0)
+            self.assertEqual(pixel_folder.alert_held(self.opened, settings, NOW + 2 * 86400, sends), 1)
+            self.assertEqual(pixel_folder.alert_held(self.opened, settings, NOW + 3 * 86400, sends), 0)
+        alert = self.opened.execute(select(Alert).where(Alert.key.startswith("pixel:source-held:"))).scalar_one()
+        self.assertIn("missing, trashed, offline", alert.message)
+        self.assertNotIn(asset_id, alert.message)
+
+    def test_a_hold_followed_by_a_local_failure_opens_no_held_alert(self):
+        item, version_id, asset_id = self.managed()
+        self.queue(item, version_id)
+        self.assets[asset_id].trashed = True
+        self.assertEqual(self.tend().blocked, 1)
+        self.assets[asset_id].trashed = False
+        with mock.patch.object(paths, "publish_pixel_copy", side_effect=OSError(28, "No space left on device")):
+            self.assertEqual(self.tend(at=NOW + 60).failed, 1)
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 2 * 86400, lambda settings, title, message, link: "sent"), 0)
+
+    def test_held_copies_deferred_by_the_size_cap_open_no_held_alert(self):
+        first, first_version, _ = self.managed()
+        self.queue(first, first_version)
+        self.assertEqual(self.tend().placed, 1)
+        later = [self.managed() for _ in range(2)]
+        for item, version_id, asset_id in later:
+            self.queue(item, version_id)
+            self.assets[asset_id].trashed = True
+        self.assertEqual(self.tend(at=NOW + 60).blocked, 2)
+        for _, _, asset_id in later:
+            self.assets[asset_id].trashed = False
+        tended = pixel_folder.tend(self.opened, self.photos, first.bytes + 1, NOW + 120, self.readers)
+        self.assertEqual((tended.placed, tended.deferred), (0, 2))
+        deferrals = self.opened.execute(select(Event.detail).where(Event.type == "pixel_copy_deferred")).scalars().all()
+        self.assertEqual(sorted(deferrals), sorted(f"copy {self.copy(self.jo_pixel, item).id}" for item, _, _ in later))
+        last = self.copy(self.jo_pixel, later[1][0]).id
+        with mock.patch.object(pixel_folder, "lock_copy", wraps=pixel_folder.lock_copy) as locked:
+            self.assertEqual(pixel_folder.tend(self.opened, self.photos, first.bytes + 1, NOW + 180, self.readers).deferred, 2)
+        self.assertNotIn(last, [call.args[1] for call in locked.call_args_list])
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 2 * 86400, lambda settings, title, message, link: "sent"), 0)
+
+    def test_a_copy_held_because_the_source_is_turned_off_alerts_after_a_day(self):
+        item, version_id, _ = self.managed()
+        self.queue(item, version_id)
+        self.assertEqual(self.tend(readers=False).blocked, 1)
+        sends = lambda settings, title, message, link: "sent"
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 2 * 86400, sends), 1)
+        alert = self.opened.execute(select(Alert).where(Alert.key.startswith("pixel:source-held:"))).scalar_one()
+        self.assertIn("turned off", alert.message)
+
+    def test_a_replacement_that_fails_locally_after_a_hold_opens_no_held_alert(self):
+        item, version_id, asset_id = self.managed()
+        self.queue(item, version_id)
+        self.tend()
+        decision = self.match(item, self.jo_account, NOW + 10)
+        self.assertEqual(self.tend(at=NOW + 20).pruned, 1)
+        dedupe.reverse(self.opened, decision, NOW + 30, "owner")
+        self.opened.commit()
+        full = mock.patch.object(paths, "publish_pixel_copy", side_effect=OSError(28, "No space left on device"))
+        with full:
+            self.assertEqual(self.tend(at=NOW + 40).failed, 1)
+        self.assets[asset_id].trashed = True
+        self.assertEqual(self.tend(at=NOW + 50).blocked, 1)
+        self.assets[asset_id].trashed = False
+        with full:
+            self.assertEqual(self.tend(at=NOW + 60).failed, 1)
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 2 * 86400, lambda settings, title, message, link: "sent"), 0)
+
+    def test_a_hold_whose_reason_changes_keeps_its_start_and_alerts_after_a_day(self):
+        item, version_id, asset_id = self.managed()
+        self.queue(item, version_id)
+        self.assets[asset_id].trashed = True
+        self.assertEqual(self.tend().blocked, 1)
+        self.fake.mode("500")
+        self.assertEqual(self.tend(at=NOW + 20 * 3600).blocked, 1)
+        self.fake.mode("ok")
+        reasons = self.opened.execute(select(Event.detail).where(Event.type == "pixel_copy_source_held").order_by(Event.id)).scalars().all()
+        self.assertEqual([reason.rpartition(": ")[2] for reason in reasons], ["source_not_custody", "source_unavailable"])
+        sends = lambda settings, title, message, link: "sent"
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 25 * 3600, sends), 1)
+
+    def test_a_hold_after_the_first_placement_alerts_even_when_an_older_hold_came_before_it(self):
+        item, version_id, asset_id = self.managed()
+        self.queue(item, version_id)
+        self.assets[asset_id].trashed = True
+        self.assertEqual(self.tend().blocked, 1)
+        self.assets[asset_id].trashed = False
+        self.assertEqual(self.tend(at=NOW + 10).placed, 1)
+        self.match(item, self.jo_account, NOW + 15)
+        self.opened.execute(update(ManagedAssetVersion).where(ManagedAssetVersion.id == version_id).values(state="trashed"))
+        self.opened.commit()
+        self.assertEqual(self.tend(at=NOW + 20).blocked, 1)
+        sends = lambda settings, title, message, link: "sent"
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 20 + 3600, sends), 0)
+        self.assertEqual(pixel_folder.alert_held(self.opened, settings_from(), NOW + 20 + 25 * 3600, sends), 1)
+
+    def test_a_hold_with_the_same_reason_before_and_after_the_first_placement_alerts_after_a_day(self):
+        sends = lambda settings, title, message, link: "sent"
+        for reason in ("source_off", "source_unrecorded"):
+            with self.subTest(reason=reason):
+                self.setUp()
+                item, version_id, _ = self.managed()
+                self.queue(item, version_id)
+                verified = update(ManagedAssetVersion).where(ManagedAssetVersion.id == version_id)
+                if reason == "source_off":
+                    self.assertEqual(self.tend(readers=False, at=NOW).blocked, 1)
+                    self.assertEqual(self.tend(at=NOW + 10).placed, 1)
+                    self.match(item, self.jo_account, NOW + 15)
+                    self.assertEqual(self.tend(readers=False, at=NOW + 20).blocked, 1)
+                else:
+                    self.opened.execute(verified.values(state="trashed"))
+                    self.opened.commit()
+                    self.assertEqual(self.tend(at=NOW).blocked, 1)
+                    self.opened.execute(verified.values(state="bytes_verified"))
+                    self.opened.commit()
+                    self.assertEqual(self.tend(at=NOW + 10).placed, 1)
+                    self.match(item, self.jo_account, NOW + 15)
+                    self.opened.execute(verified.values(state="trashed"))
+                    self.opened.commit()
+                    self.assertEqual(self.tend(at=NOW + 20).blocked, 1)
+                self.assertEqual(self.tend(readers=reason != "source_off", at=NOW + 30).blocked, 1)
+                row = self.copy(self.jo_pixel, item)
+                holds = self.opened.execute(select(Event.detail).where(Event.type == "pixel_copy_source_held", Event.detail.startswith(f"copy {row.id}: "))).scalars().all()
+                self.assertEqual(holds, [f"copy {row.id}: {reason}"] * 2)
+                key = f"pixel:source-held:{self.jo}:{int(NOW + 20)}"
+                pixel_folder.alert_held(self.opened, settings_from(), NOW + 20 + 25 * 3600, sends)
+                self.assertIsNotNone(self.opened.execute(select(Alert.id).where(Alert.key == key)).first())
+
+    def test_a_local_write_failure_counts_as_failed_not_as_a_held_source(self):
+        item, version_id, _ = self.managed()
+        self.queue(item, version_id)
+        with mock.patch.object(paths, "publish_pixel_copy", side_effect=OSError(28, "No space left on device")):
+            tended = self.tend()
+        self.assertEqual((tended.placed, tended.blocked, tended.failed), (0, 0, 1))
+        row = self.copy(self.jo_pixel, item)
+        self.assertEqual((row.state, self.held_events(row), self.staged()), ("queued", 0, []))
+        self.assertEqual(self.tend(at=NOW + 1).placed, 1)
 
     def test_a_photo_outside_originals_gets_a_name_from_its_asset(self):
         self.assertEqual(pixel_source.copy_name(self.photos, "jo", "jo/google-only/2024/01/x.JPG", "a-1"), "immich/a-1.jpg")
@@ -398,6 +545,7 @@ class ReviewUndoTests(ReviewCase):
         owner, sam, before = item.person_id, self.world.ids["sam"], self.tree()
         status, body = self.call("POST", f"/api/media/{item.id}/reassign", {"person_id": sam})
         self.assertEqual(status, 409, body)
+        self.assertIn("deleting the Pixel clears any other", str(body))
         self.assertEqual((self.opened.get(MediaItem, item.id).person_id, self.tree()), (owner, before))
         opened = self.opened
         pixels.update(opened, self.world.pixel, {"people_ids": [sam]}, NOW + 1)
@@ -406,6 +554,73 @@ class ReviewUndoTests(ReviewCase):
         status, body = self.call("POST", f"/api/media/{item.id}/reassign", {"person_id": sam})
         self.assertEqual(status, 200, body)
         self.assertEqual(self.opened.get(MediaItem, item.id).person_id, sam)
+
+    def test_a_photo_the_backfill_copied_into_immich_is_not_reassigned(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        opened = self.world.opened
+        owner = opened.get(Person, item.person_id).immich_user_id
+        version = ManagedAssetVersion(person_id=item.person_id, owner_id=owner, asset_id="generated-backfill-asset", sha1=item.sha1, bytes=item.bytes,
+                                      kind="IMAGE", state="bytes_verified", metadata_snapshot="{}", seen_at=1.0, bytes_verified_at=1.0)
+        opened.add(version)
+        opened.flush()
+        opened.add(ManagedBackfillItem(person_id=item.person_id, item_id=item.id, outcome="mapped", version_id=version.id, checked_at=NOW, since=NOW))
+        opened.commit()
+        before = self.tree()
+        status, body = self.call("POST", f"/api/media/{item.id}/reassign", {"person_id": self.world.ids["sam"]})
+        self.assertEqual(status, 409, body)
+        self.assertIn("never takes a photo back out of Immich", str(body))
+        self.assertEqual((self.opened.get(MediaItem, item.id).person_id, self.tree()), (item.person_id, before))
+
+    def test_a_photo_with_a_backfill_upload_under_way_or_held_after_it_is_not_reassigned(self):
+        sent = {"asset_id": "generated-backfill-asset", "upload_outcome": "created"}
+        cases = {
+            "about to be sent": ({"state": "prepared"}, 409),
+            "answer not known": ({"state": "outcome_unknown", "send_attempts": 1}, 409),
+            "metadata pending": (sent | {"state": "bytes_verified", "metadata_hold": "mismatch"}, 409),
+            "metadata held": (sent | {"state": "bytes_verified", "metadata_hold": "not_enriched"}, 409),
+            "held before sending": ({"state": "prepared", "metadata_hold": "unknown_offset"}, 200),
+        }
+        for name, (values, expected) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                item = self.item_named(GOOGLE_ONLY_NAME)
+                opened = self.world.opened
+                owner = opened.get(Person, item.person_id).immich_user_id
+                intent = ManagedImportIntent(person_id=item.person_id, export_id=None, owner_id=owner, kind="backfill", resource_manifest="{}", created_at=1.0)
+                opened.add(intent)
+                opened.flush()
+                verified = {"verified_sha1": item.sha1, "verified_bytes": item.bytes, "bytes_verified_at": 1.0} if values["state"] == "bytes_verified" else {}
+                opened.add(ManagedImportReceipt(intent_id=intent.id, resource_key=f"backfill:media-item:{item.id}", compound_key=f"backfill:media-item:{item.id}",
+                                                source_sha1=item.sha1, expected_bytes=item.bytes, expected_metadata="{}", updated_at=1.0, **values, **verified))
+                opened.commit()
+                status, body = self.call("POST", f"/api/media/{item.id}/reassign", {"person_id": self.world.ids["sam"]})
+                self.assertEqual(status, expected, body)
+
+    def test_undoing_a_kept_photo_the_backfill_may_have_sent_to_immich_is_refused(self):
+        for state, hold, expected in (("committed", None, 409), ("prepared", None, 409), ("prepared", "unknown_offset", 200)):
+            with self.subTest(state=state, hold=hold):
+                self.setUp()
+                review_id = self.pending().id
+                status, body = self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
+                self.assertEqual(status, 200, body)
+                item = self.item_named(PAIR_NAME)
+                opened = self.world.opened
+                owner = opened.get(Person, item.person_id).immich_user_id
+                intent = ManagedImportIntent(person_id=item.person_id, export_id=None, owner_id=owner, kind="backfill", resource_manifest="{}", created_at=1.0)
+                opened.add(intent)
+                opened.flush()
+                done = {"asset_id": "generated-backfill-asset", "upload_outcome": "created", "verified_sha1": item.sha1, "verified_bytes": item.bytes,
+                        "bytes_verified_at": 1.0, "metadata_evidence": "{}", "metadata_verified_at": 1.0, "committed_at": 1.0} if state == "committed" else {}
+                opened.add(ManagedImportReceipt(intent_id=intent.id, resource_key=f"backfill:media-item:{item.id}", compound_key=f"backfill:media-item:{item.id}",
+                                                source_sha1=item.sha1, expected_bytes=item.bytes, expected_metadata="{}", updated_at=1.0, state=state,
+                                                metadata_hold=hold, **done))
+                opened.commit()
+                before = self.tree()
+                status, body = self.call("POST", f"/api/review/{review_id}/undo")
+                self.assertEqual(status, expected, body)
+                if expected == 409:
+                    self.assertIn("never takes a photo back out of Immich", str(body))
+                    self.assertEqual(self.tree(), before)
 
     def test_undoing_a_kept_photo_waits_until_its_managed_pixel_copy_is_pruned(self):
         review_id, item = self.kept_with_a_managed_copy()
@@ -449,7 +664,7 @@ class PixelReadersTests(unittest.TestCase):
         settings = dataclasses.replace(settings_from(DARKROOM_PIXEL_IMMICH_SOURCE="1", IMMICH_URL="http://127.0.0.1:9"), secret_key=SECRET)
         readers = jobs.pixel_readers(settings)
         reader = readers(Person(slug="jo", immich_user_id=OWNER, immich_api_key_sealed=secretbox.seal(KEY, SECRET)))
-        self.assertEqual((reader.owner_id, reader.key, reader.access), (OWNER, KEY, "read"))
+        self.assertEqual((reader.owner_id, reader.key, reader.access), (OWNER, KEY, "read_or_import"))
         with self.assertRaises(immich.ImmichFailed):
             readers(Person(slug="sam"))
 

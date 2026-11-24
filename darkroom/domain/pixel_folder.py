@@ -9,17 +9,27 @@ from sqlalchemy import update as sql_update
 from sqlalchemy.orm import Session
 
 from darkroom import dates
-from darkroom.domain import accounts, events, pixel_source
+from darkroom import config, monitoring
+from darkroom.domain import accounts, alerts, events, pixel_source
 from darkroom.providers import immich
 from darkroom.storage import db, paths
-from darkroom.storage.models import (DedupeDecision, DuplicateRemoval, Event, Export, ManagedAssetVersion, MediaItem, Person, Pixel, PixelCopy, PixelPerson, UNKNOWN_SHA1,
+from darkroom.storage.models import (Alert, DedupeDecision, DuplicateRemoval, Event, Export, ManagedAssetVersion, MediaItem, Person, Pixel, PixelCopy, PixelPerson, UNKNOWN_SHA1,
                                      known_contents)
 from darkroom.storage.paths import Photos
 
 GIGABYTE = 1024**3
 DEFAULT_CAP_BYTES = 50 * GIGABYTE
 Readers = Callable[[Person], immich.ManagedReader]
-Placed = Literal["placed", "held", "moved"]
+Placed = Literal["placed", "held", "moved", "failed"]
+HoldReason = Literal["source_off", "source_unrecorded", "source_unavailable", "source_not_custody", "source_changed"]
+HOLD_REASONS: dict[str, str] = {
+    "source_off": "Pixel copies from Immich are turned off",
+    "source_unrecorded": "no verified Immich original is recorded for the copy",
+    "source_unavailable": "the person's Immich original could not be read",
+    "source_not_custody": "the Immich original is missing, trashed, offline or not the person's own",
+    "source_changed": "the Immich original holds other bytes than the copy",
+}
+HELD_ALERT_SECONDS = 24 * 3600.0
 
 
 class NotInOriginals(ValueError):
@@ -152,7 +162,7 @@ def queue(opened: Session, item: MediaItem, now: float, always_send: bool = Fals
     return queued
 
 
-def queue_managed(opened: Session, item: MediaItem, version_id: int, now: float) -> int:
+def queue_managed(opened: Session, item: MediaItem, version_id: int, now: float, existing_only: bool = False) -> int:
     db.write_lock(opened)
     version = opened.get(ManagedAssetVersion, version_id, populate_existing=True)
     if version is None or item.sha1 == UNKNOWN_SHA1 or not pixel_source.usable(opened, version, item.person_id, item.sha1, item.bytes):
@@ -164,7 +174,7 @@ def queue_managed(opened: Session, item: MediaItem, version_id: int, now: float)
     for pixel in pixels_serving(opened, item.person_id):
         existing = copy_of(opened, pixel, item)
         changed = existing is not None and (existing.sha1, existing.bytes) != (item.sha1, item.bytes)
-        if changed or pixel_source.returns_home(opened, version.id, pixel.google_account_id):
+        if changed or (existing_only and existing is None) or pixel_source.returns_home(opened, version.id, pixel.google_account_id):
             continue
         row, added = enqueue(opened, pixel, item, now, always_send)
         pixel_source.bind(opened, row, pixel, version, now)
@@ -198,20 +208,80 @@ def still_pending(opened: Session, row: PixelCopy, now: float) -> None:
         events.record(opened, now, "pixel_copy_replacement_pending", subject, detail)
 
 
-def held(opened: Session, row: PixelCopy, now: float) -> None:
-    subject, detail = f"pixel {row.pixel_id}", f"copy {row.id}"
-    last = opened.execute(select(Event.type).where(Event.subject == subject, Event.detail == detail).order_by(Event.id.desc()).limit(1)).scalar_one_or_none()
-    if last != "pixel_copy_source_held":
-        events.record(opened, now, "pixel_copy_source_held", subject, detail)
+def about_copy(row: PixelCopy) -> ColumnElement[bool]:
+    return and_(Event.subject == f"pixel {row.pixel_id}", or_(Event.detail == f"copy {row.id}", Event.detail.startswith(f"copy {row.id}: ")))
 
 
-def hold(opened: Session, copy_id: int, now: float) -> Placed:
+def held(opened: Session, row: PixelCopy, now: float, reason: HoldReason) -> None:
+    detail = f"copy {row.id}: {reason}"
+    last = opened.execute(select(Event.type, Event.detail, Event.time).where(about_copy(row)).order_by(Event.id.desc()).limit(1)).first()
+    repeat = last is not None and (last.type, last.detail) == ("pixel_copy_source_held", detail) and (row.placed_at is None or last.time > row.placed_at)
+    if not repeat:
+        events.record(opened, now, "pixel_copy_source_held", f"pixel {row.pixel_id}", detail)
+        monitoring.log("pixel copy held for its Immich source", copy=row.id, reason=reason)
+
+
+def hold(opened: Session, copy_id: int, now: float, reason: HoldReason) -> Placed:
     lock_copy(opened, copy_id)
     row = opened.get(PixelCopy, copy_id, populate_existing=True)
     if row is not None:
-        held(opened, row, now)
+        held(opened, row, now, reason)
     opened.commit()
     return "held"
+
+
+def fail(opened: Session, copy_id: int, now: float) -> Placed:
+    lock_copy(opened, copy_id)
+    row = opened.get(PixelCopy, copy_id, populate_existing=True)
+    last = None if row is None else opened.execute(select(Event.type).where(about_copy(row)).order_by(Event.id.desc()).limit(1)).scalar_one_or_none()
+    if row is not None and row.placed_at is not None and last == "pixel_copy_source_held":
+        events.record(opened, now, "pixel_copy_replacement_pending", f"pixel {row.pixel_id}", f"copy {row.id}")
+    elif row is not None and row.placed_at is not None:
+        still_pending(opened, row, now)
+    elif row is not None and last != "pixel_copy_place_failed":
+        events.record(opened, now, "pixel_copy_place_failed", f"pixel {row.pixel_id}", f"copy {row.id}")
+    opened.commit()
+    return "failed"
+
+
+def deferred(opened: Session, row: PixelCopy | None, now: float) -> None:
+    if row is not None and held_since(opened, row) is not None:
+        events.record(opened, now, "pixel_copy_deferred", f"pixel {row.pixel_id}", f"copy {row.id}")
+
+
+def held_since(opened: Session, row: PixelCopy) -> tuple[float, str] | None:
+    last = opened.execute(select(Event.type, Event.time, Event.detail).where(about_copy(row)).order_by(Event.id.desc()).limit(1)).first()
+    if last is None or last.type != "pixel_copy_source_held":
+        return None
+    other = opened.execute(select(func.max(Event.id)).where(about_copy(row), Event.type != "pixel_copy_source_held")).scalar_one_or_none()
+    after = [Event.time > row.placed_at] if row.placed_at is not None else []
+    started = opened.execute(select(func.min(Event.time)).where(about_copy(row), Event.type == "pixel_copy_source_held",
+                                                                Event.id > (other if other is not None else 0), *after)).scalar_one_or_none()
+    if started is None:
+        return None
+    return float(started), str(last.detail).rpartition(": ")[2]
+
+
+def alert_held(opened: Session, settings: config.Settings, now: float, notifier: alerts.Notifier | None = None) -> int:
+    waiting: dict[int, list[tuple[float, str]]] = {}
+    for row in opened.execute(select(PixelCopy).where(PixelCopy.state.in_(("queued", "placed"))).order_by(PixelCopy.id)).scalars().all():
+        if pixel_source.converted(opened, row.id) and (found := held_since(opened, row)) is not None and now - found[0] >= HELD_ALERT_SECONDS:
+            waiting.setdefault(row.person_id, []).append(found)
+    opened.commit()
+    opened_alerts = 0
+    for person_id, held_copies in sorted(waiting.items()):
+        key = f"pixel:source-held:{person_id}:{int(min(since for since, _ in held_copies))}"
+        db.write_lock(opened)
+        if opened.execute(select(Alert.id).where(Alert.key == key).limit(1)).first() is None:
+            reasons = "; ".join(HOLD_REASONS.get(reason, HOLD_REASONS["source_unrecorded"]) for reason in sorted({reason for _, reason in held_copies}))
+            counted = "1 Pixel copy has" if len(held_copies) == 1 else f"{len(held_copies)} Pixel copies have"
+            message = (f"{counted} waited more than a day for the person's Immich original "
+                       f"({reasons}). Darkroom keeps them as they are and tries again.")
+            alerts.open_alert(opened, settings, key, "failure", f"person {person_id}", alerts.Wording("Darkroom needs a look", message), None, now,
+                              notifier=notifier, about=alerts.person(person_id))
+            opened_alerts += 1
+        opened.commit()
+    return opened_alerts
 
 
 def placing(row: PixelCopy) -> tuple[object, ...]:
@@ -221,7 +291,7 @@ def placing(row: PixelCopy) -> tuple[object, ...]:
 def place_managed(opened: Session, photos: Photos, readers: Readers, row: PixelCopy, pixel: Pixel, person: Person, item_path: str, now: float) -> Placed:
     source = pixel_source.carried(opened, row, pixel, now)
     if source is None:
-        held(opened, row, now)
+        held(opened, row, now, "source_unrecorded")
         opened.commit()
         return "held"
     copy_id, pixel_id, slug, expected = row.id, pixel.id, person.slug, placing(row)
@@ -238,9 +308,18 @@ def place_managed(opened: Session, photos: Photos, readers: Readers, row: PixelC
             if found is None or current is None or not serving or placing(found) != expected or pixel_source.current(opened, found, current) is None:
                 opened.commit()
                 return "moved"
-            found.name = paths.publish_pixel_copy(photos, pixel_id, slug, name, staged, sha1, size)
-    except (immich.ImmichFailed, paths.OutsideRoot, paths.NotAPixelCopy, OSError):
-        return hold(opened, copy_id, now)
+            try:
+                found.name = paths.publish_pixel_copy(photos, pixel_id, slug, name, staged, sha1, size)
+            except (paths.OutsideRoot, paths.NotAPixelCopy, OSError):
+                return fail(opened, copy_id, now)
+    except (immich.NotCustody, immich.NotVisible):
+        return hold(opened, copy_id, now, "source_not_custody")
+    except (immich.ChecksumMismatch, paths.NotAPixelCopy):
+        return hold(opened, copy_id, now, "source_changed")
+    except immich.ImmichFailed:
+        return hold(opened, copy_id, now, "source_unavailable")
+    except (paths.OutsideRoot, OSError):
+        return fail(opened, copy_id, now)
     again = found.placed_at is not None
     if again:
         events.record(opened, now, "pixel_copy_replaced", f"pixel {pixel_id}", f"copy {copy_id}")
@@ -261,6 +340,11 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
     for copy_id, was_placed in waiting:
         if deferring and not was_placed:
             tended.deferred += 1
+            waiting_row = opened.get(PixelCopy, copy_id, populate_existing=True) if pixel_source.converted(opened, copy_id) else None
+            if waiting_row is not None and held_since(opened, waiting_row) is not None:
+                lock_copy(opened, copy_id)
+                deferred(opened, opened.get(PixelCopy, copy_id, populate_existing=True), now)
+                opened.commit()
             continue
         lock_copy(opened, copy_id)
         row = opened.get(PixelCopy, copy_id, populate_existing=True)
@@ -271,7 +355,7 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
         managed = pixel_source.converted(opened, row.id)
         if managed and readers is None:
             tended.blocked += 1
-            held(opened, row, now)
+            held(opened, row, now, "source_off")
             opened.commit()
             continue
         again = row.placed_at is not None
@@ -283,6 +367,8 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
         if not again and (deferring or (used > 0 and used + row.bytes > cap_bytes)):
             deferring = True
             tended.deferred += 1
+            if managed:
+                deferred(opened, row, now)
             opened.commit()
             continue
         item, person = opened.get(MediaItem, row.item_id, populate_existing=True), opened.get(Person, row.person_id)
@@ -295,6 +381,7 @@ def fill(opened: Session, photos: Photos, pixel: Pixel, cap_bytes: int, now: flo
             outcome = place_managed(opened, photos, readers, row, current, person, item.path, now)
             tended.placed += outcome == "placed"
             tended.blocked += outcome == "held"
+            tended.failed += outcome == "failed"
             used += row.bytes if outcome == "placed" and not again else 0
             continue
         try:
@@ -341,7 +428,7 @@ def prune(opened: Session, photos: Photos, pixel: Pixel, now: float, readers: Re
             continue
         if pixel_source.converted(opened, row.id) and (readers is None or pixel_source.current(opened, row, current) is None):
             tended.blocked += 1
-            held(opened, row, now)
+            held(opened, row, now, "source_off" if readers is None else "source_unrecorded")
             opened.commit()
             continue
         try:

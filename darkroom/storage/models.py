@@ -30,6 +30,7 @@ class Person(Base):
     immich_reconciled_until: Mapped[float | None] = mapped_column(Float)
     created: Mapped[float] = mapped_column(Float, nullable=False)
     managed_imports: Mapped[str | None] = mapped_column(String)
+    managed_backfill: Mapped[str | None] = mapped_column(String)
 
 
 class GoogleAccount(Base):
@@ -98,17 +99,23 @@ class Export(Base):
     ingest_route: Mapped[str | None] = mapped_column(String)
 
 
+INTENT_KINDS = ("import", "backfill")
+
+
 class ManagedImportIntent(Base):
     __tablename__ = "managed_import_intents"
     __table_args__ = (
         UniqueConstraint("person_id", "owner_id", "export_id", name="uq_managed_import_intents_owner_export"),
         CheckConstraint("schema_version = 1", name="ck_managed_import_intents_schema_version"),
         CheckConstraint("length(owner_id) > 0", name="ck_managed_import_intents_owner"),
+        one_of("kind", INTENT_KINDS, "ck_managed_import_intents_kind"),
+        CheckConstraint("kind = 'backfill' OR export_id IS NOT NULL", name="ck_managed_import_intents_export"),
         Index("ix_managed_import_intents_catalog_binding", "id", "person_id", "owner_id", unique=True),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="RESTRICT"), nullable=False)
-    export_id: Mapped[int] = mapped_column(ForeignKey("exports.id", ondelete="RESTRICT"), nullable=False)
+    export_id: Mapped[int | None] = mapped_column(ForeignKey("exports.id", ondelete="RESTRICT"))
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="import", server_default="import")
     owner_id: Mapped[str] = mapped_column(String, nullable=False)
     resource_manifest: Mapped[str] = mapped_column(Text, nullable=False)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
@@ -230,6 +237,26 @@ class ManagedAssetOrigin(Base):
     receipt_state: Mapped[str | None] = mapped_column(String)
     evidence_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
     recorded_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class ManagedBackfillItem(Base):
+    __tablename__ = "managed_backfill_items"
+    __table_args__ = (
+        UniqueConstraint("item_id", name="uq_managed_backfill_items_item"),
+        one_of("outcome", ("mapped", "exception"), "ck_managed_backfill_items_outcome"),
+        CheckConstraint("outcome = 'exception' OR version_id IS NOT NULL", name="ck_managed_backfill_items_mapped"),
+        CheckConstraint("outcome = 'mapped' OR reason IS NOT NULL", name="ck_managed_backfill_items_reason"),
+        Index("ix_managed_backfill_items_person_outcome", "person_id", "outcome"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
+    item_id: Mapped[int] = mapped_column(ForeignKey("media_items.id", ondelete="CASCADE"), nullable=False)
+    outcome: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String)
+    version_id: Mapped[int | None] = mapped_column(ForeignKey("managed_asset_versions.id", ondelete="RESTRICT"))
+    receipt_id: Mapped[int | None] = mapped_column(ForeignKey("managed_import_receipts.id", ondelete="RESTRICT"))
+    checked_at: Mapped[float] = mapped_column(Float, nullable=False)
+    since: Mapped[float] = mapped_column(Float, nullable=False)
 
 
 PART_INGEST_STATES = ("not_queued", "queued", "ingesting", "ingested", "refused", "failed")

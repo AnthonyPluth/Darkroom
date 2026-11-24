@@ -195,7 +195,7 @@ def copies_into_google_only(decision: DedupeDecision, export: Export) -> bool:
 
 
 def managed_import(opened: Session, export: Export) -> bool:
-    return opened.execute(select(ManagedImportIntent.id).where(ManagedImportIntent.export_id == export.id).limit(1)).first() is not None
+    return opened.execute(select(ManagedImportIntent.id).where(ManagedImportIntent.export_id == export.id, ManagedImportIntent.kind == "import").limit(1)).first() is not None
 
 
 def place_google_only(opened: Session, photos: Photos, export: Export, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer,

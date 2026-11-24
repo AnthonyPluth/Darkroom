@@ -1733,6 +1733,24 @@ def open_inbox_file(photos: Photos, path: Path) -> BinaryIO:
     return os.fdopen(fd, "rb")
 
 
+class LibraryUnavailable(OSError):
+    pass
+
+
+def open_library_file(photos: Photos, person: str, relative: str) -> BinaryIO:
+    parts = library_parts(photos, person, relative, (("google-only",),))
+    with contextlib.ExitStack() as stack:
+        try:
+            folder = stack.enter_context(pinned_folder(photos, parts[:-1]))
+        except FileNotFoundError as error:
+            raise LibraryUnavailable(errno.ENOENT, "a folder on the way to the file is not there") from error
+        fd = open_entry(parts[-1], folder, os.O_RDONLY)
+    if not plain_file(os.fstat(fd)):
+        os.close(fd)
+        raise LinkRefused("not a plain file in the person's google-only folder")
+    return os.fdopen(fd, "rb")
+
+
 def inbox_chunks(photos: Photos, path: Path) -> Iterator[bytes]:
     with open_inbox_file(photos, path) as handle:
         while chunk := handle.read(CHUNK):

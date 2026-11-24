@@ -8,8 +8,8 @@ from unittest import mock
 from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import dedupe, pixel_folder, pixel_source, takeout_copies, xmp
-from darkroom.providers import exiftool
+from darkroom.domain import backfill, dedupe, pixel_folder, pixel_source, takeout_copies, xmp
+from darkroom.providers import exiftool, immich
 from darkroom.storage import paths
 from darkroom.storage.models import (
     DedupeDecision, DuplicateRemoval, Event, Export, GoogleAccount, ImmichAsset, ManagedAssetVersion, ManagedPixelSource, MediaItem, Person, Pixel, PixelCopy,
@@ -743,3 +743,17 @@ class ManagedPixelDependencyTests(CopiesCase):
         self.opened.rollback()
         self.assertEqual(self.resolve(at=3.0).removed, 1)
         self.assertEqual(self.opened.execute(select(ManagedPixelSource.id)).all(), [])
+
+
+class BackfillTests(CopiesCase):
+    def test_a_backfill_leaves_a_recorded_removal_to_the_reconcile_and_touches_no_file(self):
+        self.pending(phone_loses=True)
+        before = self.files()
+        reader = mock.Mock(spec=["get_asset"])
+        reader.get_asset.side_effect = immich.ImmichFailed("Immich could not be reached")
+        summary = backfill.Backfill(self.opened, mock.Mock(pixel_immich_source=True), self.photos, self.jo, reader, 3.0,
+                                    backfill.Tools(self.exif.read, lambda seconds: None)).run(100)
+        self.assertEqual(dict(summary.exceptions), {"pending": 1, "same_shot": 1})
+        self.assertEqual((self.files(), [row.state for row in self.removals()]), (before, ["pending"]))
+        self.assertEqual(self.opened.execute(select(ManagedPixelSource.id)).all(), [])
+        self.assertEqual(self.resolve(at=4.0).removed, 1)
