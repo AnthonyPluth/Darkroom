@@ -615,11 +615,11 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT id, status, stage FROM exports").all(), [(1, "downloaded", "queued")])
         db.migrate(self.engine)
 
-    def test_0059_managed_switch_adds_the_since_and_waiting_columns_and_the_state_rule_keeps_every_row_and_can_be_undone(self):
+    def test_0060_managed_switch_adds_the_since_and_waiting_columns_and_the_state_rule_keeps_every_row_and_can_be_undone(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:
             config.attributes["connection"] = connection
-            command.upgrade(config, "0058")
+            command.upgrade(config, "0059")
             connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, immich_user_id, managed_imports, created) "
                                        "VALUES (1, 'Jo', 'jo', 'o', 'g', 'owner', 'on', 1.0), (2, 'Sam', 'sam', 'o2', 'g2', NULL, NULL, 2.0)")
             connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
@@ -643,7 +643,7 @@ class MigrationTests(unittest.TestCase):
                 connection.exec_driver_sql("UPDATE people SET managed_imports = '' WHERE id = 2")
             self.assertEqual(connection.exec_driver_sql("SELECT managed_imports_since, managed_switch_waiting FROM people WHERE id = 1").one(), (5.0, "recovery"))
             config.attributes["connection"] = connection
-            command.downgrade(config, "0058")
+            command.downgrade(config, "0059")
         self.assertFalse({"managed_imports_since", "managed_switch_waiting"} & {column["name"] for column in inspect(self.engine).get_columns("people")})
         with self.engine.begin() as connection:
             self.assertEqual(connection.exec_driver_sql("SELECT id, slug, managed_imports FROM people ORDER BY id").all(), [(1, "jo", "on"), (2, "sam", None)])
