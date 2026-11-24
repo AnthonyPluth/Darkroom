@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import time
 import zipfile
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, dates, monitoring
 from darkroom.domain import alerts, dedupe, events, managed_ingest, media, pixel_folder, takeout_copies
-from darkroom.domain.ingest import metadata, pairing, part_pairing, part_reader, place, run, sidecar, unpack
+from darkroom.domain.ingest import heartbeat, metadata, pairing, part_pairing, part_reader, place, run, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
 from darkroom.storage import db, paths
@@ -43,10 +44,22 @@ HELD: Final = (WAITING_SIDECAR, WAITING_EXPORT)
 FINISHED_EXPORTS: Final = frozenset({"imported", "failed", "expired"})
 UNNAMED_FAILURE: Final = "Exception"
 FINGERPRINT_WORKERS: Final = 4
+DECODE_FILE_SECONDS: Final = 120.0
+DECODE_BATCH_SECONDS: Final = 1800.0
+DECODE_ROUNDS: Final = 3
 
 
 def fingerprint_workers() -> int:
     return min(FINGERPRINT_WORKERS, os.cpu_count() or 1)
+
+
+def decode_seconds(files: int) -> float:
+    return min(DECODE_BATCH_SECONDS, DECODE_FILE_SECONDS * max(files, 1))
+
+
+def timed_out() -> media.Decoded:
+    error = media.DecodeTimedOut("the file took too long to fingerprint")
+    return media.Decoded(error, error)
 
 
 @dataclass
@@ -97,7 +110,8 @@ def part_of(opened: Session, export_id: int, number: int) -> ExportPart | None:
     return opened.execute(select(ExportPart).where(ExportPart.export_id == export_id, ExportPart.number == number)).scalar_one_or_none()
 
 
-def run_queued(opened: Session, settings: config.Settings, now: float, tools: run.Tools | None = None) -> list[tuple[int, int]]:
+def run_queued(opened: Session, settings: config.Settings, now: float, tools: run.Tools | None = None,
+               beat: heartbeat.Heartbeat | None = None) -> list[tuple[int, int]]:
     ran = []
     for export_id, number in queued_parts(opened):
         export, part = opened.get(Export, export_id), part_of(opened, export_id, number)
@@ -107,7 +121,7 @@ def run_queued(opened: Session, settings: config.Settings, now: float, tools: ru
             monitoring.log("part ingest waiting for an earlier export", export=export_id, part=number)
             continue
         try:
-            ingest_part(opened, settings, export, part, now, tools)
+            ingest_part(opened, settings, export, part, now, tools, beat)
         except (run.Busy, run.NotReady) as error:
             monitoring.log("part ingest skipped", export=export_id, part=number, reason=type(error).__name__)
             continue
@@ -171,9 +185,10 @@ def load_index(opened: Session, export: Export, person: Person) -> dedupe.Person
 
 class Ingest:
     def __init__(self, opened: Session, settings: config.Settings, photos: Photos, export: Export, part: ExportPart, person: Person, now: float,
-                 tools: run.Tools, stack: contextlib.ExitStack) -> None:
+                 tools: run.Tools, stack: contextlib.ExitStack, beat: heartbeat.Heartbeat | None = None) -> None:
         self.opened, self.settings, self.photos, self.export, self.part, self.person = opened, settings, photos, export, part, person
         self.now, self.tools, self.stack = now, tools, stack
+        self.beat = beat or heartbeat.quiet()
         self.index = load_index(opened, export, person)
         self.dedupe_settings = dedupe.load_settings(opened)
         self.changed: set[int] = set()
@@ -186,7 +201,21 @@ class Ingest:
         self.sweep_placements()
         stack.callback(self.sweep_placements)
         stack.callback(self.close_archive)
-        self.pool = stack.enter_context(ThreadPoolExecutor(max_workers=fingerprint_workers(), thread_name_prefix="fingerprint"))
+        self.pool = self.new_pool()
+        self.abandoned = 0
+        stack.callback(self.close_pool)
+
+    def new_pool(self) -> ThreadPoolExecutor:
+        return ThreadPoolExecutor(max_workers=fingerprint_workers(), thread_name_prefix=heartbeat.WORKER_PREFIX)
+
+    def close_pool(self) -> None:
+        self.pool.shutdown(wait=True, cancel_futures=True)
+
+    def abandon_pool(self, stuck: int) -> None:
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        self.abandoned += stuck
+        self.pool = self.new_pool()
+        monitoring.log("fingerprint workers left behind", export=self.export.id, part=self.part.number, stuck=stuck, total=self.abandoned)
 
     def commit(self) -> None:
         if COMMIT_HOOK is not None:
@@ -215,6 +244,7 @@ class Ingest:
         query = select(TakeoutEntry.outcome, func.count()).where(TakeoutEntry.export_id == self.export.id, TakeoutEntry.part_number == self.part.number
                                                                  ).group_by(TakeoutEntry.outcome)
         counted(self.part, Counter({outcome: count for outcome, count in self.opened.execute(query).all()}))
+        self.beat.counted(self.part.entries_done or 0, self.part.entries or 0)
 
     def sweep_placements(self) -> None:
         paths.sweep_placements(self.photos, self.person.slug, unpack.staging_name(self.export))
@@ -317,13 +347,47 @@ class Ingest:
 
     @contextlib.contextmanager
     def decoding(self, files: set[tuple[Path, Path]]) -> Iterator[Callable[[], dict[tuple[Path, Path], media.Decoded]]]:
-        futures: dict[tuple[Path, Path], Future[media.Decoded]] = {file: self.pool.submit(media.decode, *file) for file in sorted(files)}
+        pending: dict[tuple[Path, Path], Future[media.Decoded]] = {file: self.pool.submit(media.decode, *file) for file in sorted(files)}
+        deadline = time.monotonic() + decode_seconds(len(pending))
+
+        def left() -> float:
+            return max(0.0, deadline - time.monotonic())
+
+        def ready() -> dict[tuple[Path, Path], media.Decoded]:
+            nonlocal pending, deadline
+            found: dict[tuple[Path, Path], media.Decoded] = {}
+            for round_number in range(DECODE_ROUNDS):
+                wait(pending.values(), timeout=left())
+                unstarted: list[tuple[Path, Path]] = []
+                stuck = 0
+                for file, future in pending.items():
+                    if future.done() and not future.cancelled():
+                        found[file] = future.result()
+                    elif future.cancel():
+                        unstarted.append(file)
+                    else:
+                        found[file] = timed_out()
+                        stuck += 1
+                pending = {}
+                if stuck:
+                    self.abandon_pool(stuck)
+                if not unstarted:
+                    break
+                if round_number == DECODE_ROUNDS - 1:
+                    found |= {file: timed_out() for file in unstarted}
+                    break
+                pending = {file: self.pool.submit(media.decode, *file) for file in unstarted}
+                deadline = time.monotonic() + decode_seconds(len(pending))
+            return {file: found[file] for file in sorted(files)}
+
         try:
-            yield lambda: {file: future.result() for file, future in futures.items()}
+            yield ready
         finally:
-            for future in futures.values():
+            for future in pending.values():
                 future.cancel()
-            wait(futures.values())
+            _, running = wait(pending.values(), timeout=left())
+            if running:
+                self.abandon_pool(len(running))
 
     def fields_from(self, target: Target, opened_path: Path | None, tags: dict[Path, dict[str, object]],
                     decoded: Mapping[tuple[Path, Path], media.Decoded]) -> MediaItem:
@@ -570,8 +634,10 @@ def counted(part: ExportPart, found: Counter[str]) -> None:
     part.failed_items = found[FAILED]
 
 
-def ingest_part(opened: Session, settings: config.Settings, export: Export, part: ExportPart, now: float, tools: run.Tools | None = None) -> PartIngest:
+def ingest_part(opened: Session, settings: config.Settings, export: Export, part: ExportPart, now: float, tools: run.Tools | None = None,
+                beat: heartbeat.Heartbeat | None = None) -> PartIngest:
     tools = tools or run.Tools()
+    beat = beat or heartbeat.quiet()
     with run.account_lock(settings, export.account_id):
         opened.refresh(export)
         opened.refresh(part)
@@ -585,15 +651,21 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
         part.ingest_state, part.ingest_refusal, part.ingest_failure, part.ingest_failure_type = INGESTING, None, None, None
         opened.commit()
         photos = Photos(settings.photos_root)
-        with contextlib.ExitStack() as stack:
-            ingest = Ingest(opened, settings, photos, export, part, person, now, tools, stack)
-            try:
-                part_reader.read_part(opened, photos, person, export, part, now, each_batch=ingest.batch, batch_files=part_reader.BATCH_FILES,
-                                      batch_bytes=part_reader.BATCH_BYTES)
-            except part_reader.PartRefused as refused:
-                return refuse(opened, settings, export, part, refused, now, tools)
-            try:
-                ingest.settle_rest()
-            finally:
-                part_reader.sweep_part_scratch(photos, person, export)
-            return ingest.finish(resumed)
+        beat.part_began(export.id, part.number, part.entries_done or 0, part.entries or 0, resumed)
+        try:
+            with contextlib.ExitStack() as stack:
+                ingest = Ingest(opened, settings, photos, export, part, person, now, tools, stack, beat)
+                try:
+                    part_reader.read_part(opened, photos, person, export, part, now, each_batch=ingest.batch, batch_files=part_reader.BATCH_FILES,
+                                          batch_bytes=part_reader.BATCH_BYTES, on_step=beat.part_step)
+                except part_reader.PartRefused as refused:
+                    return refuse(opened, settings, export, part, refused, now, tools)
+                beat.part_step("settling")
+                try:
+                    ingest.settle_rest()
+                finally:
+                    part_reader.sweep_part_scratch(photos, person, export)
+                beat.part_step("finishing")
+                return ingest.finish(resumed)
+        finally:
+            beat.part_ended()

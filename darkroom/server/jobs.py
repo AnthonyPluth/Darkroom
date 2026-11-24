@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
 from darkroom.domain import alert_push, alerts, backfill, browser_jobs, downloads, events, exports, immich_reconcile, index, pixel_check, pixel_folder, renewal, share_check, syncthing_version, transport, transport_status
-from darkroom.domain.ingest import cleanup, finish_export, part_free, part_ingest, run
+from darkroom.domain.ingest import cleanup, finish_export, heartbeat, part_free, part_ingest, run
 from darkroom.providers import immich, resend, syncthing
 from darkroom.providers.push_note import Pusher
 from darkroom.storage import db, stored_settings
@@ -21,7 +21,9 @@ from darkroom.storage.models import Person
 from darkroom.storage.paths import Photos
 
 Job = Callable[[float], None]
+Describe = Callable[[], dict[str, int | str | bool]]
 SCHEDULER_POLL_SECONDS = 30.0
+STILL_RUNNING_SECONDS = 600.0
 
 
 @dataclass
@@ -33,6 +35,9 @@ class Registered:
     next_due: float
     own_thread: bool = False
     worker: threading.Thread | None = None
+    started: float | None = None
+    noted: float | None = None
+    describe: Describe | None = None
 
 
 class Scheduler:
@@ -44,9 +49,11 @@ class Scheduler:
         self.share: share_check.ShareCheck | None = None
         self.syncthing: syncthing_version.Gate | None = None
         self.transport = transport.Transport()
+        self.import_beat: heartbeat.Heartbeat | None = None
 
-    def every(self, name: str, interval: float, run: Job, first_after: float = 0.0, now: float = 0.0, own_thread: bool = False) -> None:
-        self.jobs[name] = Registered(name, run, interval, None, now + first_after, own_thread)
+    def every(self, name: str, interval: float, run: Job, first_after: float = 0.0, now: float = 0.0, own_thread: bool = False,
+              describe: Describe | None = None) -> None:
+        self.jobs[name] = Registered(name, run, interval, None, now + first_after, own_thread, describe=describe)
 
     def daily_at(self, name: str, hour: int, run: Job, now: float = 0.0) -> None:
         self.jobs[name] = Registered(name, run, None, hour, self.next_daily(hour, now))
@@ -76,7 +83,9 @@ class Scheduler:
                 continue
             if job.own_thread:
                 if job.worker is not None and job.worker.is_alive():
+                    self.still_running(job, now)
                     continue
+                job.started, job.noted = now, None
                 job.worker = threading.Thread(target=self.guarded, args=(job, now), name=f"job-{job.name}", daemon=True)
                 job.worker.start()
             else:
@@ -84,6 +93,14 @@ class Scheduler:
             job.next_due = now + job.interval if job.interval is not None else self.next_daily(job.hour or 0, now)
             ran.append(job.name)
         return ran
+
+    def still_running(self, job: Registered, now: float) -> None:
+        if job.started is None or now - job.started < STILL_RUNNING_SECONDS:
+            return
+        if job.noted is not None and now - job.noted < STILL_RUNNING_SECONDS:
+            return
+        job.noted = now
+        monitoring.log("job still running", job=job.name, seconds=round(now - job.started), **(job.describe() if job.describe is not None else {}))
 
     def run_one(self, name: str, now: float) -> None:
         self.jobs[name].run(now)
@@ -108,6 +125,7 @@ INDEX_FIRST_AFTER_SECONDS = 120.0
 SESSION_RECHECK_SECONDS = 3600.0
 BROWSER_LEASE_TICK_SECONDS = 60.0
 IMPORT_TICK_SECONDS = 60.0
+IMPORT_WATCH_SECONDS = 60.0
 EXPORT_CHECK_TICK_SECONDS = 600.0
 EXPIRY_WATCH_SECONDS = 3600.0
 CLEANUP_HOUR = 4
@@ -313,20 +331,35 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
         if queued:
             monitoring.log("schedule renewals queued", count=queued)
 
+    beat = scheduler.import_beat = heartbeat.Heartbeat()
+    stalls = heartbeat.StallWatch()
+
     def run_imports(at: float) -> None:
         current = live()
         with db.session(engine) as opened:
-            run.run_waiting(opened, current, at)
-            try:
-                freed = part_free.free_ready(opened, current, at)
-            except Exception as error:
-                opened.rollback()
-                monitoring.log("zip freeing skipped this tick", error=type(error).__name__)
-                freed = part_free.FreeReport()
-            part_ingest.run_queued(opened, current, at)
-            finish_export.finish_ready(opened, current, at)
+            waiting, queued = len(run.waiting_exports(opened)), len(part_ingest.queued_parts(opened))
+            opened.commit()
+            with beat.ticking(waiting=waiting, parts=queued):
+                beat.step("whole exports", **({"exports": waiting} if waiting else {}))
+                run.run_waiting(opened, current, at)
+                beat.step("freeing zips")
+                try:
+                    freed = part_free.free_ready(opened, current, at)
+                except Exception as error:
+                    opened.rollback()
+                    monitoring.log("zip freeing skipped this tick", error=type(error).__name__)
+                    freed = part_free.FreeReport()
+                beat.step("part ingest", **({"parts": queued} if queued else {}))
+                part_ingest.run_queued(opened, current, at, beat=beat)
+                beat.step("finishing exports")
+                finish_export.finish_ready(opened, current, at)
         if freed.parts or freed.held or freed.failed:
             monitoring.log("zips freed", parts=freed.parts, held=freed.held, kept=freed.kept, failed=freed.failed, bytes=freed.bytes)
+
+    def watch_imports(at: float) -> None:
+        current = live()
+        with db.session(engine) as opened:
+            stalls.review(opened, current, beat, at)
 
     def clean_inbox(at: float) -> None:
         with db.session(engine) as opened:
@@ -392,7 +425,8 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
     scheduler.every("alerts.push", PUSH_TICK_SECONDS, send_pushes, now=now, own_thread=True)
     scheduler.every("sessions.recheck", SESSION_RECHECK_SECONDS, tick_sessions, now=now)
     scheduler.every("browser.leases", BROWSER_LEASE_TICK_SECONDS, expire_browser_leases, now=now)
-    scheduler.every("imports", IMPORT_TICK_SECONDS, run_imports, now=now, own_thread=True)
+    scheduler.every("imports", IMPORT_TICK_SECONDS, run_imports, now=now, own_thread=True, describe=beat.fields)
+    scheduler.every("imports.watch", IMPORT_WATCH_SECONDS, watch_imports, first_after=IMPORT_WATCH_SECONDS, now=now)
     scheduler.every("exports.check", EXPORT_CHECK_TICK_SECONDS, check_exports, now=now)
     scheduler.every("exports.expiry", EXPIRY_WATCH_SECONDS, watch_expiry, now=now)
     scheduler.daily_at("schedules.watch", SCHEDULE_WATCH_HOUR, watch_schedules, now=now)

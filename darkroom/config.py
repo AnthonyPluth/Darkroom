@@ -152,6 +152,7 @@ class Settings:
     timezone: str
     pixel_folder_cap_gb: int = 50
     pixel_immich_source: bool = False
+    import_stall_minutes: int = 30
     resend_api_key: str = ""
     alert_email_from: str = ""
     alert_email_to: str = ""
@@ -216,6 +217,7 @@ def load() -> Settings:
         timezone=env("TZ", "UTC"),
         pixel_folder_cap_gb=whole_number(env("PIXEL_FOLDER_CAP_GB", "50")),
         pixel_immich_source=env_flag("DARKROOM_PIXEL_IMMICH_SOURCE"),
+        import_stall_minutes=whole_number(env("DARKROOM_IMPORT_STALL_MINUTES", str(IMPORT_STALL_DEFAULT))),
         resend_api_key=env("RESEND_API_KEY"),
         alert_email_from=env("ALERT_EMAIL_FROM"),
         alert_email_to=env("ALERT_EMAIL_TO"),
@@ -403,7 +405,7 @@ def problems(settings: Settings) -> list[str]:
     if bool(settings.oidc_issuer) != bool(settings.oidc_client_id):
         found.append("OIDC_ISSUER and OIDC_CLIENT_ID go together; set both or neither")
     return (found + auth_problems(settings) + pixel_cap_problems(settings) + resend_problems(settings) + allowed_hosts_problems(settings)
-            + alerts_off_problems(settings))
+            + alerts_off_problems(settings) + import_stall_problems(settings))
 
 
 SWITCHABLE_ALERTS = ("syncthing_down", "syncthing_settings_failed", "syncthing_version", "share_check_failed", "pixel_held")
@@ -512,6 +514,22 @@ def resend_problems(settings: Settings) -> list[str]:
         if not ADDRESS.fullmatch(value):
             found.append(f"{name} must be one email address, like alerts@example.com")
     return found
+
+
+IMPORT_STALL_DEFAULT = 30
+IMPORT_STALL_LEAST = 5
+IMPORT_STALL_MOST = 24 * 60
+
+
+def import_stall_minutes(settings: Settings) -> int:
+    return min(max(settings.import_stall_minutes, IMPORT_STALL_LEAST), IMPORT_STALL_MOST)
+
+
+def import_stall_problems(settings: Settings) -> list[str]:
+    if IMPORT_STALL_LEAST <= settings.import_stall_minutes <= IMPORT_STALL_MOST:
+        return []
+    return [f"DARKROOM_IMPORT_STALL_MINUTES must be a whole number of minutes from {IMPORT_STALL_LEAST} to {IMPORT_STALL_MOST} "
+            f"(the default is {IMPORT_STALL_DEFAULT}); Darkroom uses the nearest of those meanwhile"]
 
 
 def pixel_cap_problems(settings: Settings) -> list[str]:

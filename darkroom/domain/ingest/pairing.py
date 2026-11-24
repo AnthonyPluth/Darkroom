@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 import re
 import unicodedata
@@ -33,6 +34,8 @@ NAMED_KINDS = MEDIA_SUFFIXES | {
     ".txt", ".html", ".htm", ".pdf", ".csv", ".xml", ".zip", ".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac", ".svg", ".psd", ".ico",
     ".jp2", ".jfif", ".mpo", ".crw", ".x3f", ".flv", ".vob", ".insp", ".insv", ".lrv", ".thm", ".aae", ".xmp",
 }
+
+FAMILY_TAILS = (*(SUPPLEMENTAL[:size] for size in range(1, len(SUPPLEMENTAL) + 1)), METADATA_TAIL)
 
 Special = Literal["trash", "archive"]
 Sidecars = dict[str, Path]
@@ -73,17 +76,36 @@ def is_family_tail(tail: str) -> bool:
     return tail == METADATA_TAIL or (tail.startswith(".") and SUPPLEMENTAL.startswith(tail))
 
 
+class IndexedSidecars(dict[str, Path]):
+
+    def __init__(self, found: Mapping[str, Path]) -> None:
+        super().__init__(found)
+        self.by_stem: dict[str, list[str]] = {}
+        for name in sorted(self):
+            self.by_stem.setdefault(stem_of(name), []).append(name)
+
+
+def indexed(sidecars: Sidecars) -> IndexedSidecars:
+    return sidecars if isinstance(sidecars, IndexedSidecars) else IndexedSidecars(sidecars)
+
+
+def named_by(sidecars: Sidecars, stems: Iterable[str]) -> list[str]:
+    index = indexed(sidecars).by_stem
+    return sorted({name for stem in stems for name in index.get(stem, ())})
+
+
+def first_named(sidecars: Sidecars, stems: Iterable[str]) -> Path | None:
+    names = named_by(sidecars, stems)
+    return sidecars[names[0]] if names else None
+
+
 def exact(media_path: Path, sidecars: Sidecars) -> Path | None:
     return sidecars.get(f"{media_path.name}.json")
 
 
 def supplemental(media_path: Path, sidecars: Sidecars) -> Path | None:
     name = media_path.name
-    for sidecar_name, path in sorted(sidecars.items()):
-        stem = stem_of(sidecar_name)
-        if stem.startswith(name) and len(stem) > len(name) and is_family_tail(stem[len(name):]):
-            return path
-    return None
+    return first_named(sidecars, (f"{name}{tail}" for tail in FAMILY_TAILS))
 
 
 def counter(media_path: Path, sidecars: Sidecars) -> Path | None:
@@ -92,25 +114,14 @@ def counter(media_path: Path, sidecars: Sidecars) -> Path | None:
         return None
     base = f"{found.group('stem')}{media_path.suffix}"
     tag = f"({found.group('number')})"
-    for sidecar_name, path in sorted(sidecars.items()):
-        stem = stem_of(sidecar_name)
-        if not stem.endswith(tag):
-            continue
-        rest = stem[: -len(tag)]
-        if rest == base or (rest.startswith(base) and is_family_tail(rest[len(base):])):
-            return path
-    return None
+    return first_named(sidecars, [f"{base}{tag}", *(f"{base}{tail}{tag}" for tail in FAMILY_TAILS)])
 
 
 def truncated(media_path: Path, sidecars: Sidecars) -> Path | None:
     full = f"{media_path.name}{SUPPLEMENTAL}"
     if len(media_path.name) <= SIDECAR_NAME_LIMIT - 1 and len(full) <= SIDECAR_NAME_LIMIT:
         return None
-    for sidecar_name, path in sorted(sidecars.items()):
-        stem = stem_of(sidecar_name)
-        if len(stem) == SIDECAR_NAME_LIMIT and full.startswith(stem):
-            return path
-    return None
+    return first_named(sidecars, [full[:SIDECAR_NAME_LIMIT]] if len(full) >= SIDECAR_NAME_LIMIT else [])
 
 
 def folded(name: str) -> str:
@@ -161,6 +172,28 @@ def fits_without_extension(media_name: str, sidecar_name: str) -> bool:
     return named == stem or (named.startswith(stem) and is_family_tail(named[len(stem):]))
 
 
+@functools.lru_cache(maxsize=16)
+def media_by_stem(media: Names) -> dict[str, frozenset[str]]:
+    found: dict[str, set[str]] = {}
+    for name in media:
+        found.setdefault(Path(name).stem, set()).add(name)
+    return {stem: frozenset(names) for stem, names in found.items()}
+
+
+def stems_fitting(named: str) -> set[str]:
+    return {named} | {named[: len(named) - len(tail)] for tail in FAMILY_TAILS if named.endswith(tail)}
+
+
+def without_extension(media_path: Path, sidecars: Sidecars, media: Names) -> Path | None:
+    stem = Path(media_path.name).stem
+    by_stem = media_by_stem(media)
+    for sidecar_name in named_by(sidecars, [stem, *(f"{stem}{tail}" for tail in FAMILY_TAILS)]):
+        rivals = {other for fitting in stems_fitting(stem_of(sidecar_name)) for other in by_stem.get(fitting, ())}
+        if not rivals - {media_path.name}:
+            return sidecars[sidecar_name]
+    return None
+
+
 def fits_cut_counter(media_name: str, sidecar_name: str) -> bool:
     media_path = Path(media_name)
     found = NUMBERED.match(media_path.stem)
@@ -174,7 +207,17 @@ def fits_cut_counter(media_name: str, sidecar_name: str) -> bool:
 
 
 RULES: tuple[Rule, ...] = (exact, supplemental, counter, truncated)
-FOLDER_RULES: tuple[FolderRule, ...] = (exclusive(fits_without_extension), exclusive(fits_cut_counter))
+def may_fit_cut_counter(media_name: str) -> bool:
+    media_path = Path(media_name)
+    found = NUMBERED.match(media_path.stem)
+    return found is not None and len(f"{found.group('stem')}{media_path.suffix}{SUPPLEMENTAL}") > SIDECAR_NAME_LIMIT
+
+
+def cut_counter(media_path: Path, sidecars: Sidecars, media: Names) -> Path | None:
+    return exclusive(fits_cut_counter)(media_path, sidecars, media) if may_fit_cut_counter(media_path.name) else None
+
+
+FOLDER_RULES: tuple[FolderRule, ...] = (without_extension, cut_counter)
 
 
 def own_sidecar(media_path: Path, sidecars: Sidecars, media: Names) -> Path | None:
@@ -341,7 +384,7 @@ def pair_names(folders: Iterable[tuple[Path, Iterable[str]]], digests: Mapping[P
         files = list(listed)
         own: Sidecars = {name: folder / name for name in files if is_sidecar(name)}
         json_files.extend(own.values())
-        sidecars: Sidecars = {name: folder / name for name in earlier.get(folder, ()) if is_sidecar(name)} | own
+        sidecars: Sidecars = IndexedSidecars({name: folder / name for name in earlier.get(folder, ()) if is_sidecar(name)} | own)
         media_paths: list[Path] = []
         for name in files:
             path = folder / name
@@ -371,13 +414,14 @@ def pair_names(folders: Iterable[tuple[Path, Iterable[str]]], digests: Mapping[P
         report.items.append(item)
         for copy in copies:
             by_copy[copy[0]] = item
+    stills = stills_by_stem(by_copy)
     for item in report.items:
         original = original_name(item.path, media_in.get(item.path.parent, frozenset()))
         if original is not None:
             original_item = by_copy.get(item.path.with_name(original))
             item.edited_of = original_item.path if original_item else None
         if item.path.suffix.lower() in media.VIDEO_SUFFIXES:
-            match = live_match(item, by_copy)
+            match = live_match(item, by_copy, stills)
             item.live_pair_of = None if match is None else match[0]
             if item.sidecar is None and match is not None and lends_sidecar(item, match[1]):
                 item.sidecar = by_copy[match[0]].sidecar
@@ -403,10 +447,20 @@ def lends_sidecar(video: TakeoutItem, sibling: Path) -> bool:
     return sibling.stem in {video.path.stem, video.path.name if video.path.suffix.lower() == MOTION_CLIP_SUFFIX else video.path.stem}
 
 
-def live_match(video: TakeoutItem, by_copy: dict[Path, TakeoutItem]) -> tuple[Path, Path] | None:
+Stills = dict[tuple[Path, str], list[tuple[int, Path, TakeoutItem]]]
+
+
+def stills_by_stem(by_copy: dict[Path, TakeoutItem]) -> Stills:
+    found: Stills = {}
+    for position, (sibling, item) in enumerate(by_copy.items()):
+        if sibling.suffix.lower() in STILL_SUFFIXES:
+            found.setdefault((sibling.parent, sibling.stem.lower()), []).append((position, sibling, item))
+    return found
+
+
+def live_match(video: TakeoutItem, by_copy: dict[Path, TakeoutItem], stills_of: Stills | None = None) -> tuple[Path, Path] | None:
     stems = {video.path.stem.lower()} | ({video.path.name.lower()} if video.path.suffix.lower() == MOTION_CLIP_SUFFIX else set())
-    stills = {
-        item.path: sibling for sibling, item in by_copy.items()
-        if sibling.parent == video.path.parent and sibling.stem.lower() in stems and sibling.suffix.lower() in STILL_SUFFIXES
-    }
+    index = stills_by_stem(by_copy) if stills_of is None else stills_of
+    siblings = sorted(found for stem in stems for found in index.get((video.path.parent, stem), ()))
+    stills = {item.path: sibling for _, sibling, item in siblings}
     return next(iter(stills.items())) if len(stills) == 1 else None
