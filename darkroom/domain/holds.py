@@ -76,7 +76,7 @@ def allowed(hold: str, facts: dict[str, object] | None) -> list[str]:
 
 
 def held(person_id: int | None, source: str | None) -> list[ColumnElement[bool]]:
-    where: list[ColumnElement[bool]] = [ManagedImportReceipt.metadata_hold.in_(managed_ingest.TERMINAL), ManagedImportReceipt.state != "committed"]
+    where: list[ColumnElement[bool]] = [ManagedImportReceipt.metadata_hold.in_(tuple(ACTIONS)), ManagedImportReceipt.state != "committed"]
     if person_id is not None:
         where.append(ManagedImportIntent.person_id == person_id)
     if source is not None:

@@ -3,7 +3,7 @@ from unittest import mock
 
 from sqlalchemy.orm import Session
 
-from darkroom.domain import holds, managed_ingest
+from darkroom.domain import holds, managed_ingest, same_shot
 from darkroom.server import routes
 from darkroom.storage.models import (DedupeDecision, Export, ExportPart, GoogleAccount, ManagedImportIntent, ManagedImportReceipt, MediaItem, Person, ReviewItem,
                                      TakeoutEntry)
@@ -82,7 +82,7 @@ class HoldsApiTests(ApiCase):
         self.assertEqual((body["total"], [(row["id"], row["source"], row["hold"], row["person_id"]) for row in body["holds"]]),
                          (5, [(5, "import", "unusable", 2), (4, "backfill", "not_settled", 1), (3, "kept", "unusable", 1), (2, "import", "not_enriched", 1),
                               (1, "import", "unknown_offset", 1)]))
-        self.assertEqual(set(managed_ingest.TERMINAL), set(holds.ACTIONS))
+        self.assertEqual(set(managed_ingest.TERMINAL) - {same_shot.HOLD}, set(holds.ACTIONS))
 
     def test_a_hold_shows_its_file_name_cause_facts_and_the_actions_the_design_allows(self):
         by_id = {row["id"]: row for row in self.listed()["holds"]}
