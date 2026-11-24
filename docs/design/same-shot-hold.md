@@ -14,7 +14,7 @@ PR #541 first held such a photo (`329424f`: `ManagedReader.taken_near`, `takenAf
 
 - Nothing could resolve the hold. It stayed until someone edited the database.
 - It matched any asset in the window whose checksum differed. A Live Photo's hidden video, a RAW beside a JPEG and Darkroom's own uploads from the same Takeout all counted.
-- The fake filtered on `exifInfo.dateTimeOriginal`. Immich's search builder applies `takenAfter`/`takenBefore` to the asset's `fileCreatedAt`, which slice 1 has to confirm against the pinned sources (section 3 below).
+- The fake filtered on `exifInfo.dateTimeOriginal`. Immich's search builder applies `takenAfter`/`takenBefore`, and the structured `filter.takenAt`, to the asset's `fileCreatedAt`, which slice 1 confirmed against the pinned sources (section 3 below).
 
 The backfill (step 7a, #535, `darkroom/domain/backfill.py`) already lists the same kind of photo as an exception (`same_shot`: a `google-only/` item at tier 2 to 4 against a phone original, or an edited copy) and uploads nothing for it. #554 makes those items use the hold described here (section 7).
 
@@ -36,12 +36,14 @@ Immich is not locked between the check and the upload. A phone upload that lands
 
 ### The query
 
-The query is a new `ManagedReader.taken_near(instant, seconds)` on the `read`, `import` and `read_or_import` accesses. It is a read, and it needs no new grant (`POST /api/search/metadata` is `asset.read`, already on the allowlist). It runs after `check_access()`, as every reader method does. The request body is:
+The query is a new `ManagedReader.taken_near(instant, seconds)` on the `read`, `import` and `read_or_import` accesses. It is a read, and it needs no new grant (`POST /api/search/metadata` is `asset.read`, already on the allowlist). It runs after `check_access()`, as every reader method does. The request body uses the structured search shape (slice 1 pinned it; see "Pinned capture-time search" in section 2 of the managed-storage design):
 
-- `takenAfter` and `takenBefore`, which are the instant minus and plus `seconds + 1`, in UTC with a `Z`. The extra second absorbs `fileCreatedAt` precision. The exact filter is applied by Darkroom afterwards (below).
+- `filter.takenAt` with `gte` and `lte`, which are the instant minus and plus `seconds + 1`, in UTC with a `Z`. Immich compares them with `fileCreatedAt`. The extra second absorbs `fileCreatedAt` precision. The exact filter is applied by Darkroom afterwards (below).
 - `withExif: true`, so that the capture time, make, model and dimensions come back.
-- `withDeleted: true`, so that a trashed asset at the instant is seen too (see the owner-filter list below).
-- `size: 100`. The provider follows `nextCursor` for up to 10 pages. A window that holds more than 1,000 assets is treated as a match (a hold, with the reason `crowded`) and never as "no match".
+- No trash filter: the structured shape returns trashed assets unless asked not to, so a trashed asset at the instant is seen too (see the owner-filter list below). The flat `takenAfter`, `takenBefore` and `withDeleted` fields cannot be combined with a cursor, and their path never answers `nextCursor`.
+- `size: 100` and `orderBy` `fileCreatedAt` ascending. The provider follows `nextCursor` for up to 10 pages. A window that holds more than 1,000 assets is treated as a match (a hold, with the reason `crowded`) and never as "no match".
+
+`taken_near` returns the owner's assets in the padded window, each with its instant, make, model, dimensions and duration, or `crowded` with none. Partner-shared assets are dropped. An answer it does not understand, a candidate with neither a capture time nor a file time, or a refused or failed request raises, and is never read as "no match". An asset in the owner's locked folder is never returned to an API key, so it cannot hold a photo.
 
 Slice 1 pins these request fields and the filter column against the v3.3.6 and v3.4.1 sources, in the same way as section 2 of the managed-storage design, and adds a row to #266's live spike for the owner to run: a non-admin user, an asset uploaded with a capture time, and a different-byte upload with the same `fileCreatedAt` that `taken_near` must find, with exactly the read or import grants. Until that row passes, the hold is built and tested against the fake only. The fake must filter on the column the pinned source uses (expected to be `fileCreatedAt`), and not on `exifInfo`. The fake must also answer an asset whose extraction has not run yet with an upload-time `fileCreatedAt`.
 

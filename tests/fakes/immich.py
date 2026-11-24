@@ -64,15 +64,23 @@ class FakeAsset:
     ready_at: float = 0.0
     offline: bool = False
     sidecar: bytes | None = None
+    file_created_at: str = "2026-01-01T00:00:00.000Z"
+
+    def extracted(self) -> bool:
+        return self.exif is not None and time.monotonic() >= self.ready_at
+
+    def taken_at(self) -> str:
+        taken = (self.exif or {}).get("dateTimeOriginal") if self.extracted() else None
+        return taken if isinstance(taken, str) else self.file_created_at
 
     def json(self) -> dict[str, object]:
         checksum = self.checksum or base64.b64encode(hashlib.sha1(self.data, usedforsecurity=False).digest()).decode()
         found: dict[str, object] = {
             "id": self.id, "ownerId": self.owner_id, "libraryId": self.library_id, "checksum": checksum, "type": self.kind,
             "originalFileName": self.name, "visibility": self.visibility, "livePhotoVideoId": self.live_video_id,
-            "isTrashed": self.trashed, "isOffline": self.offline, "updatedAt": self.updated_at,
+            "isTrashed": self.trashed, "isOffline": self.offline, "updatedAt": self.updated_at, "fileCreatedAt": self.taken_at(),
         }
-        if self.exif is not None and time.monotonic() >= self.ready_at:
+        if self.extracted():
             found["exifInfo"] = self.exif
             found["duration"] = 300 if self.kind == "VIDEO" else None
         return found
@@ -104,6 +112,20 @@ def extract(data: bytes, sidecar: bytes | None) -> dict[str, object]:
     if description := re.search(r'<rdf:li xml:lang="x-default">([^<]*)</rdf:li>', text):
         found["description"] = html.unescape(description.group(1))
     return found
+
+
+def utc(value: str) -> datetime:
+    return datetime.fromisoformat(value).astimezone(UTC)
+
+
+def in_range(value: str, bounds: dict[str, str]) -> bool:
+    at = utc(value)
+    return all(test(at, utc(bounds[name])) for name, test in (
+        ("gte", lambda a, b: a >= b), ("gt", lambda a, b: a > b), ("lte", lambda a, b: a <= b), ("lt", lambda a, b: a < b)) if name in bounds)
+
+
+NEW_SHAPE = ("filter", "orderBy", "cursor")
+FLAT_ONLY = ("takenAfter", "takenBefore", "withDeleted", "checksum", "updatedAfter", "updatedBefore", "trashedAfter", "trashedBefore", "page", "order", "type")
 
 
 @dataclass
@@ -205,10 +227,20 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             state.searches += 1
             if state.on_search is not None:
                 state.on_search(state.searches)
+            shaped = any(name in asked for name in NEW_SHAPE)
+            if shaped and any(name in asked for name in FLAT_ONLY):
+                self.reply(400, {"message": "Deprecated field cannot be combined with filter/orderBy/cursor", "error": "Bad Request", "statusCode": 400})
+                return
             window = asked.get("filter", {}).get("updatedAt", {})
-            found = [a for a in state.assets if (a.owner_id == person.user_id or (state.search_shared and a.id in state.shared)) and not a.trashed
+            taken = asked.get("filter", {}).get("takenAt")
+            flat_taken = {name: asked[flat] for name, flat in (("gte", "takenAfter"), ("lte", "takenBefore")) if asked.get(flat)}
+            found = [a for a in state.assets if (a.owner_id == person.user_id or (state.search_shared and a.id in state.shared))
+                     and (not a.trashed or taken is not None or asked.get("withDeleted") is True)
                      and window.get("gte", "") <= a.updated_at <= window.get("lte", "9999")
+                     and in_range(a.taken_at(), taken or flat_taken)
                      and asked.get("checksum") in (None, a.json()["checksum"])]
+            if taken is not None:
+                found.sort(key=lambda a: utc(a.taken_at()))
             start = int(asked.get("cursor") or 0)
             size = min(int(asked.get("size", 250)), state.page_size)
             end = start + size
@@ -294,8 +326,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                     return
                 name = (fields.get("filename") or b"").decode()
                 kind = "VIDEO" if name.lower().endswith((".avi", ".mp4", ".mov")) else "IMAGE"
+                created = utc(fields["fileCreatedAt"].decode()).isoformat(timespec="milliseconds").replace("+00:00", "Z")
                 asset = FakeAsset(str(uuid.uuid4()), person.user_id, data, name=name, kind=kind, exif=extract(data, sidecar),
-                                  ready_at=time.monotonic() + state.extraction_delay, metadata=(), sidecar=sidecar)
+                                  ready_at=time.monotonic() + state.extraction_delay, metadata=(), sidecar=sidecar, file_created_at=created)
                 video_id = (fields.get("livePhotoVideoId") or b"").decode()
                 video = next((a for a in state.assets if a.id == video_id and a.owner_id == person.user_id and a.kind == "VIDEO"), None)
                 if video_id and video is None:

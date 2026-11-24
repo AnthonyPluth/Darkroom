@@ -44,7 +44,7 @@ The ownership decision and detailed design are **owner approved, with sign-off r
 | #199 safety of a durable copy in both Immich and `originals/` | Superseded for the target. There is no independent Darkroom copy; an Immich database/media backup and rehearsed restore are prerequisites, and API read-back is not a backup |
 | iPhone behaviour, browser credential policy and alert delivery | Unchanged by #259. Darkroom gains no authority over phone clearing, typing credentials or a new delivery channel |
 
-**Proposals, not owner decisions yet:** 14 days of successful-import retention after whole-export verification, pinned unresolved imports/reviews, no automatic Immich asset deletion/replacement, separately gated missing-field enrichment, and the staged migration/rollback sequence in the design. Existing `media_items` identities, `duplicate_removals` history and `pixel_copies` obligations are preserved through additive backfill; no migration automatically deletes old source folders.
+**Proposals, not owner decisions yet:** 14 days of successful-import retention after whole-export verification, pinned unresolved imports/reviews, no automatic Immich asset deletion/replacement, and the staged migration/rollback sequence in the design. Existing `media_items` identities, `duplicate_removals` history and `pixel_copies` obligations are preserved through additive backfill; no migration automatically deletes old source folders. The design's other proposal, separately gated missing-field enrichment of an existing asset, will not be built: the owner decided against it on 2026-11-24 ([below](#no-assetupdate-grant-and-no-enrichment-548-2026-11-24)).
 
 Pinned v3.3.6 OpenAPI/source inspection supports the expected upload endpoint, multipart fields and `created`/`duplicate` responses. It does not prove a successful upload, cross-user isolation, metadata round trip or cleanup safety on the deployment. The prior #202 spike observed reads/checksums only. A disposable-instance write spike and the stronger-model deletion-safety review requested in #259 remain gates before implementation.
 
@@ -146,3 +146,14 @@ Everything the design says about Syncthing's REST API, Chromium in the merged im
 ## The recovery-point gate's defaults (#545, 2026-11-24)
 
 The owner accepted the proposed defaults of `docs/design/recovery-point-gate.md`: one acceptance of the remote-deletion boundary for the whole installation, and the accepted boundary stores a SHA-256 of the text shown, which the gate's check counts only when it matches the current text. Recorded on #545 (https://github.com/AnthonyPluth/Darkroom/issues/545#issuecomment-7131017264). The backup tool and the thresholds are still the owner's to answer; until then the design's own constants and the begin/finish command contract apply.
+
+## No `asset.update` grant, and no enrichment (#548, 2026-11-24)
+
+**Owner decision.** Recorded on [issue #548](https://github.com/AnthonyPluth/Darkroom/issues/548#issuecomment-7121490970): "no `asset.update` grant. The person's Immich key stays at exactly the read grants or the import grants (managed-storage design, section 8); `asset.update` is not added. So there is no enrichment path: Darkroom never changes the metadata of an asset already in Immich. A `not_enriched` hold is shown for review and resolved by the owner (for example supplying an offset recorded in Darkroom, keeping the sidecar-borne metadata recorded in Darkroom, or accepting the asset as it is), never by updating Immich metadata."
+
+| Item | Decision | Source |
+| --- | --- | --- |
+| The person's Immich key | Exactly the read grants or exactly the import grants ([design](design/immich-managed-storage.md), section 8); `asset.update` is never added, and a key holding it is refused as before | #548 |
+| Existing-asset enrichment | Not built. Darkroom sends no `PUT /api/assets/{id}` or other update; metadata reaches Immich only in the XMP sidecar sent with a first upload | #548 |
+| A duplicate whose existing asset lacks Google's values (`not_enriched`) | Shown for review and resolved by the owner ([design](design/terminal-holds.md), section 3): accept the asset as it is with Google's values kept recorded in Darkroom, record an offset in Darkroom, or check again after fixing it in Immich by hand. That resolution is what "completed metadata handling" means for a duplicate before its held source is released | #548 |
+| Superseded | The managed-storage design's "separately gated missing-field enrichment" proposal, the enrichment release gate and live-spike row, and its replacement promise 1's "separately verified, owner-approved missing-field API path" | #259, #548 |

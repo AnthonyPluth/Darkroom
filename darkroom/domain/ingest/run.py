@@ -37,12 +37,16 @@ PER_PART = "per_part"
 WHOLE = "whole"
 STARTED_STAGES = frozenset(STAGES[1:])
 STARTED_STATUSES = frozenset({"unpacking", "importing"})
+OLD_WAY_STAGES = STARTED_STAGES | {"unpack"}
+OLD_WAY_RUNS = ("running", "done", "failed")
+OLD_WAY_PARTS = ("ingesting", "ingested", "refused", "failed")
 ROUTABLE_STATUSES = ("downloading", "downloaded", "unpacking", "importing")
 UNPLACED = "unplaced"
 PINNED_AT_ONCE = 100
 LOCKS: dict[int, threading.Lock] = {}
 LOCKS_GUARD = threading.Lock()
 SidecarState = Literal["none", "read", "repaired", "unreadable"]
+Way = Literal["managed", "old", "fresh"]
 
 
 class NotReady(RuntimeError):
@@ -567,10 +571,24 @@ def staging_of(opened: Session, photos: Photos, export: Export) -> Path | None:
     return None
 
 
-def started_whole(opened: Session, photos: Photos | None, export: Export) -> bool:
+def staged_whole(opened: Session, photos: Photos | None, export: Export) -> bool:
     if export.stage in STARTED_STAGES or export.status in STARTED_STATUSES:
         return True
     return photos is not None and staging_of(opened, photos, export) is not None
+
+
+def way(opened: Session, photos: Photos, export: Export) -> Way:
+    if managed_ingest.intent_of(opened, export) is not None:
+        return "managed"
+    if export.stage in OLD_WAY_STAGES:
+        return "old"
+    found = (select(ImportRun.id).where(ImportRun.export_id == export.id, ImportRun.status.in_(OLD_WAY_RUNS)).limit(1),
+             select(ExportPart.id).where(ExportPart.export_id == export.id, ExportPart.ingest_state.in_(OLD_WAY_PARTS)).limit(1),
+             select(TakeoutEntry.id).where(TakeoutEntry.export_id == export.id, or_(TakeoutEntry.decision_id.is_not(None), TakeoutEntry.outcome != "listed",
+                                                                                     TakeoutEntry.held_path.is_not(None))).limit(1))
+    if any(opened.execute(query).first() is not None for query in found) or staging_of(opened, photos, export) is not None:
+        return "old"
+    return "fresh"
 
 
 def has_part_states(opened: Session, export: Export) -> bool:
@@ -580,7 +598,7 @@ def has_part_states(opened: Session, export: Export) -> bool:
 def route_of(opened: Session, photos: Photos | None, export: Export) -> str:
     if export.ingest_route in (PER_PART, WHOLE):
         return export.ingest_route
-    route = PER_PART if has_part_states(opened, export) or not started_whole(opened, photos, export) else WHOLE
+    route = PER_PART if has_part_states(opened, export) or not staged_whole(opened, photos, export) else WHOLE
     export.ingest_route = route
     return route
 

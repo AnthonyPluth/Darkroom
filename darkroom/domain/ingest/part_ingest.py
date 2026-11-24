@@ -646,11 +646,11 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
         if part.ingest_state not in (QUEUED, INGESTING) or part.status != "done":
             raise run.NotReady("this part is not queued for ingest")
         person = run.owner_person(opened, export, claim=True)
-        managed_ingest.begin(opened, export, person, now)
+        photos = Photos(settings.photos_root)
+        managed_ingest.begin(opened, export, person, run.way(opened, photos, export) == "fresh", now)
         resumed = part.ingest_state == INGESTING
         part.ingest_state, part.ingest_refusal, part.ingest_failure, part.ingest_failure_type = INGESTING, None, None, None
         opened.commit()
-        photos = Photos(settings.photos_root)
         beat.part_began(export.id, part.number, part.entries_done or 0, part.entries or 0, resumed)
         try:
             with contextlib.ExitStack() as stack:
