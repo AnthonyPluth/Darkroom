@@ -72,6 +72,23 @@ Inspected on 2026-11-18 at tag `v3.4.1` (commit `22b95194c80a2f2e6201093916b6c8c
 
 None of these differences changes a route, field, status, message or grant the managed reader or the upload codec relies on. The Live Photo ownership check is stricter and matches what Darkroom already requires (same owner). The `tzSource` fix only touches which zone wins when a sidecar sets the date, which the live spike observed on v3.4.1 itself. So the managed reader accepts exactly `v3.3.6` and `v3.4.1`; `v3.4.0`, a later `v3.4.x` and anything else are refused until their sources are pinned here the same way and the version is added to `MANAGED_VERSIONS` with its test row.
 
+#### Pinned capture-time search ([#546](https://github.com/AnthonyPluth/Darkroom/issues/546))
+
+Inspected on 2026-11-24 at tags `v3.3.6` and `v3.4.1` for `ManagedReader.taken_near` ([same-shot-hold.md](same-shot-hold.md), section 3). Files and their blobs (v3.3.6 / v3.4.1):
+
+- `server/src/services/search.service.ts`, `6c8f484fed3e4d208c8a56b268d25073022a18e3` in both, and `server/src/utils/search-cursor.ts`, `c2d19ad799e9ab52238e9ae3efd753cecbc27d53` in both.
+- `server/src/dtos/search.dto.ts`, `be39fd24a04fe26cbe88a9d03424433c1aea87b0` / `3f11e01fe91ec43d9119b09f6d0cddd63f64213f` (only a comment's formatting differs).
+- `server/src/utils/database.ts`, `3f262c4f601514ab8fa70ae30999a820a11405b2` / `fffff8e23a81488737f8641c0a764f5277044177` (v3.4.1 selects `exifInfo` through `columns.exif`, which still has `dateTimeOriginal`, `make`, `model`, `exifImageWidth` and `exifImageHeight`, and adds the locked-visibility rule to the flat-field path).
+- `server/src/utils/search-filter.ts`, `674947a08703a14eb555901fb08dd2746dc7adac` / `cd8f7b7759ff17c83376384e3fc81c1d65e98844`, and `server/src/dtos/asset-response.dto.ts`, `78cb6eb2a76244101fa1d598e049f52505f2a69b` / `defb2749ed47f0d65d7d25aa91df5ebcbb6b5d60` (v3.4.1 hides metadata only for a shared link).
+
+What they show, the same on both versions:
+
+- `POST /api/search/metadata` has two shapes. A body with `filter`, `orderBy` or `cursor` takes the structured path (`searchMetadataV3`), pages with an opaque `nextCursor` and refuses any deprecated flat field beside them with a 400. The flat fields (`takenAfter`, `takenBefore`, `withDeleted`, `checksum`, `page`) take the old path, which pages with `nextPage` and always answers `nextCursor: null`. So the flat `takenAfter`/`takenBefore` with `withDeleted` and `nextCursor` paging, as section 3 of the same-shot design first described them, cannot be sent together.
+- In the structured shape, `filter.takenAt` (`gte`, `lte`) compares `asset.fileCreatedAt`, the same column the flat `takenAfter`/`takenBefore` use. It is not `exifInfo.dateTimeOriginal`. Metadata extraction later sets `fileCreatedAt` from the capture time; before it runs, `fileCreatedAt` is the upload's own value.
+- The structured path adds no `deletedAt is null`: trashed assets come back unless `filter.trashedAt` asks otherwise. It searches the key's user and their partners (Darkroom keeps only the owner's), and adds `visibility != locked` for a key without an elevated session, so an asset in the owner's locked folder is never seen. `withExif` and `size` (1 to 1000) are allowed in this shape.
+
+So `taken_near` sends `{"filter": {"takenAt": {"gte": …, "lte": …}}, "withExif": true, "size": 100, "orderBy": {"field": "fileCreatedAt", "direction": "asc"}}` and then `cursor` for up to 10 pages. The fake Immich filters `takenAt` on `fileCreatedAt`, includes trashed assets for it and refuses a body mixing the two shapes. This is source inspection, not a live result: the row on [#266](https://github.com/AnthonyPluth/Darkroom/issues/266) that same-shot-hold.md asks for is still to be run.
+
 ### Live spike required before enabling imports
 
 Use a disposable instance or dedicated test users, generated media and narrowly scoped keys. Record server version, request field names, status codes and assertions; publish no credentials, real media, names, locations or raw account responses. Provision credentials through environment settings, not an issue or chat. Nothing in this design permits uploading test files into the household's production library.
