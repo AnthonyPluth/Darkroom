@@ -162,10 +162,12 @@ def undo_until(review: ReviewItem) -> float | None:
 def summary(opened: Session, review: ReviewItem, decision: DedupeDecision) -> dict[str, object]:
     matched = None if decision.matched_item_id is None else opened.get(MediaItem, decision.matched_item_id)
     kept = None if decision.takeout_item_id is None else opened.get(MediaItem, decision.takeout_item_id)
+    managed = kept_in_immich(opened, decision)
     return {
         "id": review.id, "status": review.status, "decision_id": decision.id, "export_id": decision.export_id, "account_id": decision.account_id,
         "tier": decision.tier, "reason": decision.reason, "decided_at": decision.decided_at, "reversed": decision.reversed_at is not None,
-        "resolved_at": review.resolved_at, "undo_until": None if kept_in_immich(opened, decision) else undo_until(review), "name": name_of(decision.source_path),
+        "resolved_at": review.resolved_at, "undo_until": None if managed else undo_until(review),
+        "kept_in_immich": managed and review.status == "kept_both", "name": name_of(decision.source_path),
         "library_name": None if matched is None else name_of(matched.path), "person_id": decision.person_id,
         "kept_item_id": None if kept is None else kept.id, "kept_person_id": None if kept is None else kept.person_id,
         "decided_by_person_id": decided_by(opened, review, kept),

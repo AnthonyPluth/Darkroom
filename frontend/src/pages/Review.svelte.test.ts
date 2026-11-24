@@ -22,7 +22,7 @@ afterEach(() => {
 
 const pending: ReviewSummary = {
   id: 7, status: "pending", decision_id: 70, export_id: 1, account_id: 11, tier: 4, reason: "perceptual distance 2, 1 s apart", decided_at: NOW - 100,
-  reversed: false, resolved_at: null, undo_until: null, name: "IMG_2431.jpg", library_name: "IMG_2431.HEIC", person_id: 1, kept_item_id: null, kept_person_id: null, decided_by_person_id: null,
+  reversed: false, resolved_at: null, undo_until: null, kept_in_immich: false, name: "IMG_2431.jpg", library_name: "IMG_2431.HEIC", person_id: 1, kept_item_id: null, kept_person_id: null, decided_by_person_id: null,
 };
 const kept: ReviewSummary = { ...pending, id: 5, status: "kept_both", name: "IMG_2102.jpg", library_name: "IMG_2102.HEIC", resolved_at: NOW - 60, undo_until: NOW + 1000, kept_item_id: 50, kept_person_id: 1 };
 const old: ReviewSummary = { ...pending, id: 4, status: "kept_both", name: "PXL_1.jpg", library_name: "IMG_1.HEIC", resolved_at: NOW - 20 * 86_400, undo_until: NOW - 6 * 86_400 };
