@@ -16,7 +16,7 @@ from sqlalchemy import Select, and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, dedupe, events, immich_reconcile, managed_ingest, managed_metadata, managed_upload, media, pixel_folder, pixel_source, xmp
+from darkroom.domain import alerts, dedupe, events, immich_reconcile, managed_ingest, managed_manifest, managed_metadata, managed_upload, media, pixel_folder, pixel_source, xmp
 from darkroom.domain.ingest import pairing
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import exiftool, immich
@@ -27,7 +27,7 @@ from darkroom.storage.paths import Photos
 
 ON: Final = "on"
 KIND: Final = "backfill"
-MANIFEST: Final = json.dumps({"schema": 1, "resource": "media_item", "compound": "single"}, sort_keys=True)
+MANIFEST: Final = managed_manifest.MEDIA_ITEM
 KEY: Final = "backfill:media-item:"
 SOURCE: Final = "media-item:"
 IMMICH_FOLDER: Final = "immich"
