@@ -14,6 +14,7 @@ from darkroom.storage.models import ManagedImportIntent, ManagedImportReceipt
 MAX_SENDS = 3
 LEASE_SECONDS = 3600.0
 VERIFIED = ("bytes_verified", "metadata_verified", "committed")
+SAME_SHOT_HOLD = "same_shot"
 Outcome = Literal["verified", "unusable", "pending", "held"]
 Body = Callable[[], immich.MultipartUpload]
 
@@ -50,7 +51,8 @@ def move(opened: Session, row: ManagedImportReceipt, before: tuple[str, ...], no
 
 def claim(opened: Session, row: ManagedImportReceipt, now: float) -> int:
     attempt, lease = row.send_attempts + 1, ManagedImportReceipt.send_lease_until
-    if not move(opened, row, (row.state,), now, ManagedImportReceipt.send_attempts == row.send_attempts, or_(lease.is_(None), lease <= now),
+    unheld = or_(ManagedImportReceipt.metadata_hold.is_(None), ManagedImportReceipt.metadata_hold != SAME_SHOT_HOLD)
+    if not move(opened, row, (row.state,), now, ManagedImportReceipt.send_attempts == row.send_attempts, or_(lease.is_(None), lease <= now), unheld,
                 state="outcome_unknown", send_attempts=attempt, send_lease_until=now + LEASE_SECONDS):
         raise Moved
     return attempt
@@ -118,6 +120,8 @@ def upload_receipt(opened: Session, reader: immich.ManagedReader, receipt_id: in
     if reader.access != "import" or owner is None or reader.owner_id != owner:
         return Report("pending", "the Immich key is not this import's owner")
     for _ in range(MAX_SENDS):
+        if row.metadata_hold == SAME_SHOT_HOLD:
+            return Report("held", "the photo waits for the owner's decision")
         if row.state in VERIFIED:
             return Report("verified", "the unedited original matches the source")
         if row.state == "returned":
