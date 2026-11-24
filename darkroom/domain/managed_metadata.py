@@ -435,7 +435,17 @@ def complete_live_photo(opened: Session, reader: immich.ManagedReader, video: Re
     first = complete_receipt(opened, reader, video, now, pause)
     if first.outcome != "verified":
         return first
-    second = complete_receipt(opened, reader, still, now, pause, managed_upload.fresh(opened, video.receipt_id).asset_id)
+    sent = managed_upload.fresh(opened, video.receipt_id)
+    try:
+        seen = reader.get_asset(str(sent.asset_id))
+    except (immich.NotCustody, immich.NotVisible) as error:
+        return managed_upload.hold_unusable(opened, sent, ("metadata_verified",), now, managed_upload.kind_of(error),
+                                            "the Live Photo's video is no longer an available managed original of this person")
+    except immich.ImmichFailed:
+        return Report("pending", "the Live Photo's video could not be read again before its still was sent")
+    if seen.kind != "VIDEO" or seen.sha1 != sent.source_sha1:
+        return managed_upload.hold_unusable(opened, sent, ("metadata_verified",), now, "other_bytes", "the Live Photo's video is no longer the video that was sent")
+    second = complete_receipt(opened, reader, still, now, pause, sent.asset_id)
     if second.outcome != "verified":
         return second
     return commit_compound(opened, reader, rows[0].intent_id, rows[0].compound_key, now)

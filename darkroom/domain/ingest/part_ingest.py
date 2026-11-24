@@ -278,6 +278,9 @@ class Ingest:
     def in_batches(self, entries: list[TakeoutEntry]) -> Iterator[list[TakeoutEntry]]:
         return part_reader.batches_of(entries, part_reader.BATCH_FILES, part_reader.BATCH_BYTES)
 
+    def in_grouped_batches(self, groups: Sequence[Sequence[TakeoutEntry]]) -> Iterator[list[Sequence[TakeoutEntry]]]:
+        return part_reader.grouped_batches_of(groups, part_reader.BATCH_FILES, part_reader.BATCH_BYTES)
+
     def freed(self, number: int) -> bool:
         part = part_of(self.opened, self.export.id, number)
         return part is not None and part.free_state is not None

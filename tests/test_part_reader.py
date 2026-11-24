@@ -231,7 +231,7 @@ class ListingTests(unittest.TestCase):
         reached = {name: reached_through_the_reader(sources[name]) for name in users}
         self.assertEqual(reached, {
             "darkroom/domain/ingest/part_free.py": {"PartRefused", "entry_chunks", "entry_listing", "recorded", "scratch_name", "zip_of"},
-            "darkroom/domain/ingest/part_ingest.py": {"BATCH_BYTES", "BATCH_FILES", "PartRefused", "READ_ERRORS", "Streamed", "batches_of",
+            "darkroom/domain/ingest/part_ingest.py": {"BATCH_BYTES", "BATCH_FILES", "PartRefused", "READ_ERRORS", "Streamed", "batches_of", "grouped_batches_of",
                                                       "entry_listing", "read_part", "stream_one", "sweep_part_scratch", "zip_of"},
         })
 
