@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from darkroom.server import auth, viewer, wizard
-from darkroom.server.api import accounts, browser, browser_internal, demo, exports, imports, people, pixels, review, status
+from darkroom.server.api import accounts, browser, browser_internal, demo, exports, holds, imports, people, pixels, review, status
 from darkroom.server.api import wizard as setup
 from darkroom.server.common import Request, Response
 
@@ -69,6 +69,7 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", "/api/review/{id}/thumb/{side}", review.thumb, "session"),
     Route("POST", "/api/review/{id}/resolve", review.resolve, "session"),
     Route("POST", "/api/review/{id}/undo", review.undo, "session"),
+    Route("GET", "/api/holds", holds.list_holds, "session"),
     Route("GET", "/api/decisions", review.list_decisions, "session"),
     Route("POST", "/api/decisions/{id}/reverse", review.reverse, "session"),
     Route("GET", "/api/media", review.list_media, "session"),

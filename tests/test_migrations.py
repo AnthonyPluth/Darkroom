@@ -615,6 +615,30 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT id, status, stage FROM exports").all(), [(1, "downloaded", "queued")])
         db.migrate(self.engine)
 
+    def test_0057_managed_hold_facts_starts_empty_keeps_every_receipt_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0054")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO managed_import_intents (id, person_id, export_id, owner_id, resource_manifest, created_at) VALUES (1, 1, 1, 'owner', '{}', 1.0)")
+            connection.exec_driver_sql("INSERT INTO managed_import_receipts (id, intent_id, resource_key, compound_key, source_sha1, expected_bytes, expected_metadata, state, updated_at, metadata_hold) "
+                                       f"VALUES (1, 1, 'part/still', 'part/still', '{'a' * 40}', 5000000000, '{{}}', 'prepared', 1.0, 'no_instant')")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT state, expected_bytes, metadata_hold, hold_facts FROM managed_import_receipts").all(),
+                             [("prepared", 5000000000, "no_instant", None)])
+            connection.exec_driver_sql("UPDATE managed_import_receipts SET hold_facts = '{\"kind\": \"trashed\"}'")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0054")
+        self.assertNotIn("hold_facts", {column["name"] for column in inspect(self.engine).get_columns("managed_import_receipts")})
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT state, expected_bytes, metadata_hold FROM managed_import_receipts").all(), [("prepared", 5000000000, "no_instant")])
+        db.migrate(self.engine)
+
     def test_0054_retention_attestations_hold_one_active_record_of_each_kind_in_its_shape_and_keep_them_on_undo(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

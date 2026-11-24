@@ -1289,6 +1289,221 @@
         "required": [],
         "type": "object"
       },
+      "HoldFacts": {
+        "additionalProperties": false,
+        "properties": {
+          "description_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description_unwritable": {
+            "type": "boolean"
+          },
+          "differs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "file_utc": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "google_utc": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "immich_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "immich_taken": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "intended_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "intended_taken": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "place_known": {
+            "type": "boolean"
+          },
+          "wall_clock": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "HoldView": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "bytes_verified_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "export_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "facts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HoldFacts"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hold": {
+            "enum": [
+              "unknown_offset",
+              "no_instant",
+              "unwritable",
+              "not_enriched",
+              "not_settled",
+              "unusable"
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "person_id": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "import",
+              "kept",
+              "backfill"
+            ]
+          },
+          "updated_at": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "actions",
+          "bytes_verified_at",
+          "export_id",
+          "facts",
+          "hold",
+          "id",
+          "name",
+          "person_id",
+          "reason",
+          "source",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "Holds": {
+        "additionalProperties": false,
+        "properties": {
+          "holds": {
+            "items": {
+              "$ref": "#/components/schemas/HoldView"
+            },
+            "type": "array"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "holds",
+          "total"
+        ],
+        "type": "object"
+      },
       "ImportFailure": {
         "additionalProperties": false,
         "properties": {
@@ -3851,6 +4066,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RetryDownloadReply"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-auth": "session"
+      }
+    },
+    "/api/holds": {
+      "get": {
+        "operationId": "list_holds",
+        "responses": {
+          "2XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Holds"
                 }
               }
             },

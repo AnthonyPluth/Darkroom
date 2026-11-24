@@ -190,6 +190,58 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(cleanup.clean(world.opened, world.photos, NOW + 30 * DAY).holds, 0)
         self.assertEqual((len(world.zips(world.opened.get(Export, export_id))), (world.root / world.opened.get(ReviewItem, held).hold_path).is_file()), (3, True))
 
+    def test_a_hold_before_upload_stores_the_facts_the_hold_list_shows(self):
+        world = ManagedWorld(self)
+        world.run_managed(world.scenario_with_live_photo)
+        row = world.opened.execute(select(ManagedImportReceipt).where(ManagedImportReceipt.metadata_hold == "no_instant")).scalar_one()
+        self.assertEqual(json.loads(str(row.hold_facts)), {"wall_clock": None, "file_utc": None, "google_utc": None, "place_known": False,
+                                                           "description_length": None, "description_unwritable": False})
+        committed = world.opened.execute(select(ManagedImportReceipt.hold_facts).where(ManagedImportReceipt.state == "committed")).scalars().all()
+        self.assertEqual(committed, [None, None])
+
+    def test_an_unusable_receipt_is_a_terminal_hold_that_a_later_pass_of_the_same_export_does_not_try_again(self):
+        world = ManagedWorld(self)
+
+        def two(builder):
+            for name in ("IMG_5031.JPG", "IMG_5032.JPG"):
+                builder.photo(name, gps=(45.4, 12.3), description="A made-up quay", part=0)
+        export = world.create(two, parts=1)
+        data = world.bytes_of(export, "IMG_5031.JPG")
+        trashed = FakeAsset(str(uuid.uuid4()), OWNER, data, name="IMG_9031.JPG", exif=extract(data, None), trashed=True)
+        world.fake.add_asset(trashed)
+        world.ingest_all(export, (1,))
+        posts = []
+        world.fake.state.intercept = lambda method, path, slug: 503 if (method, path) == ("POST", "/api/assets") and posts.append(1) is None and len(posts) > 1 else None
+        world.finish(export)
+        self.assertEqual(world.status(export), ("downloading", "placed"))
+        self.assertEqual(world.receipts()["IMG_5031.JPG"], ("returned", "duplicate", "unusable"))
+        self.assertEqual(json.loads(str(world.opened.execute(select(ManagedImportReceipt.hold_facts).where(ManagedImportReceipt.metadata_hold == "unusable")).scalar_one())),
+                         {"kind": "trashed"})
+        world.fake.state.intercept, trashed.trashed = None, False
+        seen = len(world.fake.requests())
+        world.finish(export, at=NOW + 10)
+        self.assertEqual(world.status(export), ("imported", "done"))
+        self.assertEqual(world.receipts(), {"IMG_5031.JPG": ("returned", "duplicate", "unusable"), "IMG_5032.JPG": ("committed", "created", None)})
+        self.assertFalse([path for _, path in world.fake.requests()[seen:] if trashed.id in path])
+
+    def test_a_kept_photo_whose_immich_copy_is_unusable_alerts_once_and_is_not_read_again_until_the_owner_asks(self):
+        world = ManagedWorld(self)
+        world.run_managed()
+        held = world.opened.execute(select(ReviewItem.id)).scalar_one()
+        data = (world.root / str(world.opened.get(ReviewItem, held).hold_path)).read_bytes()
+        trashed = FakeAsset(str(uuid.uuid4()), OWNER, data, name="IMG_9041.JPG", exif=extract(data, None), trashed=True)
+        world.fake.add_asset(trashed)
+        review.resolve(world.opened, world.photos, held, "keep_both", NOW + 5, review.FileEffects())
+        world.opened.commit()
+        for at in (NOW + 10, NOW + 3 * DAY):
+            finish_export.finish_ready(world.opened, world.settings, at, world.tools)
+        self.assertEqual(world.receipts()[f"review:{held}"], ("returned", "duplicate", "unusable"))
+        trashed.trashed = False
+        seen = len(world.fake.requests())
+        finish_export.finish_ready(world.opened, world.settings, NOW + 4 * DAY, world.tools)
+        self.assertEqual((len(world.fake.requests()), world.receipts()[f"review:{held}"]), (seen, ("returned", "duplicate", "unusable")))
+        self.assertEqual(len(world.opened.execute(select(Alert).where(Alert.key == f"managed:kept:{held}")).scalars().all()), 1)
+
     def test_a_kept_photo_that_never_shows_its_metadata_alerts_once_and_is_not_polled_again(self):
         world = ManagedWorld(self)
         world.run_managed()

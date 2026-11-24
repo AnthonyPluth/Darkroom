@@ -639,6 +639,16 @@
       ]
     },
     {
+      "route": "GET /api/holds",
+      "auth": "session",
+      "handler": "darkroom.server.api.holds.list_holds",
+      "frontend": [],
+      "tests": [
+        "tests/test_every_route.py",
+        "tests/test_managed_holds.py"
+      ]
+    },
+    {
       "route": "GET /api/decisions",
       "auth": "session",
       "handler": "darkroom.server.api.review.list_decisions",

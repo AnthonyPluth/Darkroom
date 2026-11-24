@@ -553,6 +553,40 @@ class ReviewReply(TypedDict):
     review: ReviewSummary
 
 
+class HoldFacts(TypedDict, total=False):
+    wall_clock: str | None
+    file_utc: float | None
+    google_utc: float | None
+    place_known: bool
+    description_length: int | None
+    description_unwritable: bool
+    kind: str
+    differs: list[str]
+    immich_taken: str | None
+    immich_offset: int | None
+    intended_taken: str | None
+    intended_offset: int | None
+
+
+class HoldView(TypedDict):
+    id: int
+    source: Literal["import", "kept", "backfill"]
+    person_id: int
+    export_id: int | None
+    name: str | None
+    hold: Literal["unknown_offset", "no_instant", "unwritable", "not_enriched", "not_settled", "unusable"]
+    reason: str
+    facts: HoldFacts | None
+    actions: list[str]
+    bytes_verified_at: float | None
+    updated_at: float
+
+
+class Holds(TypedDict):
+    holds: list[HoldView]
+    total: int
+
+
 class ResolveBody(TypedDict):
     action: Literal["keep_both"]
 

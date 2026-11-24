@@ -240,7 +240,8 @@ class Backfill:
         if tags is None or "Error" in tags:
             return None
         kind: managed_metadata.Kind = "VIDEO" if PurePosixPath(item.path).suffix.lower() in media.VIDEO_SUFFIXES else "IMAGE"
-        intended = managed_metadata.intend(tags, xmp.GoogleMetadata.of(item.sidecar_json), kind, corrects=not item.sidecar_from_still)
+        google = xmp.GoogleMetadata.of(item.sidecar_json)
+        intended = managed_metadata.intend(tags, google, kind, corrects=not item.sidecar_from_still)
         db.write_lock(self.opened)
         found = self.opened.execute(query).scalar_one_or_none()
         current = self.opened.get(MediaItem, item.id, populate_existing=True)
@@ -252,7 +253,8 @@ class Backfill:
         if found is None:
             key = f"{KEY}{item.id}"
             row = ManagedImportReceipt(intent_id=intent.id, resource_key=key, compound_key=key, source_sha1=item.sha1, expected_bytes=item.bytes,
-                                       expected_metadata=managed_metadata.snapshot(intended), updated_at=self.now)
+                                       expected_metadata=managed_metadata.snapshot(intended),
+                                       hold_facts=managed_metadata.held_facts(tags, google, intended), updated_at=self.now)
             self.opened.add(row)
             self.opened.flush()
             found = row.id

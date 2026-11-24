@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -14,6 +15,8 @@ from darkroom.storage.models import ManagedImportIntent, ManagedImportReceipt
 MAX_SENDS = 3
 LEASE_SECONDS = 3600.0
 VERIFIED = ("bytes_verified", "metadata_verified", "committed")
+UNUSABLE = "unusable"
+UNAVAILABLE = "Immich's asset is not an available managed original of this person"
 Outcome = Literal["verified", "unusable", "pending", "held"]
 Body = Callable[[], immich.MultipartUpload]
 
@@ -46,6 +49,15 @@ def move(opened: Session, row: ManagedImportReceipt, before: tuple[str, ...], no
     changed = opened.connection().execute(update(ManagedImportReceipt).where(*where).values(updated_at=now, **values)).rowcount == 1
     opened.commit()
     return changed
+
+
+def hold_unusable(opened: Session, row: ManagedImportReceipt, before: tuple[str, ...], now: float, kind: str, reason: str = UNAVAILABLE) -> Report:
+    move(opened, row, before, now, metadata_hold=UNUSABLE, hold_facts=json.dumps({"kind": kind}, sort_keys=True))
+    return Report("unusable", reason)
+
+
+def kind_of(error: immich.ImmichFailed) -> str:
+    return error.kind if isinstance(error, immich.NotCustody) else "not_visible"
 
 
 def claim(opened: Session, row: ManagedImportReceipt, now: float) -> int:
@@ -83,8 +95,8 @@ def returned(opened: Session, reader: immich.ManagedReader, row: ManagedImportRe
 def read_back(opened: Session, reader: immich.ManagedReader, row: ManagedImportReceipt, now: float) -> Report:
     try:
         reader.verify_original(str(row.asset_id), row.source_sha1, row.expected_bytes)
-    except (immich.NotCustody, immich.NotVisible):
-        return Report("unusable", "Immich's asset is not an available managed original of this person")
+    except (immich.NotCustody, immich.NotVisible) as error:
+        return hold_unusable(opened, row, ("returned",), now, kind_of(error))
     except immich.ImmichFailed:
         return Report("pending", "the original could not be read back and verified")
     move(opened, row, ("returned",), now, state="bytes_verified", verified_sha1=row.source_sha1, verified_bytes=row.expected_bytes, bytes_verified_at=now)

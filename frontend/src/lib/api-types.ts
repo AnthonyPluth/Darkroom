@@ -252,6 +252,40 @@ export interface Health {
 
 export type HeartbeatBody = Record<string, never>;
 
+export interface HoldFacts {
+  wall_clock?: string | null;
+  file_utc?: number | null;
+  google_utc?: number | null;
+  place_known?: boolean;
+  description_length?: number | null;
+  description_unwritable?: boolean;
+  kind?: string;
+  differs?: string[];
+  immich_taken?: string | null;
+  immich_offset?: number | null;
+  intended_taken?: string | null;
+  intended_offset?: number | null;
+}
+
+export interface HoldView {
+  id: number;
+  source: "import" | "kept" | "backfill";
+  person_id: number;
+  export_id: number | null;
+  name: string | null;
+  hold: "unknown_offset" | "no_instant" | "unwritable" | "not_enriched" | "not_settled" | "unusable";
+  reason: string;
+  facts: HoldFacts | null;
+  actions: string[];
+  bytes_verified_at: number | null;
+  updated_at: number;
+}
+
+export interface Holds {
+  holds: HoldView[];
+  total: number;
+}
+
 export interface ImportFailure {
   code: "files" | "database" | "metadata" | "placing" | "memory" | "unexpected";
   error: string;
@@ -701,6 +735,7 @@ export interface Endpoints {
   "GET /api/review/{id}": { body: never; reply: ReviewDetail };
   "POST /api/review/{id}/resolve": { body: ResolveBody; reply: ReviewReply };
   "POST /api/review/{id}/undo": { body: never; reply: ReviewReply };
+  "GET /api/holds": { body: never; reply: Holds };
   "GET /api/decisions": { body: never; reply: Decisions };
   "POST /api/decisions/{id}/reverse": { body: never; reply: DecisionReply };
   "GET /api/media": { body: never; reply: MediaList };
