@@ -349,6 +349,11 @@ def import_person(opened: Session, settings: config.Settings, person: Person, no
     queue = queue or NoQueue()
     report = LegacyReport()
     with person_lock(settings, person):
+        from darkroom.domain import managed_switch
+
+        opened.commit()
+        managed_switch.hold(opened, photos, person, "legacy")
+        opened.commit()
         known = {row.path: row for row in opened.execute(select(LegacyFile).where(LegacyFile.person_id == person.id)).scalars()}
         pending: list[Path] = []
         listed, unreadable = files_of(root)

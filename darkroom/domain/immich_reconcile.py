@@ -76,6 +76,7 @@ class Report:
     duplicates_removed: int = 0
     duplicates_refused: int = 0
     duplicates_failed: int = 0
+    paused: bool = False
 
 
 def stamp(at: float) -> str:
@@ -269,6 +270,18 @@ class Run:
         self.opened.commit()
 
 
+def paused_run(opened: Session, settings: config.Settings, person: Person, now: float, read: index.Reader) -> Report:
+    from darkroom.domain import managed_switch
+
+    resolved = takeout_copies.finish_pending(opened, Photos(settings.photos_root), person, now, takeout_copies.Tools(read=read))
+    report = Report(duplicates_removed=resolved.removed, duplicates_refused=resolved.refused, duplicates_failed=resolved.failed, paused=True)
+    managed_switch.note_reconcile_paused(opened, person, now)
+    opened.commit()
+    monitoring.log("immich reconcile paused", person=person.slug, duplicates_removed=report.duplicates_removed, duplicates_refused=report.duplicates_refused,
+                   duplicates_failed=report.duplicates_failed)
+    return report
+
+
 def reconcile_person(opened: Session, settings: config.Settings, person: Person, now: float, client: immich.Client | None = None,
                      queue: PixelQueue | None = None, read: index.Reader = exiftool.read) -> Report:
     key = person_key(settings, person)
@@ -277,6 +290,12 @@ def reconcile_person(opened: Session, settings: config.Settings, person: Person,
     until = now - MARGIN_SECONDS
     since = None if person.immich_reconciled_until is None else person.immich_reconciled_until - OVERLAP_SECONDS
     with person_lock(settings, person):
+        from darkroom.domain import managed_switch
+
+        opened.commit()
+        if managed_switch.reconcile_paused(opened, person):
+            return paused_run(opened, settings, person, now, read)
+        opened.commit()
         if run.client.user_id(key) != person.immich_user_id:
             raise immich.ImmichFailed("the Immich key belongs to a different user than the person's")
         listing = run.client.search_stable(key, None if since is None else stamp(since), stamp(until))

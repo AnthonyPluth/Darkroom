@@ -16,7 +16,7 @@ from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from darkroom import config, dates, monitoring
-from darkroom.domain import alerts, dedupe, events, managed_ingest, media, pixel_folder, takeout_copies
+from darkroom.domain import alerts, dedupe, events, managed_switch, media, pixel_folder, takeout_copies
 from darkroom.domain.ingest import heartbeat, metadata, pairing, part_pairing, part_reader, place, run, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
@@ -650,7 +650,7 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
             raise run.NotReady("this part is not queued for ingest")
         person = run.owner_person(opened, export, claim=True)
         photos = Photos(settings.photos_root)
-        managed_ingest.begin(opened, export, person, run.way(opened, photos, export) == "fresh", now)
+        managed_switch.begin(opened, settings, export, person, now)
         resumed = part.ingest_state == INGESTING
         part.ingest_state, part.ingest_refusal, part.ingest_failure, part.ingest_failure_type = INGESTING, None, None, None
         opened.commit()

@@ -39,6 +39,7 @@ TITLES = {
     "pixel_held": "Pixel folder held",
     "part_stalled": "Takeout import stalled",
     "managed_pausing": "Immich-managed switch waiting",
+    "managed_stopped": "Immich-managed imports stopped",
     "same_shot": "Photos wait for you",
 }
 
