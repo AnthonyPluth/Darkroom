@@ -243,8 +243,11 @@ class HarnessTests(unittest.TestCase):
     def test_only_the_enrich_accounts_may_send_the_update_route(self):
         asset = "/api/assets/0b5e6a43-5b1f-4c7e-9d2a-1f0e2d3c4b5a"
         immich_live.allowed("PUT", asset, enriching=True)
-        immich_live.allowed("GET", f"{asset}/thumbnail")
-        immich_live.allowed("GET", f"/api/albums?assetId={asset.rsplit('/', 1)[1]}")
+        immich_live.allowed("GET", f"{asset}/thumbnail", enriching=True)
+        immich_live.allowed("GET", f"/api/albums?assetId={asset.rsplit('/', 1)[1]}", enriching=True)
+        for path in (f"{asset}/thumbnail", f"/api/albums?assetId={asset.rsplit('/', 1)[1]}"):
+            with self.assertRaises(immich_live.Refused):
+                immich_live.allowed("GET", path)
         with self.assertRaises(immich_live.Refused):
             immich_live.allowed("PUT", asset)
         for method, path in (("DELETE", asset), ("DELETE", "/api/assets"), ("PUT", "/api/assets"), ("PATCH", asset), ("PUT", f"{asset}/original"), ("PUT", f"{asset}/metadata"),
@@ -288,7 +291,7 @@ class HarnessTests(unittest.TestCase):
         self.fake.state.intercept = lambda method, path, slug: 500 if method == "PUT" and slug == "a-all" else None
         code, printed, text = self.run_enrich()
         self.assertEqual(code, 1, printed)
-        for key in ("e2", "e3", "e4", "e5", "e6"):
+        for key in ("e2", "e3", "e4", "e5", "e6", "e15", "e16", "e18"):
             self.assertEqual(self.row(text, key), "fail", key)
         self.assertEqual(self.row(text, "e10"), "pass")
         self.assertIn("answered 500", text)
@@ -316,7 +319,7 @@ class HarnessTests(unittest.TestCase):
         self.fake.state.ignore_updates = True
         code, printed, text = self.run_enrich()
         self.assertEqual(code, 1, printed)
-        for key in ("e2", "e3", "e4", "e5", "e6", "e15", "e18"):
+        for key in ("e2", "e3", "e4", "e5", "e6", "e15", "e16", "e18"):
             self.assertEqual(self.row(text, key), "fail", key)
 
     def test_a_key_without_the_update_grant_fails_the_rows_instead_of_passing(self):

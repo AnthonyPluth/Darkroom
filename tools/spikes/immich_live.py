@@ -95,7 +95,9 @@ class Failed(Exception):
 
 
 def allowed(method: str, path: str, enriching: bool = False) -> None:
-    if (method, path) in EXACT_ROUTES or (method == "GET" and (ASSET_ROUTE.fullmatch(path) or ALBUM_ROUTE.fullmatch(path))):
+    if (method, path) in EXACT_ROUTES or (method == "GET" and ASSET_ROUTE.fullmatch(path) and (enriching or not path.endswith("/thumbnail"))):
+        return
+    if enriching and method == "GET" and ALBUM_ROUTE.fullmatch(path):
         return
     if enriching and method == "PUT" and UPDATE_ROUTE.fullmatch(path):
         return
@@ -771,6 +773,8 @@ def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account |
     def e16() -> tuple[str, str]:
         if "fallback" not in ids:
             raise Failed("no asset from the capture-time row")
+        if instant(view("fallback")["dateTimeOriginal"]) != sent:
+            raise Failed("the capture-time row's update did not apply, so the search proves nothing")
         window = {"gte": (sent - timedelta(seconds=1)).isoformat(), "lte": (sent + timedelta(seconds=1)).isoformat()}
         found = a.api.call("POST", "/api/search/metadata", {"filter": {"takenAt": window}, "size": 10, "orderBy": {"field": "fileCreatedAt", "direction": "asc"}})
         items = found[1].get("assets", {}).get("items") if isinstance(found[1], dict) else None
