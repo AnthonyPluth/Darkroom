@@ -422,7 +422,7 @@ class CommandTests(RecoveryWorld):
 
     def test_an_unknown_action_is_refused_and_writes_nothing(self):
         with self.assertRaises(SystemExit):
-            self.command("finish")
+            self.command("frobnicate")
         self.assertEqual(self.points(), [])
 
     def test_nothing_private_is_printed_logged_or_stored_outside_the_manifest(self):

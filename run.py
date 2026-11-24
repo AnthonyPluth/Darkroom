@@ -531,17 +531,45 @@ def recovery_point_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="run.py recovery-point")
     actions = parser.add_subparsers(dest="action", required=True)
     actions.add_parser("begin")
+    finishing = actions.add_parser("finish")
+    finishing.add_argument("point")
+    finishing.add_argument("--status", required=True)
+    for flag in ("--taken-at", "--kept-for-days", "--scopes", "--tool", "--snapshot"):
+        finishing.add_argument(flag)
     return parser
 
 
+def finish_recovery_point(engine: Engine, args: argparse.Namespace) -> int:
+    try:
+        point_id = retention_gate.point_number(args.point)
+        report = retention_gate.checked_report(args.status, args.taken_at, args.kept_for_days, args.scopes, args.tool, args.snapshot)
+        with db.session(engine) as opened:
+            finished = retention_gate.finish(opened, utc_now().timestamp(), point_id, report)
+    except retention_gate.Refused as refused:
+        monitoring.log("recovery point finish refused", reason=refused.reason)
+        print(f"recovery-point finish: {refused}; nothing was recorded", file=sys.stderr)
+        return 1
+    if finished.failure == retention_gate.SCOPES_MISSING:
+        print(f"recovery point {finished.point_id} was recorded as failed: the report did not name all of {', '.join(retention_gate.SCOPES)}, "
+              "so it covers nothing; fix the backup job and run it again", file=sys.stderr)
+        return 1
+    if finished.state == "failed":
+        print(f"recovery point {finished.point_id} recorded as failed, as the backup job reported; it covers nothing and cleanup stays paused until a later backup succeeds")
+        return 0
+    print(f"recovery point {finished.point_id} recorded as succeeded; it counts until {when(finished.kept_until or 0.0)}")
+    return 0
+
+
 def recovery_point(argv: list[str]) -> int:
-    recovery_point_parser().parse_args(argv)
+    args = recovery_point_parser().parse_args(argv)
     settings = config.load()
     engine = db.make_engine(db.database_url(settings))
     try:
         if not inspect(engine).has_table(RecoveryPoint.__tablename__):
             print(RECOVERY_NOT_MIGRATED, file=sys.stderr)
             return 1
+        if args.action == "finish":
+            return finish_recovery_point(engine, args)
         begun = retention_gate.begin(engine, settings, utc_now().timestamp())
     finally:
         engine.dispose()

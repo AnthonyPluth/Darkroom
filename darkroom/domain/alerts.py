@@ -40,6 +40,8 @@ TITLES = {
     "part_stalled": "Takeout import stalled",
     "managed_pausing": "Immich-managed switch waiting",
     "same_shot": "Photos wait for you",
+    "backup_failed": "Immich backup failed",
+    "backup_stale": "Immich backup out of date",
 }
 
 Notifier = Callable[[Settings, str, str, str | None], str]

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring, oidc
 from darkroom.config import Settings
-from darkroom.domain import alert_push, alerts, backfill, browser_jobs, downloads, events, exports, immich_reconcile, index, managed_switch, pixel_check, pixel_folder, renewal, share_check, syncthing_version, transport, transport_status
+from darkroom.domain import alert_push, alerts, backfill, browser_jobs, downloads, events, exports, immich_reconcile, index, managed_switch, pixel_check, pixel_folder, renewal, retention_gate, share_check, syncthing_version, transport, transport_status
 from darkroom.domain.ingest import cleanup, finish_export, heartbeat, part_free, part_ingest, run
 from darkroom.providers import immich, resend, syncthing
 from darkroom.providers.push_note import Pusher
@@ -372,9 +372,19 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
             stalls.review(opened, current, beat, at)
 
     def clean_inbox(at: float) -> None:
+        watch_recovery_points(at)
         with db.session(engine) as opened:
             report = cleanup.clean(opened, Photos(settings.photos_root), at)
         monitoring.log("inbox cleaned", staging=report.staging, parts=report.parts, holds=report.holds, kept=report.kept, refused=report.refused, failed=report.failed)
+
+    def watch_recovery_points(at: float) -> None:
+        try:
+            with db.session(engine, writing=True) as opened:
+                watched = retention_gate.watch(opened, live(), at)
+        except Exception as error:
+            monitoring.log("recovery points not watched this tick", error=type(error).__name__)
+            return
+        monitoring.log("recovery points watched", abandoned=watched.abandoned, backup_failed=watched.backup_failed, backup_stale=watched.backup_stale)
 
     def share_stopped(opened: Session, at: float) -> bool:
         refused = share.refusal(opened, at)
