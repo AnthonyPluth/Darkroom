@@ -200,7 +200,7 @@ Each its own pull request under 1,000 added lines including tests, landing in or
 
 | Slice | Change | About |
 | --- | --- | --- |
-| A | Migration (the three tables and the journal columns) with its test; models; `retention_gate.py` for attestations; `run.py retention record-rehearsal`, `accept-boundary`, `withdraw`, `status`; tests. No behaviour change: cleanup still keeps everything | 600 lines |
+| A | Migration 0054 (`retention_attestations` only) with its test; model; `retention_gate.py` for attestations; `run.py retention record-rehearsal`, `accept-boundary`, `withdraw`, `status`; tests. No behaviour change: cleanup still keeps everything. `recovery_points` and `recovery_point_assets` come with slice B's own migration, the journal columns with slice D's and E's | 600 lines |
 | B | `run.py recovery-point begin` and `finish`; `ManagedReader.custody_all`; manifest building; abandonment in the cleanup tick; the two alerts; the deployment docs' hook example; tests and `no_leaks` | 850 lines |
 | C | `retention_gate.refusal(opened, unit, now)` with G1 to G10 and the per-condition negatives; `cleanup.py` records the specific reason instead of `KEPT_ONLY`; `retention status` counts per condition. Still keeps everything | 700 lines |
 | D | Managed zip and held-copy release in `part_free.py`: the managed "placed" clause, the locked re-check, G12 with the deadline, `release_point_id` in the journal; the setting `DARKROOM_MANAGED_RELEASE` (off by default, in `config.py` and `.env.example`); the AGENTS.md promise 2 amendment and Semgrep examples; crash and swap tests. Labelled `safety-critical` | 950 lines |
