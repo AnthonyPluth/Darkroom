@@ -39,6 +39,7 @@ TITLES = {
     "pixel_held": "Pixel folder held",
     "part_stalled": "Takeout import stalled",
     "managed_pausing": "Immich-managed switch waiting",
+    "same_shot": "Photos wait for you",
 }
 
 Notifier = Callable[[Settings, str, str, str | None], str]

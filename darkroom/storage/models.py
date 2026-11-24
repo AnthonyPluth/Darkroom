@@ -286,6 +286,32 @@ class ManagedAssetOrigin(Base):
     recorded_at: Mapped[float] = mapped_column(Float, nullable=False)
 
 
+SAME_SHOT_STATUSES = ("pending", "upload", "represented", "void")
+
+
+class ManagedSameShotHold(Base):
+    __tablename__ = "managed_same_shot_holds"
+    __table_args__ = (
+        UniqueConstraint("receipt_id", name="uq_managed_same_shot_holds_receipt"),
+        one_of("status", SAME_SHOT_STATUSES, "ck_managed_same_shot_holds_status"),
+        CheckConstraint("length(owner_id) > 0", name="ck_managed_same_shot_holds_owner"),
+        CheckConstraint("(status = 'pending' AND resolved_at IS NULL AND resolved_by IS NULL AND asset_id IS NULL) OR "
+                        "(status != 'pending' AND resolved_at IS NOT NULL)", name="ck_managed_same_shot_holds_resolution"),
+        CheckConstraint("asset_id IS NULL OR (status = 'represented' AND length(asset_id) > 0)", name="ck_managed_same_shot_holds_asset"),
+        Index("ix_managed_same_shot_holds_person_status", "person_id", "status"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="RESTRICT"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String, nullable=False)
+    receipt_id: Mapped[int] = mapped_column(ForeignKey("managed_import_receipts.id", ondelete="RESTRICT"), nullable=False)
+    found_at: Mapped[float] = mapped_column(Float, nullable=False)
+    candidates: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending", server_default="pending")
+    resolved_at: Mapped[float | None] = mapped_column(Float)
+    resolved_by: Mapped[int | None] = mapped_column(ForeignKey("people.id", ondelete="SET NULL"))
+    asset_id: Mapped[str | None] = mapped_column(String)
+
+
 class ManagedBackfillItem(Base):
     __tablename__ = "managed_backfill_items"
     __table_args__ = (

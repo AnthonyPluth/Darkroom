@@ -113,6 +113,15 @@ class FakeImmichTests(unittest.TestCase):
         self.assertEqual([a["id"] for a in found["assets"]["items"]], ["a-exif"])
         self.assertNotIn("exifInfo", found["assets"]["items"][0])
 
+    def test_an_updated_at_listing_returns_trashed_assets_like_the_pinned_builder(self):
+        self.fake.add_asset(FakeAsset("a-live", "u-jo", b"one", updated_at="2026-01-02T00:00:00.000Z"))
+        self.fake.add_asset(FakeAsset("a-trashed", "u-jo", b"two", updated_at="2026-01-02T00:00:00.000Z", trashed=True))
+        self.fake.add_asset(FakeAsset("a-outside", "u-jo", b"three", updated_at="2026-02-01T00:00:00.000Z", trashed=True))
+        self.fake.add_asset(FakeAsset("a-other", "u-al", b"four", updated_at="2026-01-02T00:00:00.000Z", trashed=True))
+        window = {"filter": {"updatedAt": {"gte": "2026-01-01T00:00:00.000Z", "lte": "2026-01-03T00:00:00.000Z"}}, "size": 10}
+        status, found = call(self.fake, "POST", "/api/search/metadata", "key-jo", window)
+        self.assertEqual((status, {a["id"]: a["isTrashed"] for a in found["assets"]["items"]}), (200, {"a-live": False, "a-trashed": True}))
+
     def test_a_search_mixing_the_new_shape_with_flat_fields_is_refused_like_immich(self):
         for flat in ({"takenAfter": "2024-05-01T00:00:00Z"}, {"withDeleted": True}, {"checksum": "x"}, {"page": 2}):
             status, found = call(self.fake, "POST", "/api/search/metadata", "key-jo", {"filter": {"takenAt": {"gte": "2024-05-01T00:00:00Z"}}} | flat)
