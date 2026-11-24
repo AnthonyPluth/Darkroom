@@ -293,6 +293,16 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(self.row(text, "e10"), "pass")
         self.assertIn("answered 500", text)
 
+    def test_repeat_and_album_rows_need_the_update_to_apply(self):
+        for name in ("refused", "ignored"):
+            with self.subTest(name):
+                self.fake.state.ignore_updates = name == "ignored"
+                self.fake.state.intercept = (lambda m, p, slug: 500 if m == "PUT" and slug == "a-all" else None) if name == "refused" else None
+                code, printed, text = self.run_enrich()
+                self.assertEqual(code, 1, printed)
+                self.assertEqual(self.row(text, "e15"), "fail")
+                self.assertEqual(self.row(text, "e18"), "fail")
+
     def test_a_key_without_the_update_grant_fails_the_rows_instead_of_passing(self):
         self.fake.state.key_permissions[KEY_AALL] = tuple(sorted(immich_live.GRANTS))
         code, _, text = self.run_enrich()

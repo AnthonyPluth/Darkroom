@@ -749,17 +749,18 @@ def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account |
         plain("twice")
         first = run.asset(a, ids["twice"])
         body = {"description": f"{MARKER} {run.run_id} twice"}
-        put(e, ids["twice"], body)
+        statuses = [put(e, ids["twice"], body)[0]]
         once = run.asset(a, ids["twice"])
-        statuses = [put(e, ids["twice"], body)[0], put(e, ids["twice"], body)[0]]
+        statuses += [put(e, ids["twice"], body)[0], put(e, ids["twice"], body)[0]]
         twice = run.asset(a, ids["twice"])
+        applied = statuses == [200, 200, 200] and shown(once)["description"] == body["description"] == shown(twice)["description"]
         window = {"gte": first.get("updatedAt"), "lte": (datetime.now(UTC) + timedelta(days=1)).isoformat(timespec="milliseconds").replace("+00:00", "Z")}
         listed = a.api.call("POST", "/api/search/metadata", {"filter": {"updatedAt": window}, "size": 100, "orderBy": {"field": "fileCreatedAt", "direction": "asc"}})[1]
         items = listed.get("assets", {}).get("items", []) if isinstance(listed, dict) else []
         count = sum(1 for item in items if isinstance(item, dict) and item.get("id") == ids["twice"])
         by_sum = run.by_checksum(a, blobs["twice"])
-        ok = shown(once) == shown(twice) and count == 1 and by_sum == [ids["twice"]] and twice.get("checksum") == first.get("checksum")
-        return ("pass" if ok else "fail"), f"the repeated updates answered {statuses}; the end state {'equals' if shown(once) == shown(twice) else 'differs from'} the first update's; the asset appears {count} time(s) in the `updatedAt` window and {len(by_sum)} time(s) by checksum; the checksum is unchanged: {twice.get('checksum') == first.get('checksum')}; `updatedAt` moved after the repeat: {twice.get('updatedAt') != once.get('updatedAt')}"
+        ok = applied and shown(once) == shown(twice) and count == 1 and by_sum == [ids["twice"]] and twice.get("checksum") == first.get("checksum")
+        return ("pass" if ok else "fail"), f"the updates answered {statuses} and the description {'shows' if applied else 'does not show'} the sent text; the end state {'equals' if shown(once) == shown(twice) else 'differs from'} the first update's; the asset appears {count} time(s) in the `updatedAt` window and {len(by_sum)} time(s) by checksum; the checksum is unchanged: {twice.get('checksum') == first.get('checksum')}; `updatedAt` moved after the repeat: {twice.get('updatedAt') != once.get('updatedAt')}"
     run.step("e15", e15)
 
     def e16() -> tuple[str, str]:
@@ -779,10 +780,12 @@ def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account |
             raise Failed("no asset from the repeat row")
         route = f"/api/albums?assetId={ids['twice']}"
         before = e.api.call("GET", route)
-        put(e, ids["twice"], {"description": f"{MARKER} {run.run_id} albums"})
+        text = f"{MARKER} {run.run_id} albums"
+        status = put(e, ids["twice"], {"description": text})[0]
         after = e.api.call("GET", route)
-        ok = before[0] == after[0] == 200 and isinstance(before[1], list) and before[1] == after[1]
-        return ("pass" if ok else "fail"), f"the asset's album list answered {before[0]} and {after[0]} with {len(before[1]) if isinstance(before[1], list) else 'no'} and {len(after[1]) if isinstance(after[1], list) else 'no'} album(s); the one-album case is not run (it needs an album made by hand)"
+        applied = status == 200 and shown(run.asset(a, ids["twice"]))["description"] == text
+        ok = applied and before[0] == after[0] == 200 and isinstance(before[1], list) and before[1] == after[1]
+        return ("pass" if ok else "fail"), f"the update answered {status} and {'was' if applied else 'was not'} read back; the asset's album list answered {before[0]} and {after[0]} with {len(before[1]) if isinstance(before[1], list) else 'no'} and {len(after[1]) if isinstance(after[1], list) else 'no'} album(s); the one-album case is not run (it needs an album made by hand)"
     run.step("e18", e18)
 
 

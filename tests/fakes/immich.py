@@ -144,6 +144,7 @@ class State:
     on_search: Callable[[int], None] | None = None
     version: str = VERSION
     permissions: tuple[str, ...] = ("user.read", "server.about", "asset.read", "asset.download")
+    ignore_updates: bool = False
     key_permissions: dict[str, tuple[str, ...]] = field(default_factory=dict)
     admins: tuple[str, ...] = ()
     quotas: dict[str, int] = field(default_factory=dict)
@@ -320,6 +321,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 return
             if any(sent.get(name, 0) is None for name in ("dateTimeOriginal", "latitude", "longitude")) or ("latitude" in sent) != ("longitude" in sent):
                 self.reply(400, {"message": "Invalid update body", "error": "Bad Request", "statusCode": 400})
+                return
+            if state.ignore_updates:
+                self.reply(200, found.json())
                 return
             exif = dict(found.exif or {})
             for name in ("description", "latitude", "longitude"):
