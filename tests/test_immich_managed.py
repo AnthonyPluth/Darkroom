@@ -409,6 +409,22 @@ class ManagedAccessTests(unittest.TestCase):
         self.source.trashed = True
         self.assertEqual(self.importer().managed_with_checksum(SHA1), [])
 
+    def test_a_checksum_search_reads_every_page_and_raises_rather_than_cut_short(self):
+        for number in range(100):
+            self.fake.add_asset(FakeAsset(f"44444444-4444-4444-8444-{number:012d}", OWNER, DATA))
+        self.assertEqual(len(self.client.search_checksum(PERSON_KEY, SHA1)), 101)
+        self.assertEqual(self.importer().managed_with_checksum(SHA1).count(ASSET), 1)
+        self.assertEqual(len(self.importer().managed_with_checksum(SHA1)), 101)
+        self.fake.state.searches = 0
+        self.fake.state.page_size = 20
+        self.assertEqual(len(self.client.search_checksum(PERSON_KEY, SHA1)), 101)
+        self.assertEqual(self.fake.state.searches, 6)
+        for number in range(100, 1000):
+            self.fake.add_asset(FakeAsset(f"44444444-4444-4444-8444-{number:012d}", OWNER, DATA))
+        self.fake.state.page_size = 100
+        with self.assertRaisesRegex(immich.ImmichFailed, "more pages"):
+            self.client.search_checksum(PERSON_KEY, SHA1)
+
     def test_read_back_needs_the_sources_checksum_and_size_in_an_available_unedited_original(self):
         reader = self.importer()
         reader.verify_original(ASSET, SHA1, len(DATA))
