@@ -696,3 +696,61 @@ rules:
             ...
     paths:
       include: ["/darkroom/providers/immich.py"]
+
+  - id: darkroom-writer-locks-one-helper
+    message: >-
+      A function that needs more than one of an account's import lock (ingest.run.account_lock), a person's legacy import
+      lock (legacy.person_lock) and a person's Immich reconcile lock (immich_reconcile.person_lock) takes them only through
+      writer_locks.hold, which enters them in the one order every old-folder writer uses: account locks ascending, then each
+      person's legacy lock and reconcile lock (docs/design/per-person-switch.md, section 3). Two callers that take them in
+      different orders each get one lock and fail on the other, every tick.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: $M.account_lock(...)
+              - pattern: account_lock(...)
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... legacy.person_lock(...) ...>
+      - patterns:
+          - pattern-either:
+              - pattern: $M.account_lock(...)
+              - pattern: account_lock(...)
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... immich_reconcile.person_lock(...) ...>
+      - patterns:
+          - pattern-either:
+              - pattern: legacy.person_lock(...)
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... $M.account_lock(...) ...>
+      - patterns:
+          - pattern-either:
+              - pattern: legacy.person_lock(...)
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... immich_reconcile.person_lock(...) ...>
+      - patterns:
+          - pattern-either:
+              - pattern: immich_reconcile.person_lock(...)
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... $M.account_lock(...) ...>
+      - patterns:
+          - pattern-either:
+              - pattern: immich_reconcile.person_lock(...)
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... legacy.person_lock(...) ...>
+    paths:
+      include: ["/darkroom/", "/run.py"]
+      exclude: ["/darkroom/domain/writer_locks.py"]
