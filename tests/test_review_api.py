@@ -45,6 +45,7 @@ class ReviewQueueTests(ReviewCase):
         self.assertEqual({key: listed[key] for key in ("status", "tier", "name", "library_name", "resolved_at", "undo_until", "kept_item_id")},
                          {"status": "pending", "tier": 4, "name": PAIR_NAME, "library_name": PAIR_NAME, "resolved_at": None, "undo_until": None,
                           "kept_item_id": None})
+        self.assertFalse(listed["kept_in_immich"])
         self.assertEqual(self.call("GET", "/api/review?status=kept_both"), (200, {"reviews": [], "pending": 1, "before": 0}))
         self.assertEqual(self.call("GET", "/api/review")[1]["reviews"], [listed])
 
@@ -97,6 +98,7 @@ class ResolveTests(ReviewCase):
         status, body = self.call("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
         self.assertEqual(status, 200, body)
         self.assertEqual(body["review"]["status"], "kept_both")
+        self.assertEqual((body["review"]["kept_in_immich"], body["review"]["undo_until"]), (False, body["review"]["resolved_at"] + review.UNDO_WINDOW))
         placed = self.world.root / "jo" / "google-only" / "2019" / "08" / PAIR_NAME
         self.assertEqual(sha1_of(placed), sha1_of(hold))
         self.assertTrue(hold.is_file())
