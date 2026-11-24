@@ -143,6 +143,10 @@ Everything the design says about Syncthing's REST API, Chromium in the merged im
 | The Pixel job's reader | `ManagedReader` access `read_or_import` (`jobs.pixel_readers`): the person's own non-admin key with exactly the approved read grants or exactly the approved import grants; every other set, an admin user and the admin key are refused as before. It issues read requests only; `upload` and `bulk_check` still require access `import` | #535, [#555](https://github.com/AnthonyPluth/Darkroom/pull/555#issuecomment-7115935945) |
 | Options not taken | A separate read-only key per person; not converting Pixel copies until such a key exists | #535 |
 
+## The recovery-point gate's defaults (#545, 2026-11-24)
+
+The owner accepted the proposed defaults of `docs/design/recovery-point-gate.md`: one acceptance of the remote-deletion boundary for the whole installation, and the accepted boundary stores a SHA-256 of the text shown, which the gate's check counts only when it matches the current text. Recorded on #545 (https://github.com/AnthonyPluth/Darkroom/issues/545#issuecomment-7131017264). The backup tool and the thresholds are still the owner's to answer; until then the design's own constants and the begin/finish command contract apply.
+
 ## No `asset.update` grant, and no enrichment (#548, 2026-11-24)
 
 **Owner decision.** Recorded on [issue #548](https://github.com/AnthonyPluth/Darkroom/issues/548#issuecomment-7121490970): "no `asset.update` grant. The person's Immich key stays at exactly the read grants or the import grants (managed-storage design, section 8); `asset.update` is not added. So there is no enrichment path: Darkroom never changes the metadata of an asset already in Immich. A `not_enriched` hold is shown for review and resolved by the owner (for example supplying an offset recorded in Darkroom, keeping the sidecar-borne metadata recorded in Darkroom, or accepting the asset as it is), never by updating Immich metadata."
