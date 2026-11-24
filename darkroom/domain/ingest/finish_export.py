@@ -327,7 +327,7 @@ class Finish(part_ingest.Ingest):
                 self.release_scratch()
         managed_ingest.alert(self.opened, self.settings, self.export, uploads.held, uploads.pending, self.now, self.tools.notifier)
         same_shot.alert(self.opened, self.settings, self.export, self.person, self.now, self.tools.notifier)
-        monitoring.log("managed uploads", export=self.export.id, committed=uploads.committed, held=uploads.held, pending=uploads.pending)
+        monitoring.log("managed uploads", export=self.export.id, committed=uploads.committed, held=uploads.held, same_shot=uploads.same, pending=uploads.pending)
         if uploads.pending:
             raise UploadsPending(f"{uploads.pending} uploads to Immich are not complete yet")
 

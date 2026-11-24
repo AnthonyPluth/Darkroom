@@ -168,7 +168,7 @@ class HoldTests(unittest.TestCase):
         self.assertEqual((found.kind, found.person_id, found.closed), ("same_shot", world.ids["jo"], None))
         self.assertEqual(found.message, "1 photo looks like one already in Immich and waits for you. Nothing was uploaded or deleted.")
         self.assertEqual(len(world.opened.execute(select(Alert).where(Alert.key.startswith("managed:same_shot:"))).scalars().all()), 1)
-        self.assertIn("1 item of export", world.alert(f"managed:held:{export.id}").message)
+        self.assertIsNone(world.alert(f"managed:held:{export.id}"))
         self.assertEqual(world.opened.execute(select(Event.type, Event.subject, Event.detail).where(Event.type == "same_shot_held")).all(), [("same_shot_held", "receipt 1", "1 candidates")])
 
     def test_the_alert_counts_every_pending_hold_and_closes_once_none_is_left(self):
@@ -306,8 +306,9 @@ class HoldTests(unittest.TestCase):
         world.finish(export)
         intent = managed_ingest.intent_of(world.opened, world.opened.get(type(export), export.id))
         receipt = world.opened.execute(select(ManagedImportReceipt)).scalar_one()
+        entry = world.opened.execute(select(TakeoutEntry).where(TakeoutEntry.kind == "media")).scalar_one()
         verdict = same_shot.Verdict((), True, False)
-        self.assertEqual(same_shot.make_hold(world.opened, intent, receipt.id, verdict, NOW + 1), "held")
+        self.assertEqual(same_shot.make_hold(world.opened, intent, receipt.id, entry.decision_id, verdict, NOW + 1), "held")
         self.assertEqual(len(holds(world)), 1)
 
     def test_a_claimed_receipt_and_a_receipt_with_a_decided_hold_row_are_not_checked(self):
@@ -395,6 +396,53 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(same_shot.takeout_only(world.opened, world.ids["jo"], OWNER, asset_ids), asset_ids - {first.asset_id})
         self.assertEqual(same_shot.takeout_only(world.opened, world.ids["jo"], OTHER, asset_ids), set())
         self.assertEqual(same_shot.takeout_only(world.opened, world.ids["jo"], OWNER, set()), set())
+
+
+class LockAndClaimTests(unittest.TestCase):
+    def test_the_alert_takes_the_write_lock_before_it_counts_the_pending_holds(self):
+        world = ManagedWorld(self)
+        with_neighbour(world)
+        export = world.create(single("IMG_5001.JPG"), parts=1)
+        world.ingest_all(export, (1,))
+        world.finish(export)
+        order = []
+        real_lock, real_count = same_shot.db.write_lock, same_shot.pending_count
+        with mock.patch.object(same_shot.db, "write_lock", side_effect=lambda opened: (order.append("lock"), real_lock(opened))[1]), \
+                mock.patch.object(same_shot, "pending_count", side_effect=lambda *args: (order.append("count"), real_count(*args))[1]):
+            same_shot.alert(world.opened, world.settings, world.opened.get(type(export), export.id), world.jo(), NOW + 1, None)
+        self.assertEqual(order, ["lock", "count"])
+
+    def test_a_hold_committed_between_a_clear_gate_and_the_claim_leaves_the_receipt_unsent(self):
+        world = ManagedWorld(self)
+        export = world.create(single("IMG_5001.JPG"), parts=1)
+        world.ingest_all(export, (1,))
+        real = same_shot.gate
+
+        def gate_then_hold(opened, reader, intent, receipt_id, entry, name, now):
+            outcome = real(opened, reader, intent, receipt_id, entry, name, now)
+            assert outcome == "clear"
+            assert same_shot.make_hold(opened, intent, receipt_id, entry.decision_id, same_shot.Verdict((), True, False), now) == "held"
+            return outcome
+        with mock.patch.object(same_shot, "gate", gate_then_hold):
+            world.finish(export)
+        self.assertEqual(world.receipts(), {"IMG_5001.JPG": ("prepared", None, "same_shot")})
+        self.assertEqual(([call for call in world.fake.requests() if call == ("POST", "/api/assets")], world.status(export)), ([], ("imported", "done")))
+
+    def test_a_decision_reversed_before_the_hold_is_made_makes_no_hold_and_sends_nothing(self):
+        world = ManagedWorld(self)
+        with_neighbour(world)
+        export = world.create(single("IMG_5001.JPG"), parts=1)
+        world.ingest_all(export, (1,))
+        real = same_shot.make_hold
+
+        def reversed_first(opened, intent, receipt_id, decision_id, verdict, now):
+            opened.get(DedupeDecision, decision_id).reversed_at = now
+            opened.commit()
+            return real(opened, intent, receipt_id, decision_id, verdict, now)
+        with mock.patch.object(same_shot, "make_hold", reversed_first):
+            world.finish(export)
+        self.assertEqual((holds(world), [call for call in world.fake.requests() if call == ("POST", "/api/assets")]), ([], []))
+        self.assertEqual(world.receipts(), {"IMG_5001.JPG": ("prepared", None, None)})
 
 
 class ReversalTests(unittest.TestCase):

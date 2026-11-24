@@ -18,7 +18,7 @@ from darkroom.storage import db
 from darkroom.storage.models import (DedupeDecision, Export, ManagedAssetOrigin, ManagedAssetVersion, ManagedImportIntent, ManagedImportReceipt,
                                      ManagedSameShotHold, Person, TakeoutEntry)
 
-HOLD: Final = "same_shot"
+HOLD: Final = managed_upload.SAME_SHOT_HOLD
 TOLERANCE_SECONDS: Final = 1.0
 SCHEMA: Final = 1
 ALERT_KIND: Final = "same_shot"
@@ -28,7 +28,7 @@ WAITS_FOR_REVERSAL: Final = "this photo looks like one already in Immich and wai
 WAITS_FOR_REASSIGNMENT: Final = "this photo looks like one already in Immich and waits for the owner's decision, so it stays with its person"
 
 Library = Literal["managed", "external", "offline", "trashed"]
-Outcome = Literal["clear", "held", "pending"]
+Outcome = Literal["clear", "held", "pending", "reversed"]
 
 
 @dataclass(frozen=True)
@@ -155,9 +155,13 @@ def hold_of(opened: Session, receipt_id: int) -> ManagedSameShotHold | None:
     return opened.execute(query.execution_options(populate_existing=True)).scalar_one_or_none()
 
 
-def make_hold(opened: Session, intent: ManagedImportIntent, receipt_id: int, verdict: Verdict, now: float) -> Outcome:
+def make_hold(opened: Session, intent: ManagedImportIntent, receipt_id: int, decision_id: int | None, verdict: Verdict, now: float) -> Outcome:
     opened.commit()
     db.write_lock(opened)
+    decision = None if decision_id is None else opened.get(DedupeDecision, decision_id, populate_existing=True)
+    if decision is None or decision.reversed_at is not None:
+        opened.commit()
+        return "reversed"
     row = opened.get(ManagedImportReceipt, receipt_id, populate_existing=True)
     if row is None or row.metadata_hold is not None or row.state != "prepared" or row.send_attempts != 0 or hold_of(opened, receipt_id) is not None:
         found = row is not None and row.metadata_hold == HOLD
@@ -192,7 +196,7 @@ def gate(opened: Session, reader: immich.ManagedReader, intent: ManagedImportInt
     if not verdict.held:
         opened.commit()
         return "clear"
-    return make_hold(opened, intent, receipt_id, verdict, now)
+    return make_hold(opened, intent, receipt_id, entry.decision_id, verdict, now)
 
 
 def pending_for_receipt_keys(opened: Session, keys: Collection[str]) -> bool:
@@ -227,8 +231,9 @@ def alert_key(export: Export, person: Person) -> str:
 
 
 def alert(opened: Session, settings: config.Settings, export: Export, person: Person, now: float, notifier: alerts.Notifier | None) -> None:
-    waiting = pending_count(opened, export, person)
+    opened.commit()
     db.write_lock(opened)
+    waiting = pending_count(opened, export, person)
     if waiting == 0:
         alerts.close(opened, alert_key(export, person), now)
     else:

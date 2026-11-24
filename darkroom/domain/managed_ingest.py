@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -12,7 +11,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, events, immich_reconcile, managed_metadata, managed_upload, media, same_shot, xmp
+from darkroom.domain import alerts, events, immich_reconcile, managed_manifest, managed_metadata, managed_upload, media, same_shot, xmp
 from darkroom.domain.ingest import place
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import immich
@@ -21,7 +20,7 @@ from darkroom.storage.models import Alert, DedupeDecision, Export, ManagedImport
 from darkroom.storage.paths import Photos
 
 ON: Final = "on"
-MANIFEST: Final = json.dumps({"schema": 1, "resource": "takeout_entry", "compound": "single"}, sort_keys=True)
+MANIFEST: Final = managed_manifest.TAKEOUT
 SETTLE_SECONDS: Final = 24 * 3600.0
 NOT_SETTLED: Final = "not_settled"
 TERMINAL: Final = (*managed_metadata.HELD_BEFORE_UPLOAD, "not_enriched", NOT_SETTLED, same_shot.HOLD)
@@ -102,9 +101,13 @@ class Uploads:
                  pause: Callable[[float], None] | None = None) -> None:
         self.opened, self.photos, self.export, self.intent, self.reader = opened, photos, export, intent, reader
         self.now, self.pause = now, pause or time.sleep
-        self.committed = self.held = self.pending = 0
+        self.committed = self.held = self.pending = self.same = 0
 
     def due(self, items: Sequence[Item]) -> list[Item]:
+        if not managed_manifest.known(self.intent.resource_manifest):
+            self.pending += 1
+            monitoring.log("managed uploads not started", export=self.export.id, reason=managed_manifest.UNKNOWN)
+            return []
         known = receipts_of(self.opened, self.intent)
         found = []
         for item in items:
@@ -150,6 +153,9 @@ class Uploads:
             self.pending += 1
             return
         if outcome == "held":
+            self.same += 1
+            return
+        if outcome == "reversed":
             self.held += 1
             return
         sha1, size = str(item.root.sha1), item.root.bytes
@@ -166,6 +172,8 @@ class Uploads:
         row = managed_upload.fresh(self.opened, receipt_id)
         if row.state == "committed":
             self.committed += 1
+        elif row.metadata_hold == same_shot.HOLD:
+            self.same += 1
         elif report.outcome in ("held", "unusable") or row.metadata_hold in TERMINAL or gave_up(self.opened, row, self.now):
             self.held += 1
         else:
@@ -204,6 +212,9 @@ def send_one(opened: Session, settings: config.Settings, photos: Photos, receipt
     review = opened.get(ReviewItem, int(row.resource_key.removeprefix(KEPT)))
     decision = None if review is None else opened.get(DedupeDecision, review.decision_id)
     if intent is None or person is None or review is None or review.hold_path is None or decision is None:
+        return False
+    if not managed_manifest.known(intent.resource_manifest):
+        overdue(opened, settings, row.id, managed_manifest.UNKNOWN, now)
         return False
     hold, name = photos.root / review.hold_path, Path(decision.source_path or review.hold_path).name
     reader = reader_of(settings, person, intent, client)

@@ -458,9 +458,12 @@ def stills_by_stem(by_copy: dict[Path, TakeoutItem]) -> Stills:
     return found
 
 
-def live_match(video: TakeoutItem, by_copy: dict[Path, TakeoutItem], stills_of: Stills | None = None) -> tuple[Path, Path] | None:
+def live_candidates(video: TakeoutItem, index: Stills) -> dict[Path, Path]:
     stems = {video.path.stem.lower()} | ({video.path.name.lower()} if video.path.suffix.lower() == MOTION_CLIP_SUFFIX else set())
-    index = stills_by_stem(by_copy) if stills_of is None else stills_of
     siblings = sorted(found for stem in stems for found in index.get((video.path.parent, stem), ()))
-    stills = {item.path: sibling for _, sibling, item in siblings}
+    return {item.path: sibling for _, sibling, item in siblings}
+
+
+def live_match(video: TakeoutItem, by_copy: dict[Path, TakeoutItem], stills_of: Stills | None = None) -> tuple[Path, Path] | None:
+    stills = live_candidates(video, stills_by_stem(by_copy) if stills_of is None else stills_of)
     return next(iter(stills.items())) if len(stills) == 1 else None

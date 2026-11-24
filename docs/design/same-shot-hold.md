@@ -4,6 +4,8 @@ Design for [#546](https://github.com/AnthonyPluth/Darkroom/issues/546), prepared
 
 The owner's decision: a Takeout photo that is a different-byte same shot of an asset already in the person's Immich library goes into a `same_shot` hold that the owner resolves. Until the owner resolves it, nothing is uploaded and nothing is deleted. The design does not use a catalogue refresh into `managed_asset_versions`, and it does not upload both.
 
+**Status after slice 2 ([#581](https://github.com/AnthonyPluth/Darkroom/pull/581)):** slices 1 and 2 are built. Until the owner answers section 9, the code uses the design's defaults: a 1 second window (question 1) and a hold for trashed, offline and external candidates (question 2). Questions 3 to 6 concern slices 3 to 5, which are not built, so no hold can be resolved yet.
+
 This document builds on [immich-managed-storage.md](immich-managed-storage.md) (sections 2, 3, 4, 5 and 9) and does not change it. Where an implementing slice changes what that design or `AGENTS.md` says, the slice updates them, with its tests.
 
 ## 1. The gap
