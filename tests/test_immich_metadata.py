@@ -436,6 +436,95 @@ class ManagedMetadataTests(unittest.TestCase):
                 self.assertEqual(self.complete(self.resource(f"part/unread-{number}", data, None, expected=expected)).outcome, "pending")
         self.assertEqual(self.fake.requests(), [])
 
+    def stored_facts(self, resource):
+        with self.engine.connect() as connection:
+            hold, facts = connection.execute(select(ManagedImportReceipt.metadata_hold, ManagedImportReceipt.hold_facts)
+                                             .where(ManagedImportReceipt.id == resource.receipt_id)).one()
+        return hold, None if facts is None else json.loads(facts)
+
+    def test_an_asset_that_stops_being_usable_is_held_unusable_with_the_kind_of_its_last_read_and_is_never_changed(self):
+        changes = (("trashed", {"trashed": True}), ("offline", {"offline": True}), ("external", {"library_id": "lib-jo"}),
+                   ("other_owner", {"owner_id": "22222222-2222-4222-8222-222222222222"}), ("other_bytes", {"checksum": "AAAAAAAAAAAAAAAAAAAAAAAAAAA="}))
+        self.fake.state.extraction_delay = 600
+        for kind, change in changes:
+            with self.subTest(kind):
+                data, tags = photo(f"unusable-{kind}", "2019:07:04 14:30:15", "+02:00", ROME)
+                item = self.resource(f"part/unusable-{kind}", data, intend(tags, xmp.GoogleMetadata(*ROME, SUMMER, None), "IMAGE"))
+                self.assertEqual(self.complete(item).outcome, "pending")
+                asset = self.asset(data)
+                for name, value in change.items():
+                    setattr(asset, name, value)
+                self.fake.state.shared.add(asset.id)
+                self.assertEqual(self.complete(item).outcome, "unusable")
+                self.assertEqual((self.row(item)[:2], self.stored_facts(item)), (("bytes_verified", "unusable"), ("unusable", {"kind": kind})))
+        self.assert_only_reads_and_uploads()
+
+    def test_a_duplicate_that_is_unusable_on_the_read_back_and_a_member_that_goes_away_at_the_commit_are_held_the_same_way(self):
+        data, tags = photo("dup-trashed", "2019:07:04 14:30:15", "+02:00", ROME)
+        self.fake.add_asset(FakeAsset(EXISTING, OWNER, data, trashed=True))
+        item = self.resource("part/dup-trashed", data, intend(tags, xmp.GoogleMetadata(*ROME, SUMMER, None), "IMAGE"))
+        self.assertEqual(self.complete(item).outcome, "unusable")
+        self.assertEqual((self.row(item)[:2], self.stored_facts(item)), (("returned", "unusable"), ("unusable", {"kind": "trashed"})))
+        later, later_tags = photo("later-offline", "2019:07:04 14:30:15", "+02:00", ROME)
+        member = self.resource("part/later-offline", later, intend(later_tags, xmp.GoogleMetadata(*ROME, SUMMER, None), "IMAGE"))
+        self.assertEqual(self.complete(member).outcome, "verified")
+        self.asset(later).offline = True
+        self.assertEqual(self.commit("part/later-offline").outcome, "unusable")
+        self.assertEqual((self.row(member)[:2], self.stored_facts(member)), (("metadata_verified", "unusable"), ("unusable", {"kind": "offline"})))
+        self.assert_only_reads_and_uploads()
+
+    def test_a_hold_that_clears_clears_its_facts(self):
+        data, tags = photo("clears", "2019:07:04 14:30:15", "+02:00", ROME)
+        item = self.resource("part/clears", data, intend(tags, xmp.GoogleMetadata(*ROME, SUMMER, DESCRIBED), "IMAGE"))
+        self.fake.state.extraction_delay = 600
+        self.complete(item)
+        self.asset(data).ready_at = 0.0
+        self.asset(data).exif["description"] = None
+        self.assertEqual(self.complete(item).reason, managed_metadata.REASONS["mismatch"])
+        hold, facts = self.stored_facts(item)
+        self.assertEqual((hold, facts["differs"]), ("mismatch", ["description"]))
+        self.asset(data).exif["description"] = DESCRIBED
+        self.assertEqual((self.complete(item).outcome, self.stored_facts(item)), ("verified", (None, None)))
+
+    def test_a_duplicate_that_lacks_something_records_which_fields_differ_with_both_times_and_no_coordinates_or_text(self):
+        data, tags = photo("dup-facts", "2019:07:04 14:30:15", "+02:00", ROME)
+        self.fake.add_asset(FakeAsset(EXISTING, OWNER, data, exif=extract(data, None), metadata=()))
+        item = self.resource("part/dup-facts", data, intend(tags, xmp.GoogleMetadata(*ROME, SUMMER, DESCRIBED), "IMAGE"))
+        self.assertEqual(self.complete(item).reason, managed_metadata.REASONS["not_enriched"])
+        hold, facts = self.stored_facts(item)
+        self.assertEqual((hold, facts["differs"], facts["intended_taken"], facts["intended_offset"]), ("not_enriched", ["description"], "2019-07-04T14:30:15+02:00", 120))
+        self.assertEqual(facts["immich_offset"], 120)
+        self.assertEqual(set(facts), {"differs", "immich_taken", "immich_offset", "intended_taken", "intended_offset"})
+        with self.engine.connect() as connection:
+            raw = connection.execute(select(ManagedImportReceipt.hold_facts)).scalar_one()
+        for hidden in (DESCRIBED, "45.43", "12.33"):
+            self.assertNotIn(hidden, raw)
+        self.assertTrue(raw.isascii())
+
+    def test_the_facts_of_a_hold_before_upload_are_the_clock_googles_instant_and_whether_a_place_is_known_never_a_coordinate_or_an_offset(self):
+        _, clock_tags = photo("facts-clock", "2021:03:04 05:06:07")
+        _, bare_tags = photo("facts-bare")
+        google = xmp.GoogleMetadata(None, None, utc("2021-03-04T09:06:07"), None)
+        held = managed_metadata.held_facts(clock_tags, google, intend(clock_tags, google, "IMAGE"))
+        self.assertEqual(json.loads(held), {"wall_clock": "2021-03-04T05:06:07", "file_utc": None, "google_utc": utc("2021-03-04T09:06:07"), "place_known": False,
+                                            "description_length": None, "description_unwritable": False})
+        nothing = managed_metadata.held_facts(bare_tags, xmp.GoogleMetadata(*ROME, None, None), intend(bare_tags, xmp.GoogleMetadata(*ROME, None, None), "IMAGE"))
+        self.assertEqual(json.loads(nothing), {"wall_clock": None, "file_utc": None, "google_utc": None, "place_known": True,
+                                               "description_length": None, "description_unwritable": False})
+        video_tags = {"QuickTime:CreateDate": "2019:07:04 12:30:15"}
+        video = intend(video_tags, xmp.GoogleMetadata(None, None, SUMMER, None), "VIDEO")
+        self.assertEqual(json.loads(managed_metadata.held_facts(video_tags, xmp.GoogleMetadata(None, None, SUMMER, None), video))["file_utc"], SUMMER)
+        text = "made-up \ud800 caption"
+        unwritable_google = xmp.GoogleMetadata(*ROME, SUMMER, text)
+        _, ok_tags = photo("facts-text", "2019:07:04 14:30:15", "+02:00", ROME)
+        unwritable = managed_metadata.held_facts(ok_tags, unwritable_google, intend(ok_tags, unwritable_google, "IMAGE"))
+        self.assertEqual((json.loads(unwritable)["description_length"], json.loads(unwritable)["description_unwritable"], unwritable.isascii()), (len(text), True, True))
+        for raw in (held, nothing, unwritable):
+            self.assertNotIn("45.43", raw)
+            self.assertNotIn("offset", raw)
+        fine = intend(ok_tags, xmp.GoogleMetadata(*ROME, SUMMER, None), "IMAGE")
+        self.assertIsNone(managed_metadata.held_facts(ok_tags, xmp.GoogleMetadata(*ROME, SUMMER, None), fine))
+
     def test_no_key_address_or_filename_reaches_logs_reports_or_the_database(self):
         replies = []
         with no_leaks(self, PERSON_KEY, ADMIN_KEY, FILENAME, VIDEO_NAME, self.fake.url, database=self.engine, replies=replies):

@@ -170,6 +170,7 @@ class ManagedImportReceipt(Base):
     send_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     send_lease_until: Mapped[float | None] = mapped_column(Float)
     metadata_hold: Mapped[str | None] = mapped_column(String)
+    hold_facts: Mapped[str | None] = mapped_column(Text)
 
 
 COMPOUND_HOLDS = ("unknown_offset", "no_instant", "unwritable", "compound_conflict", "unusable")

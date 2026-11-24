@@ -236,6 +236,36 @@ def problem(intended: Intended, asset: immich.Asset, seen: immich.Extracted | No
     return None
 
 
+def differences(intended: Intended, seen: immich.Extracted) -> str:
+    instant = instant_of(seen.taken)
+    shown_offset = None if instant is None else zone_offset(seen.zone, instant)
+    differs = [name for name, same in (
+        ("capture_time", instant is not None and intended.taken_utc is not None and abs(instant - intended.taken_utc) < SAME_INSTANT_SECONDS),
+        ("offset", shown_offset == intended.offset), ("place", same_place(intended, seen)),
+        ("description", normalized(seen.description) == normalized(intended.description))) if not same]
+    try:
+        wanted = taken_text(intended)
+    except (OverflowError, OSError, ValueError):
+        wanted = None
+    return json.dumps({"differs": differs, "immich_taken": None if instant is None else seen.taken, "immich_offset": shown_offset,
+                       "intended_taken": wanted, "intended_offset": intended.offset}, sort_keys=True)
+
+
+def held_facts(tags: dict[str, object], google: xmp.GoogleMetadata, intended: Intended) -> str | None:
+    if intended.hold is None:
+        return None
+    own = {key: value for key, value in tags.items() if key.rsplit(":", 1)[-1] != NOT_A_CAPTURE_DATE}
+    own_lat, own_lon, _ = media.location(own)
+    utc, local, _, source = media.capture(own, own_lat, own_lon)
+    parsed = media.parse_local(dict(intended.sidecar).get(xmp.CREATED))
+    wall = local if local is not None else (None if parsed is None else parsed[0].isoformat(timespec="seconds"))
+    unwritable = intended.hold == "unwritable"
+    return json.dumps({"wall_clock": wall, "file_utc": utc if source == "quicktime_utc" else None, "google_utc": google.taken_utc,
+                       "place_known": intended.latitude is not None,
+                       "description_length": len(intended.description) if unwritable and intended.description is not None else None,
+                       "description_unwritable": unwritable}, sort_keys=True)
+
+
 def evidence(asset: immich.Asset, seen: immich.Extracted | None) -> str:
     shown: dict[str, object] = {} if seen is None else {"taken": seen.taken, "zone": seen.zone, "latitude": seen.latitude, "longitude": seen.longitude, "description": seen.description}
     return json.dumps(shown | {"kind": asset.kind, "live_video_id": asset.live_video_id}, sort_keys=True)
@@ -244,6 +274,7 @@ def evidence(asset: immich.Asset, seen: immich.Extracted | None) -> str:
 def verify_metadata(opened: Session, reader: immich.ManagedReader, receipt_id: int, intended: Intended, now: float,
                     pause: Callable[[float], None], video_id: str | None) -> Report:
     found = "not_extracted"
+    shown: tuple[immich.Extracted, str | None] | None = None
     for attempt in range(POLLS):
         if attempt:
             pause(POLL_SECONDS)
@@ -254,21 +285,23 @@ def verify_metadata(opened: Session, reader: immich.ManagedReader, receipt_id: i
             return Report("pending", "the original is not verified yet")
         try:
             asset, seen = reader.extracted(row.asset_id)
-        except (immich.NotCustody, immich.NotVisible):
-            return Report("unusable", "Immich's asset is not an available managed original of this person")
+        except (immich.NotCustody, immich.NotVisible) as error:
+            return managed_upload.hold_unusable(opened, row, ("bytes_verified",), now, managed_upload.kind_of(error))
         except immich.ImmichFailed:
             return Report("pending", "Immich's extracted metadata could not be read")
         if asset.sha1 != row.source_sha1:
-            return Report("unusable", "Immich's asset holds other bytes than the source")
+            return managed_upload.hold_unusable(opened, row, ("bytes_verified",), now, "other_bytes", "Immich's asset holds other bytes than the source")
         seen_problem = problem(intended, asset, seen, video_id)
         if seen_problem is None:
             moved = managed_upload.move(opened, row, ("bytes_verified",), now, state="metadata_verified", metadata_evidence=evidence(asset, seen),
-                                        metadata_verified_at=now, metadata_hold=None)
+                                        metadata_verified_at=now, metadata_hold=None, hold_facts=None)
             return VERIFIED if moved else Report("pending", "the receipt moved")
         found = seen_problem
+        shown = None if seen is None else (seen, differences(intended, seen))
     hold = "not_enriched" if found == "mismatch" and row.upload_outcome == "duplicate" and intended.sidecar else found
-    if hold != "not_extracted" and row.metadata_hold != hold:
-        managed_upload.move(opened, row, ("bytes_verified",), now, metadata_hold=hold)
+    facts = shown[1] if shown is not None and hold in ("mismatch", "not_enriched") else None
+    if hold != "not_extracted" and (row.metadata_hold != hold or (facts is not None and row.hold_facts != facts)):
+        managed_upload.move(opened, row, ("bytes_verified",), now, metadata_hold=hold, **({} if facts is None else {"hold_facts": facts}))
     return Report("pending", REASONS[hold])
 
 
@@ -357,14 +390,18 @@ def commit_compound(opened: Session, reader: immich.ManagedReader, intent_id: in
     roles = sorted(intent.role if intent is not None else "" for intent in intents)
     if "" in roles or (roles != ["live_still", "live_video"] and roles != ["single"] * len(rows)) or len({row.asset_id for row in rows}) != len(rows):
         return Report("pending", "the item's resources are neither one Live Photo nor separate assets")
-    try:
-        assets = [reader.get_asset(str(row.asset_id)) for row in rows]
-    except (immich.NotCustody, immich.NotVisible):
-        return Report("unusable", "an asset of the item is not an available managed original of this person")
-    except immich.ImmichFailed:
-        return Report("pending", "the item's assets could not be read again")
-    if any(asset.sha1 != row.source_sha1 for asset, row in zip(assets, rows, strict=True)):
-        return Report("unusable", "an asset of the item holds other bytes than its source")
+    assets = []
+    for row in rows:
+        try:
+            assets.append(reader.get_asset(str(row.asset_id)))
+        except (immich.NotCustody, immich.NotVisible) as error:
+            return managed_upload.hold_unusable(opened, row, ("metadata_verified",), now, managed_upload.kind_of(error),
+                                                "an asset of the item is not an available managed original of this person")
+        except immich.ImmichFailed:
+            return Report("pending", "the item's assets could not be read again")
+    for asset, row in zip(assets, rows, strict=True):
+        if asset.sha1 != row.source_sha1:
+            return managed_upload.hold_unusable(opened, row, ("metadata_verified",), now, "other_bytes", "an asset of the item holds other bytes than its source")
     if not linked([intent for intent in intents if intent is not None], assets):
         return Report("pending", REASONS["not_linked"] if "live_still" in roles else "separate assets of the item are linked")
     opened.commit()

@@ -1,5 +1,6 @@
 import dataclasses
 import hashlib
+import json
 import unittest
 import uuid
 from pathlib import PurePosixPath
@@ -146,6 +147,9 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(world.opened.execute(select(PixelCopy.item_id)).scalars().all(), [phone.id])
         alert = world.opened.execute(select(Alert).where(Alert.key.startswith("managed:backfill:"))).scalar_one()
         self.assertIn("5 photos of jo need a look", alert.message)
+        held = world.opened.execute(select(ManagedImportReceipt.hold_facts).where(ManagedImportReceipt.metadata_hold == "no_instant")).scalar_one()
+        self.assertEqual(json.loads(held), {"wall_clock": None, "file_utc": None, "google_utc": None, "place_known": False,
+                                            "description_length": None, "description_unwritable": False})
 
     def test_live_photo_halves_renamed_on_a_name_collision_are_listed_and_not_uploaded(self):
         world = BackfillWorld(self)
@@ -307,6 +311,23 @@ class BackfillTests(unittest.TestCase):
         world.backfill()
         self.assertEqual(world.opened.execute(select(ManagedImportReceipt.state)).scalars().all(), ["committed"])
         self.assertEqual(len(world.fake.state.assets), 1)
+
+    def test_a_photo_whose_immich_copy_is_unusable_is_held_with_its_kind_and_is_not_read_again_by_the_next_run(self):
+        world = BackfillWorld(self)
+        world.run_managed(single_photo, parts=1)
+        item = world.google_only_item("IMG_5001.JPG")
+        trashed = FakeAsset(str(uuid.uuid4()), OWNER, world.data(item), name="IMG_9001.JPG", exif=world.extracted(item), trashed=True)
+        world.fake.add_asset(trashed)
+        world.backfill()
+        row = world.opened.execute(select(ManagedImportReceipt)).scalar_one()
+        self.assertEqual((row.state, row.metadata_hold, json.loads(str(row.hold_facts))), ("returned", "unusable", {"kind": "trashed"}))
+        self.assertEqual(world.report(), {"unusable": ["IMG_5001.JPG"]})
+        trashed.trashed = False
+        seen = len(world.fake.requests())
+        world.backfill(at=NOW + 200)
+        self.assertEqual(len(world.fake.requests()), seen)
+        self.assertEqual(world.report(), {"unusable": ["IMG_5001.JPG"]})
+        self.assertEqual(world.opened.execute(select(ManagedImportReceipt.state, ManagedImportReceipt.metadata_hold)).one(), ("returned", "unusable"))
 
     def test_nothing_is_backfilled_without_the_persons_own_opt_in(self):
         world = BackfillWorld(self)

@@ -23,7 +23,8 @@ ON: Final = "on"
 MANIFEST: Final = managed_manifest.TAKEOUT
 SETTLE_SECONDS: Final = 24 * 3600.0
 NOT_SETTLED: Final = "not_settled"
-TERMINAL: Final = (*managed_metadata.HELD_BEFORE_UPLOAD, "not_enriched", NOT_SETTLED, same_shot.HOLD)
+UNUSABLE: Final = managed_upload.UNUSABLE
+TERMINAL: Final = (*managed_metadata.HELD_BEFORE_UPLOAD, "not_enriched", NOT_SETTLED, same_shot.HOLD, UNUSABLE)
 KEPT: Final = "review:"
 KEPT_ONLY: Final = "cleanup of an Immich-managed import stays off until the owner records the restore rehearsal (#266)"
 
@@ -116,7 +117,7 @@ class Uploads:
             row = known.get(resource_key(item.root))
             if row is not None and row.state == "committed":
                 self.committed += 1
-            elif item.live or item.root.bytes <= 0 or not nameable(item.name):
+            elif (row is not None and row.metadata_hold == UNUSABLE) or item.live or item.root.bytes <= 0 or not nameable(item.name):
                 self.held += 1
             else:
                 found.append(item)
@@ -131,12 +132,14 @@ class Uploads:
         if tags is None or "Error" in tags or item.root.sha1 is None:
             return None
         kind: managed_metadata.Kind = "VIDEO" if Path(item.name).suffix.lower() in media.VIDEO_SUFFIXES else "IMAGE"
-        intended = managed_metadata.intend(tags, xmp.GoogleMetadata.of(item.sidecar), kind, corrects=not item.borrowed)
+        google = xmp.GoogleMetadata.of(item.sidecar)
+        intended = managed_metadata.intend(tags, google, kind, corrects=not item.borrowed)
         db.write_lock(self.opened)
         found = receipts_of(self.opened, self.intent).get(key)
         if found is None:
             found = ManagedImportReceipt(intent_id=self.intent.id, resource_key=key, compound_key=key, source_sha1=item.root.sha1, expected_bytes=item.root.bytes,
-                                         expected_metadata=managed_metadata.snapshot(intended), updated_at=self.now)
+                                         expected_metadata=managed_metadata.snapshot(intended), hold_facts=managed_metadata.held_facts(tags, google, intended),
+                                         updated_at=self.now)
             self.opened.add(found)
             self.opened.flush()
         receipt_id = found.id

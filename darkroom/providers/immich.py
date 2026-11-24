@@ -93,11 +93,27 @@ class NotVisible(ImmichFailed):
 
 
 class NotCustody(ImmichFailed):
-    pass
+    def __init__(self, message: str, kind: str = "unavailable") -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 class UploadUncertain(ImmichFailed):
     pass
+
+
+def custody_kind(found: object, asset_id: str, owner_id: str) -> str:
+    if not isinstance(found, dict) or found.get("id") != asset_id:
+        return "unavailable"
+    if found.get("ownerId") != owner_id:
+        return "other_owner"
+    if found.get("libraryId") is not None:
+        return "external"
+    if found.get("isTrashed") is True:
+        return "trashed"
+    if found.get("isOffline") is True:
+        return "offline"
+    return "unavailable"
 
 
 def checksum_of(sha1: str) -> str:
@@ -708,7 +724,7 @@ class ManagedReader:
                 or found.get("isTrashed") is not False or found.get("isOffline") is not False
                 or found.get("type") not in ("IMAGE", "VIDEO")
                 or (found.get("livePhotoVideoId") is not None and not is_canonical_id(found["livePhotoVideoId"]))):
-            raise NotCustody("the asset is not an available managed original of this person")
+            raise NotCustody("the asset is not an available managed original of this person", custody_kind(found, asset_id, self.owner_id))
         return found
 
     def get_asset(self, asset_id: str) -> Asset:
@@ -753,7 +769,7 @@ class ManagedReader:
             raise ImmichFailed("not a recorded source")
         asset = self.get_asset(asset_id)
         if asset.sha1 != sha1:
-            raise NotCustody("the asset holds other bytes than the source")
+            raise NotCustody("the asset holds other bytes than the source", "other_bytes")
         if sum(len(chunk) for chunk in self.client.original_chunks(self.key, asset)) != size:
             raise ChecksumMismatch("the downloaded original's size differs from the source")
 
