@@ -32,8 +32,13 @@ USER_AGENT = "immich-spike/1.0"
 GRANTS = frozenset({"user.read", "server.about", "asset.read", "asset.download", "asset.upload"})
 EXACT_ROUTES = frozenset({("GET", "/api/server/about"), ("GET", "/api/users/me"), ("GET", "/api/api-keys/me"),
                           ("POST", "/api/assets"), ("POST", "/api/assets/bulk-upload-check"), ("POST", "/api/search/metadata")})
-ASSET_ROUTE = re.compile(r"/api/assets/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:/original\?edited=false)?")
+UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+ASSET_ROUTE = re.compile(rf"/api/assets/{UUID}(?:/original\?edited=false|/thumbnail)?")
+ALBUM_ROUTE = re.compile(rf"/api/albums\?assetId={UUID}")
+UPDATE_ROUTE = re.compile(rf"/api/assets/{UUID}")
 MAX_VIDEO_MB = 256
+OPT_IN = "not run: opt in with --enrich"
+READ_ONLY_REFUSED = frozenset({"all", "asset.update"})
 CHUNK = 1024 * 1024
 DENIED = (400, "Not found or no asset.read access")
 QUOTA = (400, "Quota has been exceeded!")
@@ -56,7 +61,24 @@ ROWS = (
     ("video", "Large video and async extraction delay", "not run: opt in with --large-video-mb"),
     ("quota", "Quota error", "not run: no IMMICH_LIVE_QUOTA_KEY"),
     ("revoked", "Revoked-key error", "not run: no IMMICH_LIVE_REVOKED_KEY"),
-    ("enrich", "Supported existing-asset metadata enrichment path", "not run: needs `asset.update`, which this harness refuses; stays a release gate"),
+    ("e1", "E1 Enrichment key: whoami, grants as the server lists them, version", OPT_IN),
+    ("e2", "E2 Description fill on an asset with none", OPT_IN),
+    ("e3", "E3 Place fill (latitude and longitude together)", OPT_IN),
+    ("e4", "E4 Capture time with an offset on a fallback date, and an offsetless edit", OPT_IN),
+    ("e5", "E5 Capture time with an offset on a wall clock with none", OPT_IN),
+    ("e6", "E6 Update onto a field that has a value", OPT_IN),
+    ("e7", "E7 Edit in Immich between a read and an update", "not run: needs an edit in Immich's own interface, timed by hand"),
+    ("e8", "E8 Sidecar Immich writes after an update, and re-extraction", "not run: needs the owner to look at Immich's storage and an admin to run extraction"),
+    ("e9", "E9 Null date, null place and empty description", OPT_IN),
+    ("e10", "E10 Update with a read-only key; reads with the all-permission key", "not run: no IMMICH_LIVE_ENRICH_READ_KEY"),
+    ("e11", "E11 Update of an asset in the locked folder", "not run: needs an asset moved to the locked folder by hand"),
+    ("e12", "E12 Update of a trashed asset", "not run: needs an asset trashed by hand"),
+    ("e13", "E13 Update of another user's asset", "not run: no IMMICH_LIVE_ENRICH_KEY_2"),
+    ("e14", "E14 Update with a revoked key", "not run: no IMMICH_LIVE_REVOKED_KEY"),
+    ("e15", "E15 The same update twice, then the reconcile's window and checksum search", OPT_IN),
+    ("e16", "E16 Capture-time search for an enriched date", OPT_IN),
+    ("e17", "E17 Update while Immich's sidecar job queue is paused", "not run: needs an admin to pause the queue"),
+    ("e18", "E18 Album list before and after an update", OPT_IN),
     ("no_delete", "Managed imports need no `asset.delete` or admin grant", ""),
 )
 NOT_RUN = {key: reason for key, _, reason in ROWS if reason}
@@ -72,8 +94,10 @@ class Failed(Exception):
         self.status, self.reply = status, reply
 
 
-def allowed(method: str, path: str) -> None:
-    if (method, path) in EXACT_ROUTES or (method == "GET" and ASSET_ROUTE.fullmatch(path)):
+def allowed(method: str, path: str, enriching: bool = False) -> None:
+    if (method, path) in EXACT_ROUTES or (method == "GET" and (ASSET_ROUTE.fullmatch(path) or ALBUM_ROUTE.fullmatch(path))):
+        return
+    if enriching and method == "PUT" and UPDATE_ROUTE.fullmatch(path):
         return
     raise Refused("the harness does not send this request")
 
@@ -100,9 +124,10 @@ class Api:
     url: str
     key: str = field(repr=False)
     timeout: float = 300.0
+    enriching: bool = False
 
     def open(self, method: str, path: str, data: bytes | None, headers: dict[str, str] | None) -> Any:
-        allowed(method, path)
+        allowed(method, path, self.enriching)
         sent = {"Accept": "application/json", "User-Agent": USER_AGENT, "x-api-key": self.key, **(headers or {})}
         host = urlsplit(self.url).hostname or ""
         return tls.urlopen(self.url.rstrip("/") + path, method=method, data=data, headers=sent, timeout=self.timeout, allow_http=config.local_host(host))
@@ -561,6 +586,218 @@ def after_trash(run: Run, a: Account, previous: dict[str, Any]) -> None:
     run.step("trashed", trashed)
 
 
+def wall_exif(wall: datetime) -> bytes:
+    exif = Image.Exif()
+    exif.get_ifd(ExifTags.IFD.Exif)[ExifTags.Base.DateTimeOriginal] = wall.strftime("%Y:%m:%d %H:%M:%S")
+    return exif.tobytes()
+
+
+def preflight_enrich(run: Run, account: Account, owner: Account, same_user: bool, wants_all: bool) -> None:
+    status, me = account.api.call("GET", "/api/users/me")
+    if status != 200 or not isinstance(me, dict) or not immich.is_canonical_id(me.get("id")):
+        raise Refused(f"account {account.label}: the key was not accepted ({status})")
+    if me.get("isAdmin") is not False:
+        raise Refused(f"account {account.label}: the key belongs to an admin user; use a disposable non-admin user")
+    status, key = account.api.call("GET", "/api/api-keys/me")
+    grants = key.get("permissions") if isinstance(key, dict) else None
+    if status != 200 or not isinstance(grants, list) or not all(isinstance(g, str) for g in grants):
+        raise Refused(f"account {account.label}: the server did not list the key's grants ({status})")
+    if not wants_all and READ_ONLY_REFUSED & set(grants):
+        raise Refused(f"account {account.label}: the read-only key must hold neither `all` nor `asset.update`")
+    if (me["id"] == owner.user_id) != same_user:
+        raise Refused(f"account {account.label}: the key must belong to {'the same user as the import key' if same_user else 'a second user'}")
+    account.user_id, account.grants = me["id"], sorted(grants)
+    run.accounts[account.label] = {"owner": owner_hash(account.user_id), "grants": account.grants}
+
+
+def changed(before: dict[str, Any], after: dict[str, Any], expected: tuple[str, ...]) -> list[str]:
+    return [name for name in sorted(set(before) | set(after)) if name not in expected and before.get(name) != after.get(name)]
+
+
+def shown(found: dict[str, Any]) -> dict[str, Any]:
+    info = found.get("exifInfo") if isinstance(found.get("exifInfo"), dict) else {}
+    return {**exif_values(found), **{n: found.get(n) for n in ("ownerId", "libraryId", "checksum", "visibility", "isFavorite", "isTrashed", "isOffline", "type", "livePhotoVideoId")},
+            "rating": info.get("rating"), "city": info.get("city"), "fileCreatedAt": found.get("fileCreatedAt"), "localDateTime": found.get("localDateTime")}
+
+
+def enrich(run: Run, a: Account, e: Account, e2: Account | None, read: Account | None, revoked: Account | None, settle: float) -> None:
+    ids: dict[str, str] = {}
+    blobs: dict[str, bytes] = {}
+    sent = datetime(2019, 7, 4, 12, 30, 15, tzinfo=timezone(timedelta(hours=2)))
+
+    def fixture(label: str, data: bytes) -> str:
+        up = run.upload(a, f"e-{label}", "jpg", data)
+        blobs[label] = data
+        ids[label] = up.asset_id
+        if run.wait(a, up.asset_id, lambda f: isinstance(f.get("exifInfo"), dict))[1] is None:
+            raise Failed(f"the fixture {label} was not extracted in time")
+        return up.asset_id
+
+    def put(who: Account, asset_id: str, body: dict[str, object]) -> tuple[int, Any]:
+        return who.api.call("PUT", f"/api/assets/{asset_id}", body)
+
+    def view(label: str) -> dict[str, Any]:
+        return shown(run.asset(a, ids[label]))
+
+    def intact(label: str, data: bytes | None = None) -> bool:
+        return a.api.download(ids[label]) == (sha1(data or blobs[label]), len(data or blobs[label]))
+
+    def updated(label: str, body: dict[str, object], expect: tuple[str, ...]) -> tuple[int, dict[str, Any], dict[str, Any], list[str]]:
+        before = view(label)
+        status, answer = put(e, ids[label], body)
+        if status != 200:
+            raise Failed(f"the update answered {status} ({message(answer)})")
+        after = view(label)
+        return status, before, after, changed(before, after, expect)
+
+    def plain(label: str) -> str:
+        return fixture(label, jpeg(f"{run.run_id}-e-{label}"))
+
+    def e1() -> tuple[str, str]:
+        listed = ", ".join(f"`{g}`" for g in e.grants)
+        return "pass", f"`users/me` is the harness user (owner {owner_hash(e.user_id)}), non-admin, the same as the import key's; `api-keys/me` lists {listed}; server `{run.version}`"
+    run.step("e1", e1)
+
+    def e2_row() -> tuple[str, str]:
+        plain("desc")
+        text = f"{MARKER} {run.run_id} description"
+        status, before, after, other = updated("desc", {"description": text}, ("description",))
+        ok = after["description"] == text and not other and intact("desc")
+        return ("pass" if ok else "fail"), f"{status}; description {before['description']!r} to {after['description']!r}; other fields changed: {other or 'none'}; unedited download with the import key {'equals' if ok else 'differs from'} the input"
+    run.step("e2", e2_row)
+
+    def e3() -> tuple[str, str]:
+        plain("place")
+        lonely = put(e, ids["place"], {"latitude": 12.5})[0]
+        status, before, after, other = updated("place", {"latitude": 12.5, "longitude": -20.25}, ("latitude", "longitude", "city", "state", "country"))
+        ok = lonely == 400 and near(after["latitude"], 12.5) and near(after["longitude"], -20.25) and not other
+        return ("pass" if ok else "fail"), f"latitude alone answered {lonely}; both answered {status}; place {before['latitude']},{before['longitude']} to {after['latitude']},{after['longitude']}; `city` {before['city']!r} to {after['city']!r}; other fields changed: {other or 'none'}"
+    run.step("e3", e3)
+
+    def wait_state(label: str, wanted: datetime) -> dict[str, Any]:
+        found, _ = run.wait(a, ids[label], lambda f: instant(exif_values(f)["dateTimeOriginal"]) == wanted, timeout=min(30.0, run.extraction_timeout))
+        return shown(found)
+
+    def e4() -> tuple[str, str]:
+        plain("fallback")
+        plain("naive")
+        fresh = view("fallback")
+        status, _, now, _ = updated("fallback", {"dateTimeOriginal": sent.isoformat()}, ("dateTimeOriginal", "timeZone"))
+        naive_status = put(e, ids["naive"], {"dateTimeOriginal": "2019-07-04T12:30:15"})[0]
+        naive = wait_state("naive", datetime(2019, 7, 4, 12, 30, 15, tzinfo=UTC)) if naive_status == 200 else {}
+        time.sleep(settle)
+        later, naive_later = view("fallback"), view("naive")
+        ok = instant(now["dateTimeOriginal"]) == sent and bool(now["timeZone"])
+        fields = lambda v: f"dateTimeOriginal {v['dateTimeOriginal']}, timeZone {v['timeZone']}, fileCreatedAt {v['fileCreatedAt']}, localDateTime {v['localDateTime']}"
+        return ("pass" if ok else "fail"), (f"fresh fallback: {fields(fresh)}; offset edit answered {status}: now {fields(now)}; after {settle:g} s {fields(later)}; "
+                                            f"offsetless edit answered {naive_status}: {fields(naive) if naive else 'not read'}; after {settle:g} s {fields(naive_later)}; "
+                                            f"`dateTimeOriginal` equals `fileCreatedAt` on the fresh fallback: {instant(fresh['dateTimeOriginal']) == instant(fresh['fileCreatedAt'])}, after the offset edit: {instant(later['dateTimeOriginal']) == instant(later['fileCreatedAt'])}")
+    run.step("e4", e4)
+
+    def e5() -> tuple[str, str]:
+        fixture("wall", jpeg(f"{run.run_id}-e-wall", wall_exif(datetime(2021, 6, 15, 14, 30))))
+        status, before, after, _ = updated("wall", {"dateTimeOriginal": "2021-06-15T14:30:00+02:00"}, ("dateTimeOriginal", "timeZone"))
+        moved = instant(after["dateTimeOriginal"]) == datetime(2021, 6, 15, 12, 30, tzinfo=UTC)
+        return ("pass" if moved and after["timeZone"] else "fail"), (f"{status}; instant {before['dateTimeOriginal']} (zone {before['timeZone']}) to {after['dateTimeOriginal']} (zone {after['timeZone']}); "
+                                                                       f"wall clock 14:30 at +02:00 {'is' if moved else 'is not'} the stored instant 12:30Z; `localDateTime` {before['localDateTime']} to {after['localDateTime']}")
+    run.step("e5", e5)
+
+    def e6() -> tuple[str, str]:
+        if "desc" not in ids:
+            raise Failed("no asset from the description row")
+        text = f"{MARKER} {run.run_id} overwritten"
+        status, before, after, _ = updated("desc", {"description": text}, ("description",))
+        return ("pass" if after["description"] == text else "fail"), f"{status}; description {before['description']!r} to {after['description']!r}: the server {'overwrites a present value without an error' if after['description'] == text else 'kept the value'}"
+    run.step("e6", e6)
+
+    def e9() -> tuple[str, str]:
+        plain("nulls")
+        got = [put(e, ids["nulls"], body)[0] for body in ({"dateTimeOriginal": None}, {"latitude": None, "longitude": None}, {"description": ""})]
+        ok = got == [400, 400, 200]
+        return ("pass" if ok else "fail"), f"null date answered {got[0]}, null place {got[1]}, empty description {got[2]}"
+    run.step("e9", e9)
+
+    if read is not None:
+        def e10() -> tuple[str, str]:
+            plain("readonly")
+            before = view("readonly")
+            status, answer = put(read, ids["readonly"], {"description": f"{MARKER} refused"})
+            digest, size = e.api.download(ids["readonly"])
+            thumb = e.api.call("GET", f"/api/assets/{ids['readonly']}/thumbnail")[0]
+            ok = status == 403 and "Missing required permission" in message(answer) and view("readonly") == before and (digest, size) == (sha1(blobs["readonly"]), len(blobs["readonly"])) and thumb == 200
+            return ("pass" if ok else "fail"), f"read-only key answered {status} ({message(answer)}), asset unchanged; the all-permission key's original read matched the input and its thumbnail answered {thumb}"
+        run.step("e10", e10)
+
+    if e2 is not None:
+        def e13() -> tuple[str, str]:
+            plain("foreign")
+            before = view("foreign")
+            status, answer = put(e2, ids["foreign"], {"description": f"{MARKER} refused"})
+            ok = status == 400 and message(answer) == "Not found or no asset.update access" and view("foreign") == before
+            return ("pass" if ok else "fail"), f"the second user's all-permission key answered {status} ({message(answer)}) and the asset is unchanged; the partner-shared case is not run (it needs partner sharing, runbook row 1)"
+        run.step("e13", e13)
+
+    if revoked is not None:
+        def e14() -> tuple[str, str]:
+            plain("revoked")
+            before = view("revoked")
+            status = put(revoked, ids["revoked"], {"description": f"{MARKER} refused"})[0]
+            return ("pass" if status == 401 and view("revoked") == before else "fail"), f"the revoked key answered {status} and the asset is unchanged"
+        run.step("e14", e14)
+
+    def e15() -> tuple[str, str]:
+        plain("twice")
+        first = run.asset(a, ids["twice"])
+        body = {"description": f"{MARKER} {run.run_id} twice"}
+        put(e, ids["twice"], body)
+        once = run.asset(a, ids["twice"])
+        statuses = [put(e, ids["twice"], body)[0], put(e, ids["twice"], body)[0]]
+        twice = run.asset(a, ids["twice"])
+        window = {"gte": first.get("updatedAt"), "lte": (datetime.now(UTC) + timedelta(days=1)).isoformat(timespec="milliseconds").replace("+00:00", "Z")}
+        listed = a.api.call("POST", "/api/search/metadata", {"filter": {"updatedAt": window}, "size": 100, "orderBy": {"field": "fileCreatedAt", "direction": "asc"}})[1]
+        items = listed.get("assets", {}).get("items", []) if isinstance(listed, dict) else []
+        count = sum(1 for item in items if isinstance(item, dict) and item.get("id") == ids["twice"])
+        by_sum = run.by_checksum(a, blobs["twice"])
+        ok = shown(once) == shown(twice) and count == 1 and by_sum == [ids["twice"]] and twice.get("checksum") == first.get("checksum")
+        return ("pass" if ok else "fail"), f"the repeated updates answered {statuses}; the end state {'equals' if shown(once) == shown(twice) else 'differs from'} the first update's; the asset appears {count} time(s) in the `updatedAt` window and {len(by_sum)} time(s) by checksum; the checksum is unchanged: {twice.get('checksum') == first.get('checksum')}; `updatedAt` moved after the repeat: {twice.get('updatedAt') != once.get('updatedAt')}"
+    run.step("e15", e15)
+
+    def e16() -> tuple[str, str]:
+        if "fallback" not in ids:
+            raise Failed("no asset from the capture-time row")
+        window = {"gte": (sent - timedelta(seconds=1)).isoformat(), "lte": (sent + timedelta(seconds=1)).isoformat()}
+        found = a.api.call("POST", "/api/search/metadata", {"filter": {"takenAt": window}, "size": 10, "orderBy": {"field": "fileCreatedAt", "direction": "asc"}})
+        items = found[1].get("assets", {}).get("items") if isinstance(found[1], dict) else None
+        if found[0] != 200 or not isinstance(items, list):
+            raise Failed(f"the capture-time search answered {found[0]}")
+        hit = any(isinstance(item, dict) and item.get("id") == ids["fallback"] for item in items)
+        return "pass", f"the search for the edited date {'finds' if hit else 'does not find'} the asset ({len(items)} result(s)), so same-shot matching {'sees' if hit else 'does not see'} an enriched date"
+    run.step("e16", e16)
+
+    def e18() -> tuple[str, str]:
+        if "twice" not in ids:
+            raise Failed("no asset from the repeat row")
+        route = f"/api/albums?assetId={ids['twice']}"
+        before = e.api.call("GET", route)
+        put(e, ids["twice"], {"description": f"{MARKER} {run.run_id} albums"})
+        after = e.api.call("GET", route)
+        ok = before[0] == after[0] == 200 and isinstance(before[1], list) and before[1] == after[1]
+        return ("pass" if ok else "fail"), f"the asset's album list answered {before[0]} and {after[0]} with {len(before[1]) if isinstance(before[1], list) else 'no'} and {len(after[1]) if isinstance(after[1], list) else 'no'} album(s); the one-album case is not run (it needs an album made by hand)"
+    run.step("e18", e18)
+
+
+def enrich_run(run: Run, url: str, a: Account, keys: list[str], revoked_key: str, settle: float) -> None:
+    first, second, only_read = (Account(label, Api(url, key, enriching=True)) if key else None for label, key in zip(("A-all", "B-all", "A-read"), keys, strict=True))
+    if first is None:
+        raise Refused("set IMMICH_LIVE_ENRICH_KEY")
+    preflight_enrich(run, first, a, True, True)
+    if second is not None:
+        preflight_enrich(run, second, a, False, True)
+    if only_read is not None:
+        preflight_enrich(run, only_read, a, True, False)
+    enrich(run, a, first, second, only_read, Account("revoked", Api(url, revoked_key, enriching=True)) if revoked_key else None, settle)
+
+
 def load_data(path: Path) -> dict[str, Any]:
     block = re.findall(re.escape(DATA_START) + r"\n(.*?)\n" + re.escape(DATA_END), path.read_text(), re.S)
     try:
@@ -621,21 +858,26 @@ def main(argv: list[str] | None = None, out: TextIO = sys.stdout, environ: dict[
     parser.add_argument("--allow-public-address", action="store_true")
     parser.add_argument("--large-video-mb", type=float, default=0.0)
     parser.add_argument("--extraction-timeout", type=float, default=180.0)
+    parser.add_argument("--enrich", action="store_true", help="run only the E rows of section 16 of the enrichment design, with IMMICH_LIVE_ENRICH_KEY")
+    parser.add_argument("--settle-seconds", type=float, default=600.0)
     args = parser.parse_args(argv)
     env = os.environ if environ is None else environ
     url, key_a, key_b = env.get("IMMICH_URL", ""), env.get("IMMICH_LIVE_KEY_A", ""), env.get("IMMICH_LIVE_KEY_B", "")
     quota_key, revoked_key = env.get("IMMICH_LIVE_QUOTA_KEY", ""), env.get("IMMICH_LIVE_REVOKED_KEY", "")
     host = urlsplit(url).hostname or ""
-    secrets = [key_a, key_b, quota_key, revoked_key, url, host if len(host) >= 4 else ""]
+    enrich_keys = [env.get(name, "") for name in ("IMMICH_LIVE_ENRICH_KEY", "IMMICH_LIVE_ENRICH_KEY_2", "IMMICH_LIVE_ENRICH_READ_KEY")]
+    secrets = [key_a, key_b, quota_key, revoked_key, *enrich_keys, url, host if len(host) >= 4 else ""]
     run: Run | None = None
     try:
         if not url or not key_a:
             raise Refused("set IMMICH_URL and IMMICH_LIVE_KEY_A")
-        if any(any(not 33 <= ord(c) <= 126 for c in k) for k in (key_a, key_b, quota_key, revoked_key)):
+        if any(any(not 33 <= ord(c) <= 126 for c in k) for k in (key_a, key_b, quota_key, revoked_key, *enrich_keys)):
             raise Refused("a key holds characters a header cannot carry")
         if not 0 <= args.large_video_mb <= MAX_VIDEO_MB:
             raise Refused(f"--large-video-mb is limited to {MAX_VIDEO_MB}")
-        if (args.phase == "main") != (args.append_results is None):
+        if args.enrich and (args.phase != "main" or args.large_video_mb or not 0 <= args.settle_seconds <= 3600 or not enrich_keys[0]):
+            raise Refused("--enrich runs alone (no other phase, no large video), needs IMMICH_LIVE_ENRICH_KEY and a --settle-seconds of at most 3600")
+        if not args.enrich and (args.phase == "main") != (args.append_results is None):
             raise Refused("--append-results goes with --phase second-account or after-trash, and only with them")
         address = check_address(url, args.allow_public_address)
         if not os.environ.get("SSL_CERT_FILE") and (bundle := os.environ.get("CURL_CA_BUNDLE") or os.environ.get("REQUESTS_CA_BUNDLE")):
@@ -646,14 +888,16 @@ def main(argv: list[str] | None = None, out: TextIO = sys.stdout, environ: dict[
         a = Account("B" if args.phase == "second-account" else "A", Api(url, key_a))
         preflight(run, a)
         b = quota = None
-        if key_b and args.phase == "main":
+        if key_b and args.phase == "main" and not args.enrich:
             b = Account("B", Api(url, key_b))
             preflight(run, b)
-        if quota_key and args.phase == "main":
+        if quota_key and args.phase == "main" and not args.enrich:
             quota = Account("quota", Api(url, quota_key))
             preflight(run, quota)
         run.rows["grants"] = ("pass", f"exactly {', '.join(a.grants)}; non-admin user{'s' if b else ''}")
-        if args.phase == "main":
+        if args.enrich:
+            enrich_run(run, url, a, enrich_keys, revoked_key, args.settle_seconds)
+        elif args.phase == "main":
             shared = jpeg(f"{run.run_id}-shared")
             first = run.upload(a, "shared", "jpg", shared)
             run.shared = {"asset": first.asset_id, "owner": owner_hash(a.user_id)}

@@ -144,6 +144,7 @@ class State:
     on_search: Callable[[int], None] | None = None
     version: str = VERSION
     permissions: tuple[str, ...] = ("user.read", "server.about", "asset.read", "asset.download")
+    key_permissions: dict[str, tuple[str, ...]] = field(default_factory=dict)
     admins: tuple[str, ...] = ()
     quotas: dict[str, int] = field(default_factory=dict)
     extraction_delay: float = 0.0
@@ -259,7 +260,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 self.reply(200, {k: v for k, v in found.json().items() if k not in state.drop_fields})
             elif parts[4] == "metadata":
                 self.reply(200, [{"key": key, "value": {}} for key in found.metadata])
-            elif parts[4] == "original":
+            elif parts[4] in ("original", "thumbnail"):
                 self.raw(found.data)
             else:
                 self.reply(404, {"message": "Not found"})
@@ -286,7 +287,11 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             elif self.command == "GET" and path == "/api/users/me":
                 self.users_me(role, person)
             elif self.command == "GET" and path == "/api/api-keys/me" and person is not None:
-                self.reply(200, {"permissions": list(state.permissions)})
+                self.reply(200, {"permissions": list(state.key_permissions.get(person.key, state.permissions))})
+            elif self.command == "PUT" and path.startswith("/api/assets/") and person is not None:
+                self.update(person, path.split("/")[3])
+            elif self.command == "GET" and path == "/api/albums" and person is not None:
+                self.reply(200, [])
             elif self.command == "GET" and path == "/api/libraries":
                 visible = state.people if person is None else [person]
                 self.reply(200, [library_json(p) for p in visible])
@@ -302,6 +307,32 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 self.scan(role, path.split("/")[3])
             else:
                 self.reply(404, {"message": "Cannot " + self.command + " " + path})
+
+        def update(self, person: FakePerson, asset_id: str) -> None:
+            granted = state.key_permissions.get(person.key, state.permissions)
+            if not {"all", "asset.update"} & set(granted):
+                self.reply(403, {"message": "Missing required permission: asset.update"})
+                return
+            found = next((a for a in state.assets if a.id == asset_id and a.owner_id == person.user_id), None)
+            sent = json.loads(self.body or b"{}")
+            if found is None:
+                self.reply(400, {"message": "Not found or no asset.update access", "error": "Bad Request", "statusCode": 400})
+                return
+            if any(sent.get(name, 0) is None for name in ("dateTimeOriginal", "latitude", "longitude")) or ("latitude" in sent) != ("longitude" in sent):
+                self.reply(400, {"message": "Invalid update body", "error": "Bad Request", "statusCode": 400})
+                return
+            exif = dict(found.exif or {})
+            for name in ("description", "latitude", "longitude"):
+                if name in sent:
+                    exif[name] = sent[name]
+            if "dateTimeOriginal" in sent:
+                taken = datetime.fromisoformat(sent["dateTimeOriginal"])
+                exif["dateTimeOriginal"] = (taken if taken.tzinfo else taken.replace(tzinfo=UTC)).astimezone(UTC).isoformat().replace("+00:00", "Z")
+                if taken.tzinfo:
+                    exif["timeZone"] = f"UTC{taken.strftime('%z')[:3]}:{taken.strftime('%z')[3:]}"
+            found.exif, found.ready_at = exif, 0.0
+            found.updated_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            self.reply(200, found.json())
 
         def upload(self, person: FakePerson) -> None:
             if "asset.upload" not in state.permissions:
