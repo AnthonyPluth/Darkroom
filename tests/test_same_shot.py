@@ -226,7 +226,7 @@ class HoldTests(unittest.TestCase):
         for at in (NOW + DAY, NOW + 30 * DAY):
             finish_export.finish_ready(world.opened, world.settings, at, world.tools)
             managed_ingest.send_kept(world.opened, world.settings, world.photos, at, None)
-            cleanup.clean(world.opened, world.photos, at)
+            cleanup.clean(world.opened, world.photos, at, world.settings)
             part_free.free_ready(world.opened, world.settings, at)
         self.assertEqual(world.receipts(), {"IMG_5001.JPG": ("prepared", None, "same_shot")})
         self.assertEqual((self.posted(world), [hold.status for hold in holds(world)], len(world.zips(world.opened.get(type(export), export.id)))), ([], ["pending"], 1))
@@ -236,7 +236,7 @@ class HoldTests(unittest.TestCase):
         with_neighbour(world)
         export = self.photo(world)
         world.finish(export)
-        self.assertEqual(cleanup.clean(world.opened, world.photos, NOW + 60 * DAY).parts, 0)
+        self.assertEqual(cleanup.clean(world.opened, world.photos, NOW + 60 * DAY, world.settings).parts, 0)
         self.assertEqual(part_free.free_ready(world.opened, world.settings, NOW + 60 * DAY).parts, 0)
         self.assertEqual(len(world.zips(world.opened.get(type(export), export.id))), 1)
 

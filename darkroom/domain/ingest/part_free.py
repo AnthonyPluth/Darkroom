@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import events
+from darkroom.domain import events, managed_switch
 from darkroom.domain.ingest import cleanup, pairing, part_ingest, part_reader, run, unpack
 from darkroom.storage import db, paths
 from darkroom.storage.models import (
@@ -35,6 +35,7 @@ WORTH_AN_EVENT: Final = frozenset({"unknown_entry", "listing_differs", "unreadab
 HASH_DIFFERS: Final = "hash_differs"
 KEY_VERSION: Final = 1
 REPROVE_AFTER: Final = 6 * 3600.0
+SWITCH_KEPT: Final = "managed_switch"
 
 
 class Refused(Exception):
@@ -432,6 +433,31 @@ def lock(opened: Session, export: Export, part: ExportPart) -> None:
     opened.refresh(part)
 
 
+def switch_guard(opened: Session, photos: Photos, person: Person, export: Export) -> None:
+    try:
+        managed_switch.hold(opened, photos, person, "part_free", export)
+    except managed_switch.Paused as paused:
+        raise Refused(SWITCH_KEPT) from paused
+
+
+def lock_for_removal(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart) -> None:
+    switch_guard(opened, photos, person, export)
+    opened.refresh(part)
+
+
+def kept_by_switch(opened: Session, photos: Photos, person: Person, export: Export, subject: str, kind: str, now: float, report: FreeReport) -> bool:
+    opened.commit()
+    try:
+        switch_guard(opened, photos, person, export)
+    except Refused as refused:
+        kept(opened, export, subject, kind, refused.reason, now)
+        report.kept += 1
+        opened.commit()
+        return True
+    opened.rollback()
+    return False
+
+
 def remembered(part: ExportPart, now: float) -> bool:
     return part.free_state is None and part.free_kept_at is not None and 0.0 <= now - part.free_kept_at < REPROVE_AFTER
 
@@ -464,7 +490,17 @@ def kept_unchanged(opened: Session, photos: Photos, person: Person, export: Expo
     return True
 
 
+def put_back_part(photos: Photos, person: Person, export: Export, part: ExportPart) -> None:
+    try:
+        recover_claim(photos, zip_path(photos, person, export, part), export)
+    except Refused:
+        return
+
+
 def free_part(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, report: FreeReport) -> None:
+    if kept_by_switch(opened, photos, person, export, f"part {part.number}", KEPT, now, report):
+        put_back_part(photos, person, export, part)
+        return
     if kept_unchanged(opened, photos, person, export, part, now, report):
         return
     lock(opened, export, part)
@@ -488,7 +524,7 @@ def free_part(opened: Session, photos: Photos, person: Person, export: Export, p
         if part.free_state is None:
             part.free_state, part.free_started_at = FREEING, now
         opened.commit()
-        lock(opened, export, part)
+        lock_for_removal(opened, photos, person, export, part)
         second = prove_part(opened, photos, person, export, part, now, hashing=False, require_held=True)
         checked = confirm(photos, first, second)
         try:
@@ -655,8 +691,10 @@ def all_kept_on_the_ledger(opened: Session, photos: Photos, export: Export, rows
     return True
 
 
-def free_held(opened: Session, photos: Photos, export: Export, now: float, report: FreeReport) -> None:
-    opened.commit()
+def free_held(opened: Session, photos: Photos, person: Person, export: Export, now: float, report: FreeReport) -> None:
+    if kept_by_switch(opened, photos, person, export, "held copies", HELD_KEPT, now, report):
+        recover_held_claims(photos, export, held_rows(opened, export))
+        return
     opened.expire_all()
     rows = held_rows(opened, export)
     if not rows or all_kept_on_the_ledger(opened, photos, export, rows, now, report):
@@ -672,8 +710,7 @@ def free_held(opened: Session, photos: Photos, export: Export, now: float, repor
                 row.held_state, row.held_freed_at = (FREED, now) if held_gone(photos, export, row) else (None, None)
         keep_held(opened, export, first.kept, now)
         opened.commit()
-        db.write_lock(opened)
-        opened.expire_all()
+        switch_guard(opened, photos, person, export)
         freeing = [row for row in held_rows(opened, export) if row.held_state == FREEING]
         second = prove_held(opened, photos, export, freeing, hashing=False)
         if {row.id for row in second.ready} != {row.id for row in freeing} or not same_files(first.proof, second.proof):
@@ -729,7 +766,7 @@ def free_export(opened: Session, photos: Photos, export: Export, now: float, rep
             continue
         free_part(opened, photos, person, export, part, now, report)
     if export.status == IMPORTED:
-        free_held(opened, photos, export, now, report)
+        free_held(opened, photos, person, export, now, report)
 
 
 def free_ready(opened: Session, settings: config.Settings, now: float) -> FreeReport:

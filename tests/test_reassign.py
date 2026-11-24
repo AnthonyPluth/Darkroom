@@ -357,7 +357,7 @@ class InterruptedReassignTests(ReviewCase):
 
     def clean(self):
         opened = self.opened
-        report = cleanup.clean(opened, self.world.photos, time.time() + cleanup.DROPPING_GRACE + 60)
+        report = cleanup.clean(opened, self.world.photos, time.time() + cleanup.DROPPING_GRACE + 60, self.world.settings)
         opened.commit()
         return report
 

@@ -35,7 +35,7 @@ class Imported(unittest.TestCase):
         return {key: value for key, value in tree(self.root).items() if not key.startswith("_inbox/")}
 
     def clean(self, at=LATER):
-        report = cleanup.clean(self.world.opened, self.world.photos, at)
+        report = cleanup.clean(self.world.opened, self.world.photos, at, self.world.settings)
         self.world.opened.commit()
         return report
 
@@ -530,7 +530,7 @@ class InterruptedRemovalTests(Imported):
 
     def test_a_dropping_file_still_in_its_grace_period_is_kept(self):
         fresh = self.leftover("IMG_9.JPG")
-        report = cleanup.clean(self.world.opened, self.world.photos, fresh.stat().st_ctime + cleanup.DROPPING_GRACE - 1)
+        report = cleanup.clean(self.world.opened, self.world.photos, fresh.stat().st_ctime + cleanup.DROPPING_GRACE - 1, self.world.settings)
         self.assertTrue(fresh.exists())
         self.assertEqual(report.dropped, 0)
 
@@ -577,7 +577,7 @@ class PerPartImported(unittest.TestCase):
         return {key: value for key, value in tree(self.root).items() if not key.startswith("_inbox/")}
 
     def clean(self, at=LATER):
-        report = cleanup.clean(self.world.opened, self.world.photos, at)
+        report = cleanup.clean(self.world.opened, self.world.photos, at, self.world.settings)
         self.world.opened.commit()
         return report
 

@@ -374,7 +374,7 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
     def clean_inbox(at: float) -> None:
         watch_recovery_points(at)
         with db.session(engine) as opened:
-            report = cleanup.clean(opened, Photos(settings.photos_root), at)
+            report = cleanup.clean(opened, Photos(settings.photos_root), at, live())
         monitoring.log("inbox cleaned", staging=report.staging, parts=report.parts, holds=report.holds, kept=report.kept, refused=report.refused, failed=report.failed)
 
     def watch_recovery_points(at: float) -> None:
