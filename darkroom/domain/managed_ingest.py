@@ -17,11 +17,10 @@ from darkroom.domain.ingest import place
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import immich
 from darkroom.storage import db, paths
-from darkroom.storage.models import Alert, DedupeDecision, Export, ExportPart, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry
+from darkroom.storage.models import Alert, DedupeDecision, Export, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry
 from darkroom.storage.paths import Photos
 
 ON: Final = "on"
-STARTED_PARTS: Final = ("ingesting", "ingested", "failed")
 MANIFEST: Final = json.dumps({"schema": 1, "resource": "takeout_entry", "compound": "single"}, sort_keys=True)
 SETTLE_SECONDS: Final = 24 * 3600.0
 NOT_SETTLED: Final = "not_settled"
@@ -47,15 +46,9 @@ def intent_of(opened: Session, export: Export) -> ManagedImportIntent | None:
     return opened.execute(select(ManagedImportIntent).where(ManagedImportIntent.export_id == export.id, ManagedImportIntent.kind == "import").order_by(ManagedImportIntent.id).limit(1)).scalar_one_or_none()
 
 
-def started(opened: Session, export: Export) -> bool:
-    part = select(ExportPart.id).where(ExportPart.export_id == export.id, ExportPart.ingest_state.in_(STARTED_PARTS)).limit(1)
-    decided = select(TakeoutEntry.id).where(TakeoutEntry.export_id == export.id, TakeoutEntry.decision_id.is_not(None)).limit(1)
-    return export.stage is not None or opened.execute(part).first() is not None or opened.execute(decided).first() is not None
-
-
-def begin(opened: Session, export: Export, person: Person, now: float) -> ManagedImportIntent | None:
+def begin(opened: Session, export: Export, person: Person, fresh: bool, now: float) -> ManagedImportIntent | None:
     intent = intent_of(opened, export)
-    if intent is not None or person.managed_imports != ON or not immich.is_canonical_id(person.immich_user_id) or started(opened, export):
+    if intent is not None or not fresh or person.managed_imports != ON or not immich.is_canonical_id(person.immich_user_id):
         return intent
     db.write_lock(opened)
     intent = ManagedImportIntent(person_id=person.id, export_id=export.id, owner_id=str(person.immich_user_id), resource_manifest=MANIFEST, created_at=now)
