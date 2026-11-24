@@ -7,8 +7,9 @@ import hashlib
 import json
 import math
 import re
+import time
 import urllib.error
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, BinaryIO, Literal
@@ -614,6 +615,13 @@ class Client:
 
 
 @dataclass(frozen=True)
+class CustodyReads:
+    found: dict[str, dict[str, Any]] = field(repr=False)
+    refused: tuple[str, ...] = field(repr=False)
+    complete: bool
+
+
+@dataclass(frozen=True)
 class ManagedReader:
     client: Client = field(repr=False)
     key: str = field(repr=False)
@@ -656,6 +664,29 @@ class ManagedReader:
         if not is_canonical_id(asset_id):
             raise ImmichFailed("not a managed asset id")
         self.check_access()
+        return self.read_custody(asset_id)
+
+    def custody_all(self, asset_ids: Sequence[str], deadline: float | None = None) -> CustodyReads:
+        self.check_access()
+        found: dict[str, dict[str, Any]] = {}
+        refused: list[str] = []
+        for position, asset_id in enumerate(asset_ids):
+            if deadline is not None and time.monotonic() >= deadline:
+                return CustodyReads(found, (*refused, *asset_ids[position:]), False)
+            if not is_canonical_id(asset_id):
+                refused.append(asset_id)
+                continue
+            try:
+                found[asset_id] = self.read_custody(asset_id)
+            except (NotCustody, NotVisible):
+                refused.append(asset_id)
+            except ImmichFailed as failure:
+                if failure.status != 404:
+                    return CustodyReads(found, (*refused, *asset_ids[position:]), False)
+                refused.append(asset_id)
+        return CustodyReads(found, tuple(refused), True)
+
+    def read_custody(self, asset_id: str) -> dict[str, Any]:
         found = self.client.call("GET", asset_path(asset_id), key=self.key)
         if (not isinstance(found, dict) or found.get("id") != asset_id or found.get("ownerId") != self.owner_id
                 or "libraryId" not in found or found["libraryId"] is not None
