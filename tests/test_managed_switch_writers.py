@@ -289,6 +289,26 @@ class FreshExportWaitsTests(unittest.TestCase):
         self.assertIn("Immich-managed imports of jo are stopped", message)
         self.assertNotIn("IMG_7001", message)
 
+    def test_an_on_person_without_a_canonical_immich_user_waits_and_nothing_is_placed_the_old_way(self):
+        world = ManagedWorld(self)
+        export = world.create(photo_in(1), parts=2)
+        flip_elsewhere(world.engine, world.ids["jo"], "on")
+        with Session(world.engine) as other:
+            other.execute(update(Person).where(Person.id == world.ids["jo"]).values(immich_user_id=None))
+            other.commit()
+        before = tree(world.root)
+        for _ in range(2):
+            self.assertEqual(part_ingest.run_queued(world.opened, world.settings, NOW), [])
+        self.assertEqual((self.states(world), self.intents(world), world.google_only(), tree(world.root)), (["queued", "queued"], [], set(), before))
+        self.assertEqual(self.alerts(world), [(f"managed:no_user:{export.id}", "managed_no_user", True)])
+        with Session(world.engine) as other:
+            other.execute(update(Person).where(Person.id == world.ids["jo"]).values(immich_user_id=world.jo().immich_user_id or "11111111-1111-4111-8111-111111111111"))
+            other.commit()
+        world.opened.expire_all()
+        world.ingest(export, 1)
+        self.assertEqual(len(self.intents(world)), 1)
+        self.assertEqual(self.alerts(world), [(f"managed:no_user:{export.id}", "managed_no_user", False)])
+
     def test_an_export_that_waited_for_a_stopped_switch_is_uploaded_once_it_is_on_and_the_alert_closes(self):
         world = ManagedWorld(self, state="stopped")
         export = world.create(world.scenario, parts=3)
@@ -357,6 +377,13 @@ class CliTests(unittest.TestCase):
                 code, out, err = self.call("import-legacy", "--person", "canaryslugperson")
                 self.assertEqual((code, out, err), (1, "", f"import-legacy: {managed_switch.REFUSED}\n"))
                 self.assertEqual(tree(self.base / "photos"), before)
+
+    def test_a_refused_import_legacy_does_not_save_the_folder(self):
+        self.set_state("pausing")
+        code, _, err = self.call("import-legacy", "--person", "canaryslugperson", "--dir", str(self.base / "old"))
+        self.assertEqual((code, err), (1, f"import-legacy: {managed_switch.REFUSED}\n"))
+        with db.session(self.engine) as opened:
+            self.assertIsNone(opened.get(Person, self.person_id).legacy_path)
 
     def test_reconcile_immich_exits_one_with_the_fixed_reason_and_writes_nothing(self):
         for state in PAUSED:

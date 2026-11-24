@@ -276,6 +276,8 @@ def run_import_legacy(slug: str | None, folder: str | None) -> int:
             now = utc_now().timestamp()
             try:
                 if folder:
+                    managed_switch.hold(opened, Photos(settings.photos_root), person, "legacy")
+                    opened.commit()
                     legacy.set_source(opened, Photos(settings.photos_root), person, folder, now)
                     opened.commit()
                 done = legacy.import_person(opened, settings, person, now, queue=legacy.PixelFolderQueue())

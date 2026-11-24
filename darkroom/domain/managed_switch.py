@@ -30,6 +30,8 @@ WAITS: Final[dict[State, str]] = {
 UNKNOWN_STATE: Final = "this person's managed-imports setting is not one Darkroom knows, so this waits"
 REFUSED: Final = "this person's imports go to Immich, so nothing is written to their old folders"
 RECONCILE_PAUSED: Final = "the Immich reconcile is paused while this person's imports are switched to Immich, so it only finishes removals it had begun"
+NO_USER_WAIT: Final = "this person's imports go to Immich but they have no Immich user saved, so this waits until one is"
+NO_USER_ALERT: Final = "Immich-managed imports of {slug} are on but they have no Immich user saved, so their new Takeout export {export} waits. Open Darkroom for details."
 STOPPED_ALERT: Final = "Immich-managed imports of {slug} are stopped, so their new Takeout export {export} waits until they are on again. Open Darkroom for details."
 NO_KEY: Final = "this person has no Immich user and key saved, so their imports can't go to Immich"
 UNKNOWN_REQUEST: Final = "this person's managed-imports setting is not one Darkroom knows, so it is left as it is"
@@ -151,13 +153,20 @@ def begin(opened: Session, settings: config.Settings, export: Export, person: Pe
                                         alerts.Wording(alerts.TITLES["managed_stopped"], STOPPED_ALERT.format(slug=person.slug, export=export.id)), None, now,
                                         about=alerts.person(person.id))
         raise
-    if state_of(person) != "on" or run.way(opened, photos, export) != "fresh" or not immich.is_canonical_id(person.immich_user_id):
+    if state_of(person) != "on" or run.way(opened, photos, export) != "fresh":
         opened.commit()
         return None
+    if not immich.is_canonical_id(person.immich_user_id):
+        opened.rollback()
+        alerts.open_alert_committed(opened, settings, f"managed:no_user:{export.id}", "managed_no_user", person.slug,
+                                    alerts.Wording(alerts.TITLES["managed_no_user"], NO_USER_ALERT.format(slug=person.slug, export=export.id)), None, now,
+                                    about=alerts.person(person.id))
+        raise Paused(NO_USER_WAIT)
     intent = ManagedImportIntent(person_id=person.id, export_id=export.id, owner_id=str(person.immich_user_id), resource_manifest=managed_ingest.MANIFEST, created_at=now)
     opened.add(intent)
     events.record(opened, now, "managed_import_started", f"export {export.id}", person.slug)
     alerts.close(opened, stopped_alert_key(export), now)
+    alerts.close(opened, f"managed:no_user:{export.id}", now)
     opened.commit()
     monitoring.log("export imported to Immich-managed storage", export=export.id)
     return intent
