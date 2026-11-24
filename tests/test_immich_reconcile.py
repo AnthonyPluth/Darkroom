@@ -90,7 +90,7 @@ class StoreTests(ReconcileCase):
         self.photo(id="owned-by-partner", updated_at="2026-01-01T00:00:00.000Z")
         before = tree(self.world.root / "jo" / "originals")
         report = self.run_it()
-        self.assertEqual((report.stored, report.ignored), (1, 2))
+        self.assertEqual((report.stored, report.ignored), (1, 3))
         self.assertEqual(len(self.stored()), 1)
         self.assertEqual(set(tree(self.world.root / "jo" / "originals")) - set(before), {f"immich/{self.stored()[0]}"})
         self.assertNotIn("sams", self.rows())

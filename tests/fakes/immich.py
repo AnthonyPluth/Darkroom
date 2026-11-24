@@ -235,7 +235,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             taken = asked.get("filter", {}).get("takenAt")
             flat_taken = {name: asked[flat] for name, flat in (("gte", "takenAfter"), ("lte", "takenBefore")) if asked.get(flat)}
             found = [a for a in state.assets if (a.owner_id == person.user_id or (state.search_shared and a.id in state.shared))
-                     and (not a.trashed or taken is not None or asked.get("withDeleted") is True)
+                     and (not a.trashed or taken is not None or bool(window) or asked.get("withDeleted") is True)
                      and window.get("gte", "") <= a.updated_at <= window.get("lte", "9999")
                      and in_range(a.taken_at(), taken or flat_taken)
                      and asked.get("checksum") in (None, a.json()["checksum"])]
