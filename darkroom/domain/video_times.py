@@ -10,7 +10,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from darkroom import config, monitoring
-from darkroom.domain import accounts, events, immich_reconcile, index, legacy, media
+from darkroom.domain import events, index, media, writer_locks
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.providers import exiftool
 from darkroom.storage import db
@@ -152,29 +152,13 @@ def write(opened: Session, changes: list[tuple[Stored, Times]], report: Report) 
     opened.commit()
 
 
-def accounts_of(opened: Session, person: Person) -> set[int]:
-    owned = select(Export.account_id).where(Export.owner_person_id == person.id)
-    return accounts.accounts_serving(opened, person.id) | set(opened.execute(owned).scalars())
-
-
 def in_flight(opened: Session, people: list[Person]) -> bool:
-    ids = sorted(set().union(*(accounts_of(opened, person) for person in people)))
+    ids = sorted(set().union(*(writer_locks.accounts_of(opened, person) for person in people)))
     owners = [person.id for person in people]
     theirs = or_(Export.account_id.in_(ids), Export.owner_person_id.in_(owners))
     busy = or_(Export.status.in_(IN_FLIGHT), Export.id.in_(ingest_run.waiting_exports(opened)),
                Export.id.in_(select(ImportRun.export_id).where(ImportRun.status.in_(ingest_run.WAITING))))
     return opened.execute(select(Export.id).where(theirs, busy).limit(1)).first() is not None
-
-
-def hold_locks(stack: contextlib.ExitStack, opened: Session, settings: config.Settings, people: list[Person]) -> None:
-    try:
-        for account_id in sorted(set().union(*(accounts_of(opened, person) for person in people))):
-            stack.enter_context(ingest_run.account_lock(settings, account_id))
-        for person in people:
-            stack.enter_context(legacy.person_lock(settings, person))
-            stack.enter_context(immich_reconcile.person_lock(settings, person))
-    except (ingest_run.Busy, legacy.Busy, immich_reconcile.Busy) as error:
-        raise Busy(BUSY) from error
 
 
 def reread(opened: Session, settings: config.Settings, people: list[Person], now: float, apply: bool = False,
@@ -183,7 +167,10 @@ def reread(opened: Session, settings: config.Settings, people: list[Person], now
     report = Report()
     person_ids = [person.id for person in people]
     with contextlib.ExitStack() as stack:
-        hold_locks(stack, opened, settings, people)
+        try:
+            writer_locks.hold(stack, opened, settings, people, set().union(*(writer_locks.accounts_of(opened, person) for person in people)))
+        except writer_locks.Busy as error:
+            raise Busy(BUSY) from error
         if in_flight(opened, people):
             raise Busy(BUSY)
         opened.commit()
