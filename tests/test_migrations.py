@@ -681,6 +681,64 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(connection.exec_driver_sql("SELECT state, expected_bytes, metadata_hold FROM managed_import_receipts").all(), [("prepared", 5000000000, "no_instant")])
         db.migrate(self.engine)
 
+    def test_0062_managed_hold_resolutions_start_empty_keep_every_receipt_hold_their_rules_and_are_kept_on_undo(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0061")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO managed_import_intents (id, person_id, export_id, owner_id, resource_manifest, created_at) VALUES (1, 1, 1, 'owner', '{}', 1.0)")
+            for number in (1, 2):
+                connection.exec_driver_sql("INSERT INTO managed_import_receipts (id, intent_id, resource_key, compound_key, source_sha1, expected_bytes, expected_metadata, state, updated_at, "
+                                           f"metadata_hold) VALUES ({number}, 1, 'part/{number}', 'part/{number}', '{'a' * 40}', 5, '{{}}', 'prepared', 1.0, 'no_instant')")
+            before = snapshot(connection, ("people", "managed_import_receipts"), " ORDER BY id")
+        db.migrate(self.engine)
+        insert = ("INSERT INTO managed_hold_resolutions (receipt_id, hold, action, offset_minutes, taken_local, state, result, decided_by_person_id, decided_at, applied_at, undone_at) "
+                  "VALUES ({receipt}, '{hold}', '{action}', {offset}, {taken}, '{state}', {result}, NULL, 1.0, {applied}, {undone})")
+
+        def row(receipt=1, hold="unknown_offset", action="offset", offset="60", taken="NULL", state="recorded", result="NULL", applied="NULL", undone="NULL"):
+            return insert.format(receipt=receipt, hold=hold, action=action, offset=offset, taken=taken, state=state, result=result, applied=applied, undone=undone)
+
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+            self.assertEqual(connection.exec_driver_sql("SELECT count(*) FROM managed_hold_resolutions").scalar_one(), 0)
+            connection.exec_driver_sql(row(offset="-720"))
+            connection.exec_driver_sql(row(receipt=2, hold="no_instant", action="capture_time", offset="840", taken="'1900-01-01T00:00:00'"))
+            connection.exec_driver_sql(row(hold="unknown_offset", action="offset", offset="345", state="undone", undone="2.0"))
+            connection.exec_driver_sql(row(hold="unknown_offset", action="skip", offset="NULL", state="superseded", result="'rehold:unwritable'", applied="2.0"))
+            connection.exec_driver_sql(row(hold="unknown_offset", action="offset", offset="-30", state="undone", result="'cleared'", applied="2.0", undone="3.0"))
+        refused = (row(receipt=2, state="recorded"), row(receipt=1, state="applied", applied="2.0", result="'cleared'"), row(receipt=99, state="undone", undone="2.0"),
+                   row(hold="other"), row(action="capture_time", taken="'2020-01-01T00:00:00'", state="undone", undone="2.0"), row(action="accept", offset="NULL", state="undone", undone="2.0"),
+                   row(offset="7", state="undone", undone="2.0"), row(offset="845", state="undone", undone="2.0"), row(offset="-735", state="undone", undone="2.0"),
+                   row(offset="NULL", state="undone", undone="2.0"), row(action="skip", offset="0", state="undone", undone="2.0"),
+                   row(hold="no_instant", action="capture_time", offset="60", taken="'2020-01-01'", state="undone", undone="2.0"),
+                   row(state="other", undone="2.0"), row(state="applied", applied="2.0", undone="NULL", result="NULL"), row(state="undone"), row(state="recorded", result="'cleared'"),
+                   row(state="undone", undone="2.0", result="'made-up'"), row(state="undone", undone="2.0", result="'rehold:'"))
+        for statement in refused:
+            with self.subTest(statement=statement), self.assertRaises(IntegrityError), self.engine.begin() as connection:
+                connection.exec_driver_sql(statement)
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT receipt_id, action, offset_minutes, state FROM managed_hold_resolutions ORDER BY id").all(),
+                             [(1, "offset", -720, "recorded"), (2, "capture_time", 840, "recorded"), (1, "offset", 345, "undone"), (1, "skip", None, "superseded"),
+                              (1, "offset", -30, "undone")])
+        with self.assertRaises(IntegrityError), self.engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM managed_import_receipts WHERE id = 1")
+        with self.assertRaises(RuntimeError), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0061")
+        self.assertIn("managed_hold_resolutions", inspect(self.engine).get_table_names())
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM managed_hold_resolutions")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0061")
+        self.assertNotIn("managed_hold_resolutions", inspect(self.engine).get_table_names())
+        with self.engine.connect() as connection:
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+        db.migrate(self.engine)
+
     def test_0054_retention_attestations_hold_one_active_record_of_each_kind_in_its_shape_and_keep_them_on_undo(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

@@ -313,6 +313,57 @@ class ManagedSameShotHold(Base):
     asset_id: Mapped[str | None] = mapped_column(String)
 
 
+HOLD_ACTIONS = {
+    "unknown_offset": ("offset", "skip"),
+    "no_instant": ("capture_time", "skip"),
+    "unwritable": ("drop_description", "skip"),
+    "not_enriched": ("accept", "record_offset", "recheck"),
+    "not_settled": ("recheck", "accept"),
+    "unusable": ("recheck", "skip"),
+}
+HOLD_RESOLUTION_STATES = ("recorded", "applied", "undone", "superseded")
+HOLD_RESOLUTION_OFFSET_ACTIONS = ("offset", "capture_time", "record_offset")
+HOLD_RESOLUTION_OPEN = "state IN ('recorded', 'applied')"
+HOLD_RESOLUTION_PAIRS = " OR ".join(f"(hold = {hold!r} AND action IN ({', '.join(repr(action) for action in actions)}))" for hold, actions in HOLD_ACTIONS.items())
+HOLD_RESOLUTION_OFFSET = (f"(action IN ({', '.join(repr(action) for action in HOLD_RESOLUTION_OFFSET_ACTIONS)}) AND offset_minutes IS NOT NULL "
+                          "AND offset_minutes >= -720 AND offset_minutes <= 840 AND (offset_minutes / 15) * 15 = offset_minutes) OR "
+                          f"(action NOT IN ({', '.join(repr(action) for action in HOLD_RESOLUTION_OFFSET_ACTIONS)}) AND offset_minutes IS NULL)")
+HOLD_RESOLUTION_TAKEN = "(action = 'capture_time' AND taken_local IS NOT NULL AND length(taken_local) = 19) OR (action != 'capture_time' AND taken_local IS NULL)"
+HOLD_RESOLUTION_STATE = ("(state = 'recorded' AND applied_at IS NULL AND result IS NULL AND undone_at IS NULL) OR "
+                         "(state = 'applied' AND applied_at IS NOT NULL AND result IS NOT NULL AND undone_at IS NULL) OR "
+                         "(state = 'undone' AND undone_at IS NOT NULL) OR (state = 'superseded' AND undone_at IS NULL)")
+HOLD_RESOLUTION_RESULT = ("result IS NULL OR result IN ('cleared', 'still_differs', 'still_unusable', 'rechecked') OR "
+                          "(substr(result, 1, 7) = 'rehold:' AND length(result) > 7)")
+
+
+class ManagedHoldResolution(Base):
+    __tablename__ = "managed_hold_resolutions"
+    __table_args__ = (
+        one_of("hold", tuple(HOLD_ACTIONS), "ck_managed_hold_resolutions_hold"),
+        one_of("state", HOLD_RESOLUTION_STATES, "ck_managed_hold_resolutions_state"),
+        CheckConstraint(HOLD_RESOLUTION_PAIRS, name="ck_managed_hold_resolutions_action"),
+        CheckConstraint(HOLD_RESOLUTION_OFFSET, name="ck_managed_hold_resolutions_offset"),
+        CheckConstraint(HOLD_RESOLUTION_TAKEN, name="ck_managed_hold_resolutions_taken"),
+        CheckConstraint(HOLD_RESOLUTION_STATE, name="ck_managed_hold_resolutions_state_shape"),
+        CheckConstraint(HOLD_RESOLUTION_RESULT, name="ck_managed_hold_resolutions_result"),
+        Index("ix_managed_hold_resolutions_receipt", "receipt_id"),
+        Index("uq_managed_hold_resolutions_open", "receipt_id", unique=True, sqlite_where=text(HOLD_RESOLUTION_OPEN), postgresql_where=text(HOLD_RESOLUTION_OPEN)),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    receipt_id: Mapped[int] = mapped_column(ForeignKey("managed_import_receipts.id", ondelete="RESTRICT"), nullable=False)
+    hold: Mapped[str] = mapped_column(String, nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    offset_minutes: Mapped[int | None] = mapped_column(Integer)
+    taken_local: Mapped[str | None] = mapped_column(String)
+    state: Mapped[str] = mapped_column(String, nullable=False, default="recorded", server_default="recorded")
+    result: Mapped[str | None] = mapped_column(String)
+    previous_metadata: Mapped[str | None] = mapped_column(Text)
+    decided_by_person_id: Mapped[int | None] = mapped_column(ForeignKey("people.id", ondelete="SET NULL"))
+    decided_at: Mapped[float] = mapped_column(Float, nullable=False)
+    applied_at: Mapped[float | None] = mapped_column(Float)
+    undone_at: Mapped[float | None] = mapped_column(Float)
+
+
 class ManagedBackfillItem(Base):
     __tablename__ = "managed_backfill_items"
     __table_args__ = (

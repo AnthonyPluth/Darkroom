@@ -26,7 +26,7 @@ UNUSABLE = {"kind": "trashed"}
 EXPECTED = json.dumps({"description": DESCRIPTION, "latitude": float(COORDINATE), "longitude": 12.3388123})
 
 
-class HoldsApiTests(ApiCase):
+class HoldsWorld(ApiCase):
     def setUp(self):
         super().setUp()
         with Session(self.engine) as opened:
@@ -72,6 +72,8 @@ class HoldsApiTests(ApiCase):
         self.assertEqual(status, 200, body)
         return body
 
+
+class HoldsApiTests(HoldsWorld):
     def test_the_route_needs_a_signed_in_session(self):
         found = routes.find("GET", "/api/holds")
         self.assertIsNotNone(found)
@@ -87,7 +89,7 @@ class HoldsApiTests(ApiCase):
     def test_a_hold_shows_its_file_name_cause_facts_and_the_actions_the_design_allows(self):
         by_id = {row["id"]: row for row in self.listed()["holds"]}
         self.assertEqual(by_id[1], {"id": 1, "source": "import", "person_id": 1, "export_id": 1, "name": "generated-hold-name-canary-one.jpg", "hold": "unknown_offset",
-                                    "reason": holds.CAUSES["unknown_offset"], "facts": CLOCK, "actions": ["offset", "skip"], "bytes_verified_at": None, "updated_at": 1.0})
+                                    "reason": holds.CAUSES["unknown_offset"], "facts": CLOCK, "actions": ["offset", "skip"], "bytes_verified_at": None, "updated_at": 1.0, "resolution": None})
         self.assertEqual((by_id[3]["name"], by_id[3]["export_id"], by_id[3]["facts"], by_id[3]["actions"]), (KEPT_NAME, 1, UNUSABLE, ["recheck", "skip"]))
         self.assertEqual((by_id[4]["name"], by_id[4]["export_id"], by_id[4]["bytes_verified_at"], by_id[4]["actions"]), (BACKFILL_NAME, None, 3.0, ["recheck", "accept"]))
         self.assertEqual((by_id[2]["facts"], by_id[2]["actions"]), (DIFFERS, ["accept", "record_offset", "recheck"]))

@@ -645,7 +645,26 @@
       "frontend": [],
       "tests": [
         "tests/test_every_route.py",
+        "tests/test_managed_hold_resolutions.py",
         "tests/test_managed_holds.py"
+      ]
+    },
+    {
+      "route": "POST /api/holds/{id}/resolve",
+      "auth": "session",
+      "handler": "darkroom.server.api.holds.resolve_hold",
+      "frontend": [],
+      "tests": [
+        "tests/test_managed_hold_resolutions.py"
+      ]
+    },
+    {
+      "route": "POST /api/holds/{id}/undo",
+      "auth": "session",
+      "handler": "darkroom.server.api.holds.undo_hold",
+      "frontend": [],
+      "tests": [
+        "tests/test_managed_hold_resolutions.py"
       ]
     },
     {

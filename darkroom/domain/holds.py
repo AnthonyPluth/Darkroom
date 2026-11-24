@@ -7,7 +7,7 @@ from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import managed_ingest, review
-from darkroom.storage.models import DedupeDecision, ManagedImportIntent, ManagedImportReceipt, MediaItem, ReviewItem, TakeoutEntry
+from darkroom.storage.models import HOLD_ACTIONS, DedupeDecision, ManagedImportIntent, ManagedImportReceipt, MediaItem, ReviewItem, TakeoutEntry
 
 SOURCES: Final = ("import", "kept", "backfill")
 LIST_LIMIT: Final = 100
@@ -22,14 +22,7 @@ CAUSES: Final = {
     "not_settled": "Immich read the photo, but for a day it showed different metadata than Darkroom sent.",
     "unusable": "Immich's copy is in the trash, offline, in an external library or someone else's, so Darkroom can't count it.",
 }
-ACTIONS: Final = {
-    "unknown_offset": ("offset", "skip"),
-    "no_instant": ("capture_time", "skip"),
-    "unwritable": ("drop_description", "skip"),
-    "not_enriched": ("accept", "record_offset", "recheck"),
-    "not_settled": ("recheck", "accept"),
-    "unusable": ("recheck", "skip"),
-}
+ACTIONS: Final = HOLD_ACTIONS
 
 
 def source_of(resource_key: str) -> str | None:

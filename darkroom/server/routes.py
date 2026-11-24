@@ -70,6 +70,8 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/api/review/{id}/resolve", review.resolve, "session"),
     Route("POST", "/api/review/{id}/undo", review.undo, "session"),
     Route("GET", "/api/holds", holds.list_holds, "session"),
+    Route("POST", "/api/holds/{id}/resolve", holds.resolve_hold, "session"),
+    Route("POST", "/api/holds/{id}/undo", holds.undo_hold, "session"),
     Route("GET", "/api/decisions", review.list_decisions, "session"),
     Route("POST", "/api/decisions/{id}/reverse", review.reverse, "session"),
     Route("GET", "/api/media", review.list_media, "session"),

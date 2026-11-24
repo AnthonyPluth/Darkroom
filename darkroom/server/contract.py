@@ -568,6 +568,22 @@ class HoldFacts(TypedDict, total=False):
     intended_offset: int | None
 
 
+class HoldResolution(TypedDict):
+    id: int
+    receipt_id: int
+    hold: Literal["unknown_offset", "no_instant", "unwritable", "not_enriched", "not_settled", "unusable"]
+    action: Literal["offset", "capture_time", "drop_description", "accept", "record_offset", "recheck", "skip"]
+    offset_minutes: int | None
+    taken_local: str | None
+    state: Literal["recorded", "applied", "undone", "superseded"]
+    result: str | None
+    decided_by_person_id: int | None
+    decided_at: float
+    applied_at: float | None
+    undone_at: float | None
+    can_undo: bool
+
+
 class HoldView(TypedDict):
     id: int
     source: Literal["import", "kept", "backfill"]
@@ -580,11 +596,22 @@ class HoldView(TypedDict):
     actions: list[str]
     bytes_verified_at: float | None
     updated_at: float
+    resolution: HoldResolution | None
 
 
 class Holds(TypedDict):
     holds: list[HoldView]
     total: int
+
+
+class HoldResolveBody(TypedDict):
+    action: Literal["offset", "capture_time", "drop_description", "accept", "record_offset", "recheck", "skip"]
+    offset_minutes: NotRequired[int]
+    taken_local: NotRequired[str]
+
+
+class HoldReply(TypedDict):
+    resolution: HoldResolution
 
 
 class ResolveBody(TypedDict):
