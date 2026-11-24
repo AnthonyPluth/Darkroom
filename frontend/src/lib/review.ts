@@ -105,7 +105,8 @@ export function canUndo(review: ReviewSummary, now: number): boolean {
 }
 
 export function undoUnavailable(review: ReviewSummary): string {
-  return review.reversed ? "Reversed, so it can't be undone" : "Too late to undo";
+  if (review.reversed) return "Reversed, so it can't be undone";
+  return review.kept_in_immich ? "Kept in Immich, so it can't be undone" : "Too late to undo";
 }
 
 export function savedSentence(name: string | null): string {

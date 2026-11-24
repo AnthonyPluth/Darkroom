@@ -1,6 +1,6 @@
 # Resolve terminal holds in Immich-managed imports
 
-Design for [#548](https://github.com/AnthonyPluth/Darkroom/issues/548), part of the Immich-managed storage epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530), prepared 2026-11-24. **Draft for the owner's review; no code until it is approved.** It builds on [immich-managed-storage.md](immich-managed-storage.md) (sections 3 to 5 and 8) and on what #533 / PR #541 and #535 built. Nothing here turns on a managed import: `people.managed_imports` and `people.managed_backfill` stay unset outside the tests until their own switches land, so everything below is reachable only from tests until then.
+Design for [#548](https://github.com/AnthonyPluth/Darkroom/issues/548), part of the Immich-managed storage epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530), prepared 2026-11-24. **Approved by the owner on 2026-11-24 (defaults accepted, recorded on #548).** It builds on [immich-managed-storage.md](immich-managed-storage.md) (sections 3 to 5 and 8) and on what #533 / PR #541 and #535 built. Nothing here turns on a managed import: `people.managed_imports` and `people.managed_backfill` stay unset outside the tests until their own switches land, so everything below is reachable only from tests until then.
 
 ## 0. Owner decision this design rests on
 
@@ -76,7 +76,7 @@ The page reads one new route and writes through two (section 6), and builds noth
 Independent of the hold list, and part of #548 (the Second review advisory `f:3db76cfc` on PR #541): after Keep both on a managed pair, the summary gives `undo_until: null` and the page shows `undoUnavailable(review)`, which says "Too late to undo" seconds after the decision. The real reason is that Darkroom never takes a photo back out of Immich.
 
 - `contract.ReviewSummary` gains `kept_in_immich: bool`, true only when the review is `kept_both` and its export is Immich-managed (`review.kept_in_immich`); a pending pair of a managed export is `false`. `make api-contract` regenerates `docs/openapi.json` and `frontend/src/lib/api-types.ts`.
-- `undoUnavailable` returns, in order: "Reversed, so it can't be undone" when reversed (unchanged); the kept-in-Immich text when `kept_in_immich`; otherwise "Too late to undo" (unchanged). Proposed text: **"Kept in Immich, so it can't be undone"**. This is copy on a signed-off page, so the owner signs off the exact words on #548 before it merges (open question 1); no layout changes.
+- `undoUnavailable` returns, in order: "Reversed, so it can't be undone" when reversed (unchanged); the kept-in-Immich text when `kept_in_immich`; otherwise "Too late to undo" (unchanged). Approved text: **"Kept in Immich, so it can't be undone"**, approved by the owner on 2026-11-24 and recorded on #548 (https://github.com/AnthonyPluth/Darkroom/issues/548#issuecomment-7122813221); no layout changes.
 - `frontend/src/lib/review.test.ts` gains a case: `undoUnavailable({ ...summary, kept_in_immich: true })` is the new text and not "Too late to undo"; with `reversed: true` as well it stays "Reversed, so it can't be undone". The existing two cases stay. A backend test asserts the flag is `true` for a kept managed pair and `false` for a pending managed pair and for an old-way pair, with `undo_until` unchanged in each case.
 
 ## 5. Data
@@ -181,7 +181,7 @@ Each its own pull request under 1,000 added lines including tests, landing in or
 
 ## 11. Open questions for the owner
 
-1. **Wording** of the undo text for a pair kept in Immich: proposed "Kept in Immich, so it can't be undone"; and for a resolution that was already sent: "Already sent to Immich, so it can't be undone".
+1. **Wording** of the undo text for a pair kept in Immich: "Kept in Immich, so it can't be undone"; and for a resolution that was already sent: "Already sent to Immich, so it can't be undone". Closed: the owner approved both texts on 2026-11-24, recorded on #548 (https://github.com/AnthonyPluth/Darkroom/issues/548#issuecomment-7122813221).
 2. **Who may see and resolve a hold**: any signed-in member, as Review today (proposed), or only the photo's person and the owner.
 3. **An owner offset that disagrees with the place** Immich will see: refuse (proposed), or allow and let the read-back decide (it would likely end `not_settled`).
 4. **Facts only, or a hint**: the list shows the wall clock, Google's UTC instant and whether a place is known, with no suggested offset (proposed). Showing the offset that would make the clock agree with Google's instant would be a suggestion the owner could just accept.
