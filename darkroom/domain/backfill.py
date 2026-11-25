@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Final
 
-from sqlalchemy import Select, and_, exists, func, or_, select
+from sqlalchemy import ColumnElement, Select, and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
@@ -635,15 +635,13 @@ class Backfill:
         retried = exists(select(row.id).where(mine, row.reason.in_(REVISIT)))
         checked = func.coalesce(select(row.checked_at).where(mine).scalar_subquery(), 0.0)
         finished = ~exists(select(Export.id).where(Export.id == MediaItem.export_id, Export.status.not_in((IMPORTED, *ENDED))))
-        google_only = and_(MediaItem.source == "takeout", MediaItem.path.startswith(f"{self.person.slug}/google-only/"))
         phones = and_(MediaItem.source == "phone", MediaItem.path.startswith(f"{self.person.slug}/originals/{IMMICH_FOLDER}/"))
-        waiting = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, known_contents(), or_(phones, google_only), unsettled,
+        waiting = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, known_contents(), or_(phones, google_only(self.person)), unsettled,
                                                               finished).order_by(retried, checked, MediaItem.id).limit(limit)).scalars().all()
         pending = [item for item in waiting if item.source == "takeout"]
         exports = {item.export_id for item in pending if item.export_id is not None}
         status = dict(self.opened.execute(select(Export.id, Export.status).where(Export.id.in_(exports))).tuples().all()) if exports else {}
-        takeouts = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, known_contents(), google_only)
-                                       .order_by(MediaItem.id)).scalars().all() if pending else []
+        takeouts = takeout_sources(self.opened, self.person) if pending else []
         halves = live_halves(self.opened, self.person, takeouts, pending) if pending else set()
         sources = {item.id: item for item in takeouts}
         pending_ids = {item.id for item in pending}
@@ -678,6 +676,22 @@ class Backfill:
             else:
                 self.takeout(item)
         return self.report
+
+
+def google_only(person: Person) -> ColumnElement[bool]:
+    return and_(MediaItem.source == "takeout", MediaItem.path.startswith(f"{person.slug}/google-only/"))
+
+
+def takeout_sources(opened: Session, person: Person) -> Sequence[MediaItem]:
+    return opened.scalars(select(MediaItem).where(MediaItem.person_id == person.id, known_contents(), google_only(person)).order_by(MediaItem.id)).all()
+
+
+def takeout_held(opened: Session, person: Person, item: MediaItem) -> bool:
+    takeouts = takeout_sources(opened, person)
+    if not any(source.id == item.id for source in takeouts) or item.id in live_halves(opened, person, takeouts, [item]):
+        return True
+    frozen = backfill_live.frozen(opened, person.id, str(person.immich_user_id), [item.id])
+    return item.id in frozen.holds or item.id in same_shots(opened, person, [item])
 
 
 def receipt_query(intent: ManagedImportIntent, item: MediaItem) -> Select[int]:

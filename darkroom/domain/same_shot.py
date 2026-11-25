@@ -168,6 +168,7 @@ def make_hold(opened: Session, intent: ManagedImportIntent, receipt_id: int, dec
         opened.commit()
         return "held" if found else "clear"
     row.metadata_hold, row.updated_at = HOLD, now
+    managed_upload.supersede_resolution(opened, receipt_id)
     opened.add(ManagedSameShotHold(person_id=intent.person_id, owner_id=intent.owner_id, receipt_id=receipt_id, found_at=now, candidates=snapshot(verdict)))
     events.record(opened, now, "same_shot_held", f"receipt {receipt_id}", f"{len(verdict.candidates)} candidates{', crowded' if verdict.crowded else ''}")
     opened.commit()
