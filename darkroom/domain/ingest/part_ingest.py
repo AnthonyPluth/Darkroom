@@ -110,6 +110,28 @@ def part_of(opened: Session, export_id: int, number: int) -> ExportPart | None:
     return opened.execute(select(ExportPart).where(ExportPart.export_id == export_id, ExportPart.number == number)).scalar_one_or_none()
 
 
+@contextlib.contextmanager
+def listed_part(photos: Photos, export: Export, part: ExportPart, person: Person) -> Iterator[tuple[zipfile.ZipFile, dict[str, zipfile.ZipInfo]]]:
+    path = unpack.part_path(export, part, photos, person)
+    with unpack.open_part(photos, path, part.number) as handle, part_reader.zip_of(handle, path, part.number) as archive:
+        yield archive, {entry.name: entry.info for entry in part_reader.entry_listing(archive.infolist())}
+
+
+@contextlib.contextmanager
+def resolution_copy(photos: Photos, export: Export, part: ExportPart, person: Person, entry: TakeoutEntry) -> Iterator[Path]:
+    if entry.held_path is not None:
+        yield paths.held_copy_at(photos, entry.held_path, unpack.staging_name(export))
+        return
+    try:
+        with listed_part(photos, export, part, person) as (archive, infos):
+            info = infos.get(entry.name)
+            if info is None:
+                raise part_reader.PartRefused("listing_differs", "the part no longer lists the photo it held")
+            yield part_reader.stream_one(photos, person, export, archive, entry, info).path
+    finally:
+        part_reader.sweep_part_scratch(photos, person, export)
+
+
 def run_queued(opened: Session, settings: config.Settings, now: float, tools: run.Tools | None = None,
                beat: heartbeat.Heartbeat | None = None) -> list[tuple[int, int]]:
     ran = []
@@ -261,11 +283,8 @@ class Ingest:
         part = part_of(self.opened, self.export.id, number)
         if part is None:
             raise unpack.UnpackFailed("the part is not in the ledger")
-        path = unpack.part_path(self.export, part, self.photos, self.person)
         with contextlib.ExitStack() as opening:
-            handle = opening.enter_context(unpack.open_part(self.photos, path, number))
-            archive = opening.enter_context(part_reader.zip_of(handle, path, number))
-            infos = {entry.name: entry.info for entry in part_reader.entry_listing(archive.infolist())}
+            archive, infos = opening.enter_context(listed_part(self.photos, self.export, part, self.person))
             self.slot = number, opening.pop_all(), archive, infos
         return archive, infos
 

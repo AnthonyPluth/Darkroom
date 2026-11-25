@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from darkroom.providers import immich
 from darkroom.storage import db
-from darkroom.storage.models import ManagedImportIntent, ManagedImportReceipt
+from darkroom.storage.models import HOLD_ACTIONS, ManagedHoldResolution, ManagedImportIntent, ManagedImportReceipt
 
 MAX_SENDS = 3
 LEASE_SECONDS = 3600.0
@@ -49,8 +49,16 @@ def move(opened: Session, row: ManagedImportReceipt, before: tuple[str, ...], no
     if row.asset_id is not None:
         where.append(ManagedImportReceipt.asset_id == row.asset_id)
     changed = opened.connection().execute(update(ManagedImportReceipt).where(*where).values(updated_at=now, **values)).rowcount == 1
+    hold = values.get("metadata_hold")
+    if changed and isinstance(hold, str) and hold in HOLD_ACTIONS:
+        supersede_resolution(opened, row.id)
     opened.commit()
     return changed
+
+
+def supersede_resolution(opened: Session, receipt_id: int) -> None:
+    opened.execute(update(ManagedHoldResolution).where(ManagedHoldResolution.receipt_id == receipt_id, ManagedHoldResolution.state == "applied",
+                                                       ManagedHoldResolution.result == "cleared").values(state="superseded"))
 
 
 def hold_unusable(opened: Session, row: ManagedImportReceipt, before: tuple[str, ...], now: float, kind: str, reason: str = UNAVAILABLE) -> Report:
@@ -64,8 +72,8 @@ def kind_of(error: immich.ImmichFailed) -> str:
 
 def claim(opened: Session, row: ManagedImportReceipt, now: float) -> int:
     attempt, lease = row.send_attempts + 1, ManagedImportReceipt.send_lease_until
-    unheld = or_(ManagedImportReceipt.metadata_hold.is_(None), ManagedImportReceipt.metadata_hold != SAME_SHOT_HOLD)
-    if not move(opened, row, (row.state,), now, ManagedImportReceipt.send_attempts == row.send_attempts, or_(lease.is_(None), lease <= now), unheld,
+    if not move(opened, row, (row.state,), now, ManagedImportReceipt.send_attempts == row.send_attempts, or_(lease.is_(None), lease <= now),
+                ManagedImportReceipt.metadata_hold == row.metadata_hold, ManagedImportReceipt.expected_metadata == row.expected_metadata,
                 state="outcome_unknown", send_attempts=attempt, send_lease_until=now + LEASE_SECONDS):
         raise Moved
     return attempt
@@ -125,7 +133,8 @@ def send(opened: Session, reader: immich.ManagedReader, row: ManagedImportReceip
     return returned(opened, reader, fresh(opened, row.id), result.asset_id, result.status, now)
 
 
-def upload_receipt(opened: Session, reader: immich.ManagedReader, receipt_id: int, body: Body, now: float) -> Report:
+def upload_receipt(opened: Session, reader: immich.ManagedReader, receipt_id: int, body: Body, now: float, *,
+                   expected_metadata: str | None = None) -> Report:
     row = fresh(opened, receipt_id)
     intent = opened.get(ManagedImportIntent, row.intent_id)
     owner = None if intent is None else intent.owner_id
@@ -133,6 +142,8 @@ def upload_receipt(opened: Session, reader: immich.ManagedReader, receipt_id: in
     if reader.access != "import" or owner is None or reader.owner_id != owner:
         return Report("pending", "the Immich key is not this import's owner")
     for _ in range(MAX_SENDS):
+        if expected_metadata is not None and expected_metadata != row.expected_metadata:
+            return Report("pending", "the receipt's intended metadata changed")
         if row.metadata_hold == SAME_SHOT_HOLD:
             return Report("held", "the photo waits for the owner's decision")
         if row.state in VERIFIED:
