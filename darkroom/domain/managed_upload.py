@@ -180,15 +180,22 @@ def whole(reader: immich.ManagedReader, still: immich.BulkMatch, video: immich.B
 
 
 def preflight(reader: immich.ManagedReader, still: ManagedImportReceipt, video: ManagedImportReceipt) -> Preflight:
+    return preflight_matches(reader, still, video)[0]
+
+
+def preflight_matches(reader: immich.ManagedReader, still: ManagedImportReceipt,
+                      video: ManagedImportReceipt) -> tuple[Preflight, tuple[str, str] | None]:
     seen_video, seen_still = reader.bulk_check(video.source_sha1), reader.bulk_check(still.source_sha1)
     if seen_video is None and seen_still is None:
-        return "go"
+        return "go", None
     if any(seen is not None and seen.trashed for seen in (seen_video, seen_still)):
-        return "conflict"
+        return "conflict", None
     if seen_still is None:
-        return "go" if explained(seen_video, video) else "conflict"
+        return ("go" if explained(seen_video, video) else "conflict"), None
     if seen_video is None:
-        return "conflict"
+        return "conflict", None
     if explained(seen_video, video) and explained(seen_still, still):
-        return "go"
-    return "go" if whole(reader, seen_still, seen_video) else "conflict"
+        return "go", None
+    if whole(reader, seen_still, seen_video):
+        return "go", (seen_still.asset_id, seen_video.asset_id)
+    return "conflict", None

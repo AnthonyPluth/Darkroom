@@ -6,10 +6,10 @@ from zipfile import ZipFile
 
 from sqlalchemy import select
 
-from darkroom.domain import backfill, hold_resolutions, managed_ingest, managed_metadata, managed_upload, review, xmp
+from darkroom.domain import backfill, backfill_live, hold_resolutions, managed_ingest, managed_metadata, managed_upload, review, xmp
 from darkroom.domain.ingest import finish_export
 from darkroom.storage import db
-from darkroom.storage.models import Event, ManagedHoldResolution, ManagedImportIntent, ManagedImportReceipt, ReviewItem
+from darkroom.storage.models import Event, ManagedCompound, ManagedCompoundMember, ManagedHoldResolution, ManagedImportIntent, ManagedImportReceipt, ReviewItem
 from tests.import_world import DAY, NOW
 from tests.privacy import no_leaks
 from tests.test_backfill import MOMENT, BackfillWorld
@@ -227,6 +227,26 @@ class PreUploadResolutionTests(unittest.TestCase):
         self.tick(world)
         self.assertEqual(world.opened.get(ManagedHoldResolution, resolution_id).state, "recorded")
         self.assertEqual(world.opened.get(ManagedImportReceipt, receipt.id).metadata_hold, "unwritable")
+        self.assertEqual(world.uploads(), [])
+
+    def test_a_backfill_resolution_does_not_send_a_frozen_live_photo_member_on_its_own(self):
+        world = BackfillWorld(self)
+        world.run_managed(without_time, parts=1)
+        world.backfill()
+        item = world.google_only_item(NAME)
+        receipt = world.opened.scalars(select(ManagedImportReceipt)).one()
+        resolution_id = self.resolve(world, receipt.id)
+        compound = ManagedCompound(intent_id=receipt.intent_id, compound_key=f"{backfill_live.LIVE_KEY}{item.id}", kind="live_photo", frozen_at=NOW + 70)
+        world.opened.add(compound)
+        world.opened.flush()
+        world.opened.add(ManagedCompoundMember(compound_id=compound.id, intent_id=receipt.intent_id, resource_key=f"{backfill.SOURCE}{item.id}", role="live_still",
+                                               source_sha1=item.sha1, expected_bytes=item.bytes))
+        world.opened.commit()
+
+        self.tick(world)
+
+        self.assertEqual(world.opened.get(ManagedHoldResolution, resolution_id).state, "recorded")
+        self.assertEqual(world.opened.get(ManagedImportReceipt, receipt.id).metadata_hold, "no_instant")
         self.assertEqual(world.uploads(), [])
 
     def test_a_kept_receipt_rechecks_its_copy_before_retrying_a_saved_metadata_plan(self):

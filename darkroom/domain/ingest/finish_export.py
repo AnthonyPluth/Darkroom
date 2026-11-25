@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
@@ -293,21 +293,6 @@ class Finish(part_ingest.Ingest):
         self.export.stage = self.row.stage = "placed"
         self.commit()
 
-    def items(self, canon: Canon) -> list[managed_ingest.Item]:
-        live = live_roots(canon)
-        grouping = managed_compound.groups(canon)
-        pairs: dict[int, tuple[managed_compound.Pair, managed_compound.MemberRole]] = {}
-        for each in grouping.pairs:
-            pairs[each.still.root.id], pairs[each.video.root.id] = (each, "live_still"), (each, "live_video")
-        sidecars = {unit.root.id: unit.sidecar_id for unit in canon.units}
-        found = []
-        for unit in canon.units:
-            pair, role = pairs.get(unit.root.id, (None, None))
-            sidecar_id = sidecars[pair.still.root.id] if pair is not None and role == "live_video" and unit.item.sidecar_from_still else unit.sidecar_id
-            found.append(managed_ingest.Item(unit.root, unit.path, self.text_of(sidecar_id), unit.root.id in live, unit.item.sidecar_from_still, pair, role,
-                                             grouping.held.get(unit.root.id)))
-        return found
-
     def send_to_immich(self) -> None:
         intent = managed_ingest.intent_of(self.opened, self.export)
         if intent is None:
@@ -317,7 +302,7 @@ class Finish(part_ingest.Ingest):
         try:
             reader = managed_ingest.reader_of(self.settings, self.person, intent, self.tools.immich)
             uploads = managed_ingest.Uploads(self.opened, self.photos, self.export, intent, reader, self.now)
-            due = uploads.due(self.items(canonical(self.opened, self.export)))
+            due = uploads.due(upload_items(canonical(self.opened, self.export), self.texts))
             if due:
                 reader.check_access()
         except immich.ImmichFailed as error:
@@ -350,14 +335,46 @@ class Finish(part_ingest.Ingest):
 
 
 def live_roots(canon: Canon) -> set[int]:
-    stills = {str(unit.item.live_pair_of) for unit in canon.units if unit.item.live_pair_of is not None}
+    stills = {str(item.live_pair_of) for item in canon.report.items if item.live_pair_of is not None}
     return {unit.root.id for unit in canon.units if unit.item.live_pair_of is not None or unit.path in stills}
+
+
+def upload_items(canon: Canon, texts: Mapping[int, str]) -> list[managed_ingest.Item]:
+    live = live_roots(canon)
+    grouping = managed_compound.groups(canon)
+    pairs: dict[int, tuple[managed_compound.Pair, managed_compound.MemberRole]] = {}
+    for each in grouping.pairs:
+        pairs[each.still.root.id], pairs[each.video.root.id] = (each, "live_still"), (each, "live_video")
+    sidecars = {unit.root.id: unit.sidecar_id for unit in canon.units}
+    found = []
+    for unit in canon.units:
+        pair, role = pairs.get(unit.root.id, (None, None))
+        sidecar_id = sidecars[pair.still.root.id] if pair is not None and role == "live_video" and unit.item.sidecar_from_still else unit.sidecar_id
+        sidecar = None if sidecar_id is None else texts.get(sidecar_id)
+        reason = grouping.held.get(unit.root.id)
+        found.append(managed_ingest.Item(unit.root, unit.path, sidecar, unit.root.id in live or reason is not None, unit.item.sidecar_from_still, pair, role,
+                                         reason))
+    return found
 
 
 def live_decisions(opened: Session, export: Export) -> set[int]:
     canon = canonical(opened, export)
-    live = live_roots(canon)
+    live = live_roots(canon) | managed_compound.groups(canon).held.keys()
     return {unit.root.decision_id for unit in canon.units if unit.root.id in live and unit.root.decision_id is not None}
+
+
+def live_review_items(opened: Session, export: Export, decision_id: int) -> tuple[managed_ingest.Item, managed_ingest.Item]:
+    if not complete(opened, export) or run.before(export, "placed"):
+        raise managed_ingest.Refused("the Live Photo can be reviewed once all parts of the export have been processed")
+    rows = opened.execute(select(TakeoutSidecar.entry_id, TakeoutSidecar.text).where(TakeoutSidecar.export_id == export.id)).all()
+    items = upload_items(canonical(opened, export), {entry_id: text for entry_id, text in rows})
+    chosen = next((item for item in items if item.root.decision_id == decision_id), None)
+    if chosen is None or chosen.pair is None:
+        if chosen is not None and chosen.hold == "live_ambiguous":
+            raise managed_ingest.Refused("live_ambiguous: the Live Photo's other half could not be identified")
+        raise managed_ingest.Refused(managed_ingest.LIVE_PARTIAL)
+    roots = {item.root.id: item for item in items}
+    return roots[chosen.pair.still.root.id], roots[chosen.pair.video.root.id]
 
 
 def complete(opened: Session, export: Export) -> bool:

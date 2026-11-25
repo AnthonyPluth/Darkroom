@@ -56,8 +56,7 @@ def backfill_source(opened: Session, photos: Photos, stack: ExitStack, receipt: 
         export = opened.get(Export, item.export_id, populate_existing=True)
         if export is None or export.status != backfill.IMPORTED:
             raise UnreadableSource
-    halves, near = backfill.takeout_holds(opened, person, [item])
-    if item.id in halves or item.id in near:
+    if backfill.takeout_held(opened, person, item):
         raise UnreadableSource
     handle = stack.enter_context(paths.open_library_file(photos, person.slug, item.path))
     return Source(handle, Path(item.path).name, item.sidecar_json)

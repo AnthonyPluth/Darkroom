@@ -1,6 +1,6 @@
 # Live Photo compounds in Immich-managed imports
 
-Design for [#547](https://github.com/AnthonyPluth/Darkroom/issues/547), part of the Immich-managed storage epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530), prepared 2026-11-24. It also settles the shared part of [#553](https://github.com/AnthonyPluth/Darkroom/issues/553) (backfilling Live Photos from `google-only/`). **Draft for the owner's review; no code follows until it is signed off.** The approved parent design is [immich-managed-storage.md](immich-managed-storage.md) (cited below as "#259, section N"); nothing here relaxes it.
+Design for [#547](https://github.com/AnthonyPluth/Darkroom/issues/547), part of the Immich-managed storage epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530), prepared 2026-11-24. It also settles the shared part of [#553](https://github.com/AnthonyPluth/Darkroom/issues/553) (backfilling Live Photos from `google-only/`). The owner signed off on the design in [PR #563](https://github.com/AnthonyPluth/Darkroom/pull/563#issuecomment-7121859590). The interim rules in section 11 apply until the open questions are answered. The approved parent design is [immich-managed-storage.md](immich-managed-storage.md) (cited below as "#259, section N").
 
 ## 1. Where things stand
 
