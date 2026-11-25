@@ -1,6 +1,6 @@
 # Recovery-point gate for managed cleanup
 
-Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. The owner accepted its proposed defaults on 2026-11-24 (recorded on #545: https://github.com/AnthonyPluth/Darkroom/issues/545#issuecomment-7131017264); slice A (the owner's records) is built, and so is the first part of slice B (the `recovery_points` and `recovery_point_assets` tables of migration 0059, the manifest, `ManagedReader.custody_all` and `run.py recovery-point begin`), and so is the rest of slice B (`recovery-point finish`, the abandonment of an open point in the cleanup tick, the two alerts and [the deployment docs' hook example](../deploy/backup-hook.md)); the other slices are not. It fills in the gate that [`immich-managed-storage.md`](immich-managed-storage.md) (sections 4, 8, 9 and 10) requires before Darkroom may delete anything an Immich-managed import left in the inbox. Until the slices in section 9 land and the owner records what section 6 asks for, cleanup keeps every zip, held copy and review hold of a managed export, as it does today.
+Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. The owner accepted its proposed defaults, including the boundary text digest. Slices A through C implement the owner records, [backup hook](../deploy/backup-hook.md), alerts, and refusal reporting. Slices D and E add release after verification and owner opt-in. Until then, cleanup keeps every zip, held copy and review hold of a managed import. [Owner decision](https://github.com/AnthonyPluth/Darkroom/issues/545#issuecomment-7131017264) · [Managed storage design](immich-managed-storage.md)
 
 ## 1. Where things stand
 
@@ -10,7 +10,7 @@ What the code does today:
 
 | Where | What it does for a managed export |
 | --- | --- |
-| `darkroom/domain/ingest/cleanup.py`, `clean_export` | `place.managed_import(...)` is true, so it counts the export as kept and records one `cleanup_kept` event with `managed_ingest.KEPT_ONLY` ("cleanup of an Immich-managed import stays off until the owner records the restore rehearsal (#266)"). Nothing is removed. |
+| `darkroom/domain/ingest/cleanup.py`, `clean_export` | Counts the export as kept. When its first refusal changes, records a `cleanup_kept` event with the fixed reason. |
 | `cleanup.py`, `clean_holds` | `managed_ingest.hold_pinned(review)` is true, so the review hold is kept. |
 | `darkroom/domain/ingest/part_free.py`, `shared_checks` | `managed(export)` raises `Refused("managed")`, so phase 2 frees neither a part's zip nor a held copy. |
 
@@ -167,7 +167,7 @@ Three things, all by command in the container, each printing what it stored:
 2. **The remote-deletion boundary.** After saying so on #266 (runbook row 9): `python run.py retention accept-boundary --evidence <the #266 comment URL>`. It prints the boundary from section 2 and stores nothing unless the command is given `--accept`.
 3. **The backup hook**, section 5: wired once into the owner's backup job.
 
-`python run.py retention withdraw rehearsal|boundary` withdraws one; from the next tick nothing is released. `python run.py retention status` prints, without names or paths: the active attestations and their dates, the latest recovery points and their states, and how many managed units are waiting on each condition.
+`python run.py retention withdraw rehearsal|boundary` withdraws an attestation. `python run.py retention status` prints the active attestations and their dates, the latest open and finished recovery points, and counts of managed files by their first refusal. When a file passes every prerequisite evaluated in slice C, the command counts it under `release_off`. For G7 it compares Google sidecar fields conservatively against recorded metadata on the verified keeper. Missing evidence keeps the file. A release still requires the fresh Immich read in G12, the on-disk proof in G11, and the release setting from slice D.
 
 Why the database, not an environment variable or a file: an attestation must be deliberate (a variable can be copied between setups unseen), auditable (who recorded it, when, with which evidence) and part of the Darkroom backup, so a restore keeps it. Why the command line, not a web page: a web page needs a design the owner signs off first (promise 6), and these are rare owner-only actions; a page can follow if the owner wants one (section 10).
 
