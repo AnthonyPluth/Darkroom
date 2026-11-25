@@ -660,7 +660,7 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
         except managed_switch.Refused as error:
             for queued in exports.parts_of(opened, export.id):
                 if queued.ingest_state in (QUEUED, INGESTING):
-                    queued.ingest_state, queued.ingest_refusal = REFUSED, "managed_switch"
+                    queued.ingest_state, queued.ingest_refusal = REFUSED, None
             run.refused_import(opened, settings, export, error, now, tools)
             return PartIngest(refused=True)
         run.owner_person(opened, export, claim=True)

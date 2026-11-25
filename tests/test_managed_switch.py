@@ -160,6 +160,10 @@ class RouteTests(unittest.TestCase):
         self.assertTrue(world.ingest(export, 2).refused)
         self.assertEqual(self.intents(world), [])
         self.assertEqual(world.google_only(), set())
+        part = world.part(export, 2)
+        self.assertEqual((part.ingest_state, part.ingest_refusal), ("refused", None))
+        failed = run.latest_run(world.opened, export.id)
+        self.assertEqual((failed.status, failed.error), ("failed", managed_switch.REFUSED))
 
     def test_an_export_with_a_staging_tree_stays_old(self):
         world = ManagedWorld(self)
