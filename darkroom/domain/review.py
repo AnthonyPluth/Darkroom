@@ -11,11 +11,11 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import monitoring
-from darkroom.domain import accounts, backfill, dedupe, events, exports, managed_ingest, media, people, pixel_source, same_shot, thumbs, xmp
+from darkroom.domain import accounts, backfill, dedupe, events, exports, managed_ingest, managed_switch, media, people, pixel_source, same_shot, thumbs, xmp
 from darkroom.domain.ingest import cleanup, finish_export, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
-from darkroom.storage import paths
+from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Person, PixelCopy, ReviewItem, User, known_contents
 from darkroom.storage.paths import Photos
 
@@ -343,6 +343,16 @@ def place_digest(relative: str) -> str:
     return hashlib.sha256(relative.encode("utf-8", "surrogateescape")).hexdigest()[:16]
 
 
+def guard_folders(opened: Session, photos: Photos, people: set[int]) -> None:
+    for person_id in sorted(people):
+        person = opened.get(Person, person_id)
+        if person is not None:
+            try:
+                managed_switch.hold(opened, photos, person, "review_folder")
+            except (managed_switch.Refused, managed_switch.Paused) as error:
+                raise WrongState(str(error)) from None
+
+
 def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: FileEffects, read: xmp.Reader,
               write: xmp.Writer) -> tuple[set[int], list[str], str]:
     hold = cleanup.hold_file(photos, hit.export, hit.review)
@@ -351,6 +361,7 @@ def keep_both(opened: Session, photos: Photos, hit: Found, now: float, effects: 
         raise WrongState("the held copy from the export is gone, so it cannot be kept")
     if person is None:
         raise WrongState("the export's account has no default person")
+    guard_folders(opened, photos, {person.id})
     item, fields = kept_fields(opened, photos, hit, hold, person.id, now, read)
     adopted: list[str] = []
     found: list[str] = []
@@ -475,6 +486,7 @@ def resolve(opened: Session, photos: Photos, review_id: int, action: str, now: f
             read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp, by: int | None = None) -> Changed:
     if action not in ACTIONS:
         raise WrongState("the only action is keep_both; skip leaves the pair for later and saves nothing")
+    db.write_lock(opened)
     hit = found(opened, review_id)
     if hit.review.status != "pending":
         raise WrongState("this pair is already decided; undo that decision first")
@@ -573,7 +585,12 @@ def take_back(opened: Session, photos: Photos, hit: Found, hold: Path, effects: 
 
 
 def undo(opened: Session, photos: Photos, review_id: int, now: float, effects: FileEffects, by: int | None = None) -> Changed:
+    db.write_lock(opened)
     hit = found(opened, review_id)
+    managed = kept_in_immich(opened, hit.decision)
+    owner = exports.owner_of(opened, hit.export)
+    if not managed and owner is not None:
+        guard_folders(opened, photos, {owner.id})
     if hit.review.status not in RESOLVED or hit.review.resolved_at is None:
         raise WrongState("only a kept pair can be undone")
     if hit.decision.reversed_at is not None:
@@ -583,8 +600,15 @@ def undo(opened: Session, photos: Photos, review_id: int, now: float, effects: F
     hold = cleanup.hold_file(photos, hit.export, hit.review)
     if hold is None:
         raise WrongState("the held copy from the export is gone, so this decision can no longer be undone")
-    if kept_in_immich(opened, hit.decision):
+    if managed:
         raise WrongState("this pair was kept in Immich, and Darkroom never takes a photo back out of Immich")
+    item = None if hit.decision.takeout_item_id is None else opened.get(MediaItem, hit.decision.takeout_item_id)
+    if item is not None:
+        writers = {item.person_id}
+        previous = found_by(opened, hit.review, item)
+        if previous is not None:
+            writers.add(previous[0])
+        guard_folders(opened, photos, writers - (set() if owner is None else {owner.id}))
     people, token = take_back(opened, photos, hit, hold, effects)
     changed = Changed(hit.export, people)
     hit.review.status, hit.review.resolved_at = "pending", None
@@ -645,12 +669,16 @@ def reassign_checks(opened: Session, item: MediaItem, person_id: int) -> tuple[E
 
 def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now: float, effects: FileEffects,
              read: xmp.Reader = exiftool.read, write: xmp.Writer = exiftool.write_xmp, by: int | None = None) -> tuple[MediaItem, Changed]:
-    item = opened.get(MediaItem, item_id)
+    db.write_lock(opened)
+    item = opened.get(MediaItem, item_id, populate_existing=True)
     if item is None:
         raise NoSuchItem("no such photo")
     export, current, target = reassign_checks(opened, item, person_id)
     if target.id == current.id:
         return item, Changed(export)
+    guard_folders(opened, photos, {current.id, target.id})
+    if item.person_id != current.id:
+        raise WrongState("the photo changed people before the move, so it was left where it is")
     if same_shot.pending_for_item(opened, item.id):
         raise WrongState(same_shot.WAITS_FOR_REASSIGNMENT)
     try:

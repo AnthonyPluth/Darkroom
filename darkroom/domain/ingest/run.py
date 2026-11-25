@@ -487,6 +487,12 @@ def failed(opened: Session, settings: config.Settings, export_id: int, run_id: i
     opened.rollback()
     export, run = opened.get(Export, export_id), opened.get(ImportRun, run_id)
     public = str(error) if isinstance(error, StageFailed) else f"{type(error).__name__} during the import"
+    record_failure(opened, settings, export, run, export_id, run_id, public, now, tools)
+    monitoring.log("import failed", export=export_id, error=type(error).__name__)
+
+
+def record_failure(opened: Session, settings: config.Settings, export: Export | None, run: ImportRun | None,
+                   export_id: int, run_id: int, public: str, now: float, tools: Tools) -> None:
     if export is not None:
         export.status = "failed"
     if run is not None:
@@ -496,7 +502,12 @@ def failed(opened: Session, settings: config.Settings, export_id: int, run_id: i
                       alerts.failure(f"The import of export {export_id}"), None, now, notifier=tools.notifier,
                       about=alerts.account(export.account_id) if export is not None else alerts.NOBODY)
     opened.commit()
-    monitoring.log("import failed", export=export_id, error=type(error).__name__)
+
+
+def refused_import(opened: Session, settings: config.Settings, export: Export, reason: RuntimeError, now: float, tools: Tools) -> ImportRun:
+    row = current_run(opened, export, now)
+    record_failure(opened, settings, export, row, export.id, row.id, str(reason), now, tools)
+    return row
 
 
 def run_stages(opened: Session, settings: config.Settings, export: Export, now: float, tools: Tools) -> ImportRun:
@@ -542,14 +553,27 @@ def run_stages(opened: Session, settings: config.Settings, export: Export, now: 
 
 
 def import_export(opened: Session, settings: config.Settings, export: Export, now: float, tools: Tools | None = None) -> ImportRun:
+    from darkroom.domain import managed_switch
+
     if export.status == "imported":
         raise AlreadyImported("this export is already imported")
     if export.status not in IMPORTABLE:
         raise NotReady("this export has not been downloaded yet")
     with account_lock(settings, export.account_id):
+        db.write_lock(opened)
         opened.refresh(export)
         if export.status == "imported":
             raise AlreadyImported("this export is already imported")
+        person = exports.owner_of(opened, export)
+        if person is not None:
+            try:
+                managed_switch.check(opened, Photos(settings.photos_root), person, "whole_import", export)
+            except managed_switch.Refused as error:
+                last = latest_run(opened, export.id)
+                if export.stage == "queued" or (last is not None and last.status in WAITING):
+                    return refused_import(opened, settings, export, error, now, tools or Tools())
+                opened.rollback()
+                raise
         return run_stages(opened, settings, export, now, tools or Tools())
 
 
@@ -577,7 +601,7 @@ def staged_whole(opened: Session, photos: Photos | None, export: Export) -> bool
     return photos is not None and staging_of(opened, photos, export) is not None
 
 
-def way(opened: Session, photos: Photos, export: Export) -> Way:
+def way(opened: Session, photos: Photos | None, export: Export) -> Way:
     if managed_ingest.intent_of(opened, export) is not None:
         return "managed"
     if export.stage in OLD_WAY_STAGES:
@@ -586,7 +610,7 @@ def way(opened: Session, photos: Photos, export: Export) -> Way:
              select(ExportPart.id).where(ExportPart.export_id == export.id, ExportPart.ingest_state.in_(OLD_WAY_PARTS)).limit(1),
              select(TakeoutEntry.id).where(TakeoutEntry.export_id == export.id, or_(TakeoutEntry.decision_id.is_not(None), TakeoutEntry.outcome != "listed",
                                                                                      TakeoutEntry.held_path.is_not(None))).limit(1))
-    if any(opened.execute(query).first() is not None for query in found) or staging_of(opened, photos, export) is not None:
+    if any(opened.execute(query).first() is not None for query in found) or (photos is not None and staging_of(opened, photos, export) is not None):
         return "old"
     return "fresh"
 
@@ -595,12 +619,24 @@ def has_part_states(opened: Session, export: Export) -> bool:
     return opened.execute(select(ExportPart.id).where(ExportPart.export_id == export.id, ExportPart.ingest_state.in_(PER_PART_STATES)).limit(1)).first() is not None
 
 
-def route_of(opened: Session, photos: Photos | None, export: Export) -> str:
+def planned_route(opened: Session, photos: Photos | None, export: Export) -> str:
     if export.ingest_route in (PER_PART, WHOLE):
         return export.ingest_route
-    route = PER_PART if has_part_states(opened, export) or not staged_whole(opened, photos, export) else WHOLE
-    export.ingest_route = route
+    return PER_PART if has_part_states(opened, export) or not staged_whole(opened, photos, export) else WHOLE
+
+
+def route_of(opened: Session, photos: Photos | None, export: Export) -> str:
+    export.ingest_route = route = planned_route(opened, photos, export)
     return route
+
+
+def admit_import(opened: Session, photos: Photos | None, export: Export) -> str:
+    from darkroom.domain import managed_switch
+
+    person = exports.owner_of(opened, export)
+    if person is None:
+        return planned_route(opened, photos, export)
+    return managed_switch.import_route(opened, photos, person, export)
 
 
 def adopt(opened: Session, export: Export, now: float) -> int:
@@ -643,6 +679,8 @@ def failed_parts(opened: Session, export_id: int) -> int:
 
 
 def route_pending(opened: Session, settings: config.Settings, now: float) -> list[int]:
+    from darkroom.domain import managed_switch
+
     db.write_lock(opened)
     photos = Photos(settings.photos_root)
     candidates = (select(Export.id).join(ExportPart, ExportPart.export_id == Export.id)
@@ -651,7 +689,17 @@ def route_pending(opened: Session, settings: config.Settings, now: float) -> lis
     adopted = []
     for export_id in opened.execute(candidates).scalars().all():
         export = opened.get(Export, export_id)
-        if export is not None and route_of(opened, photos, export) == PER_PART and adopt(opened, export, now):
+        if export is None:
+            continue
+        try:
+            route = admit_import(opened, photos, export)
+        except managed_switch.Refused as error:
+            refused_import(opened, settings, export, error, now, Tools())
+            continue
+        except managed_switch.Paused:
+            continue
+        export.ingest_route = route
+        if route == PER_PART and adopt(opened, export, now):
             adopted.append(export_id)
             monitoring.log("export routed to per-part ingest", export=export_id)
     opened.commit()
@@ -737,9 +785,11 @@ def request_retry(opened: Session, export: Export, photos: Photos | None, now: f
 
 
 def request_import(opened: Session, export_id: int, photos: Photos | None = None, now: float | None = None) -> Export:
-    export = opened.get(Export, export_id)
+    db.write_lock(opened)
+    export = opened.get(Export, export_id, populate_existing=True)
     if export is None:
         raise LookupError("no such export")
+    admit_import(opened, photos, export)
     if export.status == "imported":
         return request_retry(opened, export, photos, utc_now().timestamp() if now is None else now)
     if (export.status == "downloading" and has_part_states(opened, export) and route_of(opened, photos, export) == PER_PART

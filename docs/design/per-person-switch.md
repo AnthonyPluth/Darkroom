@@ -222,6 +222,14 @@ Each is one pull request under 1,000 added lines with its tests, in this order. 
 
 After these come #543 (refusals at every entry point and its structural check, using `managed_switch.hold`) and #544 (the command and status, which make the switch reachable). Neither is part of this slicing.
 
+### Old-folder refusals (#543)
+
+Fresh whole imports are refused while the switch is `pausing`. The CLI says “this person's imports are being switched to Immich, so a new old-folder import cannot start.” It registers no new export or parts. In `on` and `stopped`, an old-folder writer says “this person's imports go to Immich, so nothing is written to their old folders.” An import request answers 409 and keeps the existing run, stage and part states. Fresh per-part exports may still queue for the routing and wait rules in section 6.
+
+Downloads are recorded even if ingest is refused. The worker can finish the download job and its zip stays in the inbox. The refused export fails without adding an import run. A scheduled import or finish that was already queued records a failed run with the fixed reason. Old parts already queued for ingest are marked refused. These exports leave the active queue so subsequent exports can run. No existing files are removed by a refusal.
+
+Old-way Keep both, Undo and Reassign answer 409 while the person whose folder would be changed is `on` or `stopped`. Reassign checks both people. Undo checks the current owner and the recorded place it could restore. A shared-account import can still match another person's files, while a match in a managed person's old folder never writes a sidecar there. `tests/test_old_folder_writers.py` pins the old-folder writer call sites and their entry guards.
+
 ## 14. Open questions for the owner
 
 1. **The reconcile at `on`.** The decision says the pause "lasts until that person's managed imports are on". This design reads it as: the reconcile runs again once the person is `on`, in a form that writes nothing under `originals/` (it records the new phone assets and queues their Pixel copies from Immich through `pixel_folder.queue_managed`, PR 6), so new iPhone photos reach the Pixels again and never reach `originals/immich/`. The other reading keeps the reconcile paused for as long as the person is `on`, so new iPhone photos would not reach the Pixels at all until cutover. Which one? With the first, should `request(on)` also be refused while `DARKROOM_PIXEL_IMMICH_SOURCE` is off, since otherwise those copies are queued but held?

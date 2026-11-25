@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom import dates
+from darkroom.domain import managed_switch
 from darkroom.domain.ingest import run
 from darkroom.server import contract
 from darkroom.server.api.browser_internal import engine_of
@@ -83,6 +84,6 @@ def request(request: Request) -> Annotated[Response, contract.ImportQueued]:
                      "run_requeued": run.run_requeued(before, run.run_mark(opened, wanted))}
     except LookupError:
         return error_response("no such export", 404)
-    except (run.AlreadyImported, run.NotReady) as error:
+    except (run.AlreadyImported, run.NotReady, managed_switch.Refused) as error:
         return error_response(str(error), 409)
     return json_response(reply, 202)

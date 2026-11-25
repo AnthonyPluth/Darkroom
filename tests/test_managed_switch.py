@@ -4,7 +4,8 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from darkroom.domain.ingest import run
+from darkroom.domain import managed_switch
+from darkroom.domain.ingest import finish_export, run
 from darkroom.storage.models import DedupeDecision, Export, ExportPart, ImportRun, ManagedImportIntent, Person, TakeoutEntry
 from tests.import_world import NOW
 from tests.test_managed_ingest import OWNER, ManagedWorld
@@ -151,32 +152,59 @@ class RouteTests(unittest.TestCase):
         world.ingest(export, 1)
         self.assertEqual(len(self.intents(world)), 1)
 
-    def test_an_export_with_a_refused_part_stays_old_and_is_placed_the_old_way(self):
+    def test_an_export_with_a_refused_part_stays_old_and_is_refused_after_the_switch(self):
         world = ManagedWorld(self)
         export = world.create(photo_in(1), parts=2)
         world.part(export, 1).ingest_state = "refused"
         world.opened.commit()
-        world.ingest(export, 2)
+        self.assertTrue(world.ingest(export, 2).refused)
         self.assertEqual(self.intents(world), [])
-        self.assertEqual(len(world.google_only()), 1)
+        self.assertEqual(world.google_only(), set())
 
     def test_an_export_with_a_staging_tree_stays_old(self):
         world = ManagedWorld(self)
         export = world.create(photo_in(1), parts=2)
         world.photos.staging(world.people[0], f"export-{export.id}").mkdir(parents=True)
-        world.ingest(export, 1)
+        self.assertTrue(world.ingest(export, 1).refused)
         self.assertEqual(self.intents(world), [])
 
-    def test_an_export_begun_the_old_way_is_not_switched_when_the_setting_comes_on(self):
+    def test_an_export_begun_the_old_way_finishes_while_pausing(self):
         world = ManagedWorld(self, state=None)
         export = world.create(photo_in(1), parts=2)
         world.ingest(export, 1)
-        world.opened.get(Person, world.ids["jo"]).managed_imports = "on"
+        world.opened.get(Person, world.ids["jo"]).managed_imports = "pausing"
         world.opened.commit()
         world.ingest(export, 2)
         self.assertEqual(self.intents(world), [])
         self.assertEqual(len(world.google_only()), 1)
         self.assertEqual({row.ingest_state for row in world.opened.execute(select(ExportPart)).scalars()}, {"ingested"})
+
+    def test_a_finish_of_an_old_export_after_the_switch_records_a_refusal_and_keeps_its_files(self):
+        world = ManagedWorld(self, state=None)
+        export = world.create(photo_in(0), parts=1, status="downloaded")
+        world.ingest(export, 1)
+        world.jo().managed_imports = "stopped"
+        world.opened.commit()
+        before = world.files()
+        done = world.finish(export)
+        self.assertEqual((done.status, done.error, world.status(export)[0]), ("failed", managed_switch.REFUSED, "failed"))
+        self.assertEqual(world.files(), before)
+        self.assertFalse(finish_export.ready(world.opened, export))
+        self.assertEqual(self.intents(world), [])
+
+    def test_a_refused_whole_import_in_the_scheduler_no_longer_blocks_the_next_export(self):
+        world = ManagedWorld(self)
+        earlier = world.create(photo_in(0), parts=1, status="downloaded", queue=False, created=NOW - 100)
+        earlier.ingest_route, earlier.stage = run.WHOLE, "queued"
+        later = world.create(photo_in(0), parts=1, status="downloaded", google_id="google-456")
+        world.opened.commit()
+        before = world.files()
+        self.assertIn(earlier.id, run.run_waiting(world.opened, world.settings, NOW, world.tools))
+        row = run.latest_run(world.opened, earlier.id)
+        self.assertEqual((world.status(earlier)[0], row.status, row.error), ("failed", "failed", managed_switch.REFUSED))
+        self.assertEqual(world.files(), before)
+        world.ingest(later, 1)
+        self.assertEqual([(row.export_id, row.kind) for row in self.intents(world)], [(later.id, "import")])
 
 
 def started_definitions(source):

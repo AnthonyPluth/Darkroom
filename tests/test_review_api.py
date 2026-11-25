@@ -8,7 +8,7 @@ from unittest import mock
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import review
+from darkroom.domain import managed_switch, review
 from darkroom.domain.ingest import cleanup, place, run
 from darkroom.providers import exiftool
 from darkroom.server import auth, routes
@@ -92,6 +92,25 @@ class ReviewQueueTests(ReviewCase):
 
 
 class ResolveTests(ReviewCase):
+    def test_old_way_keep_both_and_undo_refuse_before_any_file_changes(self):
+        review_id = self.pending().id
+        opened = self.world.opened
+        person = opened.get(Person, self.world.ids["jo"])
+        person.managed_imports = "on"
+        opened.commit()
+        before = self.tree()
+        request = ("POST", f"/api/review/{review_id}/resolve", {"action": "keep_both"})
+        self.assertEqual(self.call(*request), (409, {"error": managed_switch.REFUSED}))
+        self.assertEqual((self.pending().id, self.tree()), (review_id, before))
+        person.managed_imports = "pausing"
+        opened.commit()
+        self.assertEqual(self.call(*request)[0], 200)
+        person.managed_imports = "stopped"
+        opened.commit()
+        before = self.tree()
+        self.assertEqual(self.call("POST", f"/api/review/{review_id}/undo"), (409, {"error": managed_switch.REFUSED}))
+        self.assertEqual(self.tree(), before)
+
     def test_keep_both_places_the_held_copy_in_google_only_and_never_confirms(self):
         before, hold = self.confirmed(), self.hold()
         review_id = self.pending().id

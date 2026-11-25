@@ -8,11 +8,11 @@ from unittest import mock
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import review
+from darkroom.domain import managed_switch, review
 from darkroom.domain.ingest import cleanup
 from darkroom.providers import exiftool
 from darkroom.storage import paths
-from darkroom.storage.models import DedupeDecision, Event, MediaItem
+from darkroom.storage.models import DedupeDecision, Event, MediaItem, Person
 from tests.fixtures import media as fixtures
 from tests.import_world import NOW, sha1_of
 from tests.review_world import GOOGLE_ONLY_NAME, PAIR_NAME, ReviewCase, failing_commit
@@ -23,6 +23,20 @@ NOT_SERVED = {"error": "the Google account this photo came from doesn't serve th
 class SharedAccountTests(ReviewCase):
     def reassign(self, item_id, person_id):
         return self.call("POST", f"/api/media/{item_id}/reassign", {"person_id": person_id})
+
+    def test_reassign_refuses_before_writing_either_managed_persons_folder(self):
+        item = self.item_named(GOOGLE_ONLY_NAME)
+        before = self.tree()
+        opened = self.world.opened
+        for source, target in (("on", None), (None, "stopped")):
+            with self.subTest(source=source, target=target):
+                opened.get(Person, self.world.ids["jo"]).managed_imports = source
+                opened.get(Person, self.world.ids["sam"]).managed_imports = target
+                opened.commit()
+                self.assertEqual(self.reassign(item.id, self.world.ids["sam"]), (409, {"error": managed_switch.REFUSED}))
+                opened.expire_all()
+                self.assertEqual(opened.get(MediaItem, item.id).person_id, self.world.ids["jo"])
+                self.assertEqual(self.tree(), before)
 
     def test_reassigning_moves_the_file_and_its_sidecar_and_rescans_both_libraries(self):
         item = self.item_named(GOOGLE_ONLY_NAME)

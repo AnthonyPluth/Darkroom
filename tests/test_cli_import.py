@@ -7,8 +7,9 @@ from pathlib import Path
 from unittest import mock
 
 import run
+from darkroom.domain import managed_switch
 from darkroom.storage import db, secretbox
-from darkroom.storage.models import Export, GoogleAccount, ImportRun, Person
+from darkroom.storage.models import Export, ExportPart, GoogleAccount, ImportRun, Person
 from darkroom.storage.paths import Photos
 from tests.shared import add_person
 from tests.takeout_fixtures import standard_export
@@ -43,6 +44,18 @@ class CliCase(unittest.TestCase):
 
 
 class ImportTakeoutTests(CliCase):
+
+    def test_a_whole_import_is_refused_before_any_zip_is_registered(self):
+        standard_export(Photos(self.photos).manual_inbox("jo"))
+        for state in ("pausing", "on", "stopped"):
+            with self.subTest(state=state):
+                with db.session(self.engine, writing=True) as opened:
+                    opened.query(Person).one().managed_imports = state
+                code, out, error = self.call("--person", "jo", "--unpack-only")
+                wanted = managed_switch.PAUSING_REFUSED if state == "pausing" else managed_switch.REFUSED
+                self.assertEqual((code, out, error.strip()), (1, "", wanted))
+                with db.session(self.engine) as opened:
+                    self.assertEqual([opened.query(model).count() for model in (Export, ExportPart, ImportRun)], [0, 0, 0])
 
     def test_unpacks_the_manual_inbox(self):
         standard_export(Photos(self.photos).manual_inbox("jo"))
