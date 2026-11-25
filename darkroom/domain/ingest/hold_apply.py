@@ -11,13 +11,13 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
 from darkroom.domain import alerts, backfill, hold_resolutions, holds, managed_ingest, managed_manifest, managed_metadata, managed_upload, media, same_shot, xmp
-from darkroom.domain.ingest import part_reader, run, unpack
+from darkroom.domain.ingest import run, unpack
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, Export, ManagedHoldResolution, ManagedImportIntent, ManagedImportReceipt, MediaItem, Person, ReviewItem, TakeoutEntry
 from darkroom.storage.paths import Photos
 
-SOURCE_ERRORS = (OSError, paths.OutsideRoot, part_reader.PartRefused, unpack.UnpackFailed, exiftool.Missing, exiftool.Unreadable)
+SOURCE_ERRORS = (OSError, paths.OutsideRoot, unpack.UnpackFailed, exiftool.Missing, exiftool.Unreadable)
 
 
 class UnreadableSource(Exception):
@@ -51,6 +51,13 @@ def backfill_source(opened: Session, photos: Photos, stack: ExitStack, receipt: 
     item = None if item_id is None else opened.get(MediaItem, item_id, populate_existing=True)
     if (person.managed_backfill != backfill.ON or item is None or item.source != "takeout" or item.person_id != intent.person_id
             or item.export_id != intent.export_id or (item.sha1, item.bytes) != (receipt.source_sha1, receipt.expected_bytes) or item.sidecar_from_still):
+        raise UnreadableSource
+    if item.export_id is not None:
+        export = opened.get(Export, item.export_id, populate_existing=True)
+        if export is None or export.status != backfill.IMPORTED:
+            raise UnreadableSource
+    halves, near = backfill.takeout_holds(opened, person, [item])
+    if item.id in halves or item.id in near:
         raise UnreadableSource
     handle = stack.enter_context(paths.open_library_file(photos, person.slug, item.path))
     return Source(handle, Path(item.path).name, item.sidecar_json)

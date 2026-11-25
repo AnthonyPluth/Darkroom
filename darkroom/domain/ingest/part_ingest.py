@@ -128,6 +128,8 @@ def resolution_copy(photos: Photos, export: Export, part: ExportPart, person: Pe
             if info is None:
                 raise part_reader.PartRefused("listing_differs", "the part no longer lists the photo it held")
             yield part_reader.stream_one(photos, person, export, archive, entry, info).path
+    except part_reader.PartRefused:
+        raise unpack.UnpackFailed("the held photo could not be reread from the part") from None
     finally:
         part_reader.sweep_part_scratch(photos, person, export)
 

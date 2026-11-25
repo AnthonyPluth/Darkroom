@@ -1,16 +1,18 @@
+import json
 import unittest
 from pathlib import Path
 from unittest import mock
+from zipfile import ZipFile
 
 from sqlalchemy import select
 
-from darkroom.domain import hold_resolutions, managed_ingest, managed_metadata, managed_upload, review, xmp
+from darkroom.domain import backfill, hold_resolutions, managed_ingest, managed_metadata, managed_upload, review, xmp
 from darkroom.domain.ingest import finish_export
 from darkroom.storage import db
 from darkroom.storage.models import Event, ManagedHoldResolution, ManagedImportIntent, ManagedImportReceipt, ReviewItem
 from tests.import_world import DAY, NOW
 from tests.privacy import no_leaks
-from tests.test_backfill import BackfillWorld
+from tests.test_backfill import MOMENT, BackfillWorld
 from tests.test_managed_ingest import ALLOWED, GRANTS, KEY, SECRET, ManagedWorld
 
 
@@ -72,6 +74,11 @@ class PreUploadResolutionTests(unittest.TestCase):
         self.assertEqual(world.opened.get(ManagedImportReceipt, receipt_id).metadata_hold, "no_instant")
         self.assertEqual(world.fake.state.assets, [])
         self.assertIsNotNone(world.alert(f"managed:resolution-source:{resolution_id}"))
+        with ZipFile(archive, "w") as replaced:
+            replaced.writestr("Takeout/Google Photos/other.JPG", b"other photo")
+        self.tick(world, NOW + 2 * DAY + 5)
+        self.assertEqual(world.opened.get(ManagedHoldResolution, resolution_id).state, "recorded")
+        self.assertEqual(world.fake.state.assets, [])
         detached.rename(archive)
         self.tick(world, NOW + 2 * DAY + 10)
         self.assertEqual(world.opened.get(ManagedImportReceipt, receipt_id).state, "committed")
@@ -196,6 +203,31 @@ class PreUploadResolutionTests(unittest.TestCase):
         self.assertEqual(world.opened.get(ManagedImportReceipt, receipt_id).state, "committed")
         self.assertEqual(world.fake.state.assets[0].data, copy)
         self.assertEqual(world.files(), before)
+
+    def test_a_backfill_resolution_waits_if_a_matching_phone_photo_appears_after_recording(self):
+        world = BackfillWorld(self)
+
+        def build(builder):
+            photo = world.scratch_jpeg("shot-takeout.jpg", colour=(50, 60, 70), **MOMENT)
+            builder.photo(NAME, data=photo, gps=None, taken=1567578615)
+
+        world.run_managed(build, parts=1)
+        item = world.google_only_item(NAME)
+        item.sidecar_json = json.dumps(json.loads(item.sidecar_json) | {"description": "private\x01description"})
+        world.opened.commit()
+        world.backfill()
+        receipt = world.opened.scalars(select(ManagedImportReceipt)).one()
+        self.assertEqual(receipt.metadata_hold, "unwritable")
+        resolution_id = self.resolve(world, receipt.id, "drop_description", None, None)
+
+        phone = world.scratch_jpeg("shot-phone.jpg", colour=(52, 58, 73), **MOMENT)
+        world.original("jo", NAME, phone)
+        world.index_all()
+        self.assertEqual(backfill.same_shots(world.opened, world.jo(), [item]), {item.id})
+        self.tick(world)
+        self.assertEqual(world.opened.get(ManagedHoldResolution, resolution_id).state, "recorded")
+        self.assertEqual(world.opened.get(ManagedImportReceipt, receipt.id).metadata_hold, "unwritable")
+        self.assertEqual(world.uploads(), [])
 
     def test_a_kept_receipt_rechecks_its_copy_before_retrying_a_saved_metadata_plan(self):
         world = ManagedWorld(self)
