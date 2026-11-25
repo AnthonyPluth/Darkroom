@@ -14,7 +14,7 @@ from darkroom.providers import exiftool
 from darkroom.server import jobs
 from darkroom.storage.models import (Alert, DedupeDecision, DuplicateRemoval, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedBackfillItem,
                                      ManagedCompound, ManagedCompoundMember, ManagedImportIntent, ManagedImportReceipt, ManagedPixelSource, MediaItem,
-                                     PixelCopy, TakeoutEntry)
+                                     Person, PixelCopy, TakeoutEntry)
 from tests.fakes.immich import FakeAsset, extract
 from tests.fixtures.media import TINY_VIDEO
 from tests.import_world import NOW, tree
@@ -108,6 +108,23 @@ class BackfillWorld(ManagedWorld):
 
     def by_id(self, asset_id):
         return next(asset for asset in self.fake.state.assets if asset.id == asset_id)
+
+    def phone_live(self, visibility="hidden"):
+        still_name, video_name = "IMG_7002.JPG", "IMG_7002.MOV"
+        self.original("jo", f"immich/2024/{still_name}", self.scratch_jpeg("phone-live.jpg", colour=(3, 2, 1), **MOMENT))
+        self.original("jo", f"immich/2024/{video_name}", TINY_VIDEO.read_bytes())
+        self.index_all()
+        still, video = (self.item(f"jo/originals/immich/2024/{name}") for name in (still_name, video_name))
+        still_id, video_id = (str(uuid.uuid4()) for _ in range(2))
+        for item, asset, linked, role in ((still, still_id, video_id, "photo"), (video, video_id, still_id, "live_video")):
+            self.opened.add(ImmichAsset(person_id=item.person_id, asset_id=asset, kind=role, status="stored", sha1=item.sha1, linked_asset_id=linked,
+                                        original_item_id=item.id, seen_at=NOW))
+        self.opened.commit()
+        still_asset = FakeAsset(still_id, OWNER, self.data(still), name=still_name, live_video_id=video_id)
+        video_asset = FakeAsset(video_id, OWNER, self.data(video), name=video_name, kind="VIDEO", visibility=visibility)
+        for asset in (still_asset, video_asset):
+            self.fake.add_asset(asset)
+        return still_asset, video_asset
 
 
 class BackfillTests(unittest.TestCase):
@@ -246,6 +263,82 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(world.backfill().mapped, 0)
         self.assertEqual((world.report(), world.uploads(), world.library()), ({"changed": ["IMG_3001.HEIC", "IMG_3001.MOV"]}, [], before))
 
+    def test_a_live_photo_with_a_missing_file_is_held_without_a_receipt(self):
+        world = BackfillWorld(self)
+        world.run_managed(live_only, parts=1)
+        (world.root / world.google_only_item("IMG_3001.MOV").path).unlink()
+        before = world.library()
+        self.assertEqual(world.backfill().mapped, 0)
+        self.assertEqual((world.report(), world.uploads(), world.library(), world.count(ManagedCompound)),
+                         ({"missing": ["IMG_3001.HEIC", "IMG_3001.MOV"]}, [], before, 0))
+
+    def test_a_reversed_decision_while_reading_a_pair_leaves_neither_receipt_nor_upload(self):
+        world = BackfillWorld(self)
+        world.run_managed(live_only, parts=1)
+        video_id = world.google_only_item("IMG_3001.MOV").id
+        taken_back = False
+
+        def read_and_reverse(paths):
+            nonlocal taken_back
+            if not taken_back:
+                taken_back = True
+                with world.engine.begin() as connection:
+                    connection.execute(update(DedupeDecision).where(DedupeDecision.takeout_item_id == video_id).values(reversed_at=NOW))
+            return exiftool.read(paths)
+
+        self.assertEqual(world.backfill(tools=backfill.Tools(read=read_and_reverse, pause=lambda seconds: None)).mapped, 0)
+        self.assertEqual((world.report(), world.uploads(), world.count(ManagedImportReceipt)), ({}, [], 0))
+
+    def test_a_live_photo_retries_after_an_immich_preflight_outage(self):
+        world = BackfillWorld(self)
+        world.run_managed(live_only, parts=1)
+        world.fake.state.intercept = lambda method, path, slug: 503 if (method, path) == ("POST", "/api/assets/bulk-upload-check") else None
+        self.assertEqual(world.backfill().mapped, 0)
+        self.assertEqual((world.report(), world.uploads(), world.count(ManagedImportReceipt)), ({"pending": ["IMG_3001.HEIC", "IMG_3001.MOV"]}, [], 2))
+        world.fake.state.intercept = None
+        self.assertEqual((world.backfill(at=NOW + 200).mapped, len(world.uploads())), (2, 2))
+
+    def test_a_takeout_pair_whose_still_contains_embedded_motion_is_held(self):
+        world = BackfillWorld(self)
+        world.run_managed(live_only, parts=1)
+
+        def read(paths):
+            return {path: original | {"XMP:MotionPhoto": 1} for path, original in exiftool.read(paths).items()}
+
+        self.assertEqual(world.backfill(tools=backfill.Tools(read=read, pause=lambda seconds: None)).mapped, 0)
+        self.assertEqual((world.report(), world.uploads(), world.count(ManagedImportReceipt)),
+                         ({"embedded_motion": ["IMG_3001.HEIC", "IMG_3001.MOV"]}, [], 0))
+
+    def test_a_pair_with_unreadable_tags_is_held_and_a_temporary_read_error_can_retry(self):
+        world = BackfillWorld(self)
+        world.run_managed(live_only, parts=1)
+
+        def temporarily_unreadable(paths):
+            raise OSError("metadata reader unavailable")
+
+        self.assertEqual(world.backfill(tools=backfill.Tools(read=temporarily_unreadable)).mapped, 0)
+        self.assertEqual((world.report(), world.uploads()), ({"pending": ["IMG_3001.HEIC", "IMG_3001.MOV"]}, []))
+        self.assertEqual(world.backfill(at=NOW + 200, tools=backfill.Tools(read=lambda paths: {})).mapped, 0)
+        self.assertEqual((world.report(), world.uploads(), world.count(ManagedImportReceipt)),
+                         ({"unreadable": ["IMG_3001.HEIC", "IMG_3001.MOV"]}, [], 0))
+
+    def test_a_backfilled_video_that_becomes_unusable_blocks_the_still_upload(self):
+        world = BackfillWorld(self)
+        world.run_managed(live_only, parts=1)
+        complete = managed_metadata.complete_receipt
+
+        def trash_after_video(opened, reader, resource, *args):
+            result = complete(opened, reader, resource, *args)
+            if resource.filename.endswith(".MOV") and result.outcome == "verified":
+                world.fake.state.assets[0].trashed = True
+            return result
+
+        with mock.patch.object(managed_metadata, "complete_receipt", side_effect=trash_after_video):
+            self.assertEqual(world.backfill().mapped, 0)
+        self.assertEqual((world.report(), len(world.uploads())), ({"unusable": ["IMG_3001.HEIC", "IMG_3001.MOV"]}, 1))
+        self.assertEqual(world.opened.scalar(select(ManagedCompound.hold)), "unusable")
+        self.assertEqual((world.backfill(at=NOW + 200).mapped, len(world.uploads())), (0, 1))
+
     def test_a_live_photo_whose_placement_decisions_are_missing_is_held_even_when_the_ledger_preserves_the_names(self):
         world = BackfillWorld(self)
         world.run_managed(live_only, parts=1)
@@ -269,33 +362,62 @@ class BackfillTests(unittest.TestCase):
 
     def test_phone_live_photo_maps_both_verified_originals_and_link_without_upload(self):
         world = BackfillWorld(self)
-        still_name, video_name = "IMG_7002.JPG", "IMG_7002.MOV"
-        world.original("jo", f"immich/2024/{still_name}", world.scratch_jpeg("phone-live.jpg", colour=(3, 2, 1), **MOMENT))
-        world.original("jo", f"immich/2024/{video_name}", TINY_VIDEO.read_bytes())
-        world.index_all()
-        still, video = (world.item(f"jo/originals/immich/2024/{name}") for name in (still_name, video_name))
-        still_id, video_id = (str(uuid.uuid4()) for _ in range(2))
-        for item, asset, linked, role in ((still, still_id, video_id, "photo"), (video, video_id, still_id, "live_video")):
-            world.opened.add(ImmichAsset(person_id=item.person_id, asset_id=asset, kind=role, status="stored", sha1=item.sha1, linked_asset_id=linked,
-                                        original_item_id=item.id, seen_at=NOW))
-        world.opened.commit()
-        world.fake.add_asset(FakeAsset(still_id, OWNER, world.data(still), name=still_name, live_video_id=video_id))
-        effect = FakeAsset(video_id, OWNER, world.data(video), name=video_name, kind="VIDEO", visibility="timeline")
-        world.fake.add_asset(effect)
+        still, video = world.phone_live("timeline")
         before = world.library()
         self.assertEqual(world.backfill().mapped, 0)
-        self.assertEqual((world.report(), world.uploads()), ({"unusable": sorted((still_name, video_name))}, []))
+        self.assertEqual((world.report(), world.uploads()), ({"unusable": [still.name, video.name]}, []))
         self.assertEqual(world.count(ManagedAssetVersion), 0)
         backfill_rows = world.opened.execute(select(ManagedBackfillItem)).scalars().all()
         for row in backfill_rows:
             world.opened.delete(row)
         world.opened.commit()
-        effect.visibility = "hidden"
+        video.visibility = "hidden"
         self.assertEqual(world.backfill(at=NOW + 200).mapped, 2)
         versions = world.opened.execute(select(ManagedAssetVersion.asset_id, ManagedAssetVersion.linked_video_asset_id)).all()
-        self.assertCountEqual(versions, [(still_id, video_id), (video_id, None)])
+        self.assertCountEqual(versions, [(still.id, video.id), (video.id, None)])
         kinds = world.opened.execute(select(ManagedAssetOrigin.kind)).scalars().all()
         self.assertEqual((world.report(), world.uploads(), world.library(), kinds), ({}, [], before, ["phone", "phone"]))
+
+    def test_a_phone_live_photo_with_an_incomplete_local_mapping_is_held_without_reading_another_asset(self):
+        for missing in (True, False):
+            with self.subTest(missing=missing):
+                world = BackfillWorld(self)
+                still, video = world.phone_live()
+                if missing:
+                    world.opened.execute(delete(ImmichAsset).where(ImmichAsset.asset_id == video.id))
+                else:
+                    world.opened.execute(update(ImmichAsset).where(ImmichAsset.asset_id == video.id).values(status="waiting"))
+                world.opened.commit()
+                world.fake.state.requests.clear()
+                self.assertEqual(world.backfill().mapped, 0)
+                self.assertEqual((world.fake.requests(), world.count(ManagedAssetVersion)), ([], 0))
+                expected = {"live_partial": [still.name]}
+                if missing:
+                    expected["not_in_immich"] = [video.name]
+                else:
+                    expected["live_partial"].append(video.name)
+                self.assertEqual(world.report(), expected)
+
+    def test_a_phone_live_photo_with_a_changed_immich_half_does_not_map_either_member(self):
+        world = BackfillWorld(self)
+        still, video = world.phone_live()
+        video.data += b"changed"
+        self.assertEqual(world.backfill().mapped, 0)
+        self.assertEqual((world.report(), world.uploads(), world.count(ManagedAssetVersion)), ({"changed": [still.name, video.name]}, [], 0))
+
+    def test_a_phone_live_photo_whose_owner_changes_after_the_read_back_is_not_mapped(self):
+        world = BackfillWorld(self)
+        _, video = world.phone_live()
+
+        def changed_owner(method, path, slug):
+            if path.startswith(f"/api/assets/{video.id}/original"):
+                with world.engine.begin() as connection:
+                    connection.execute(update(Person).where(Person.id == world.ids["jo"]).values(immich_user_id=str(uuid.uuid4())))
+            return None
+
+        world.fake.state.intercept = changed_owner
+        self.assertEqual(world.backfill().mapped, 0)
+        self.assertEqual((world.report(), world.uploads(), world.count(ManagedAssetVersion)), ({}, [], 0))
 
     def test_pixel_copies_left_unconverted_are_converted_on_a_later_run_without_another_upload(self):
         world = BackfillWorld(self)

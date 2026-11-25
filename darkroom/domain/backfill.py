@@ -193,6 +193,7 @@ def contents(item: MediaItem) -> tuple[str, str, int, str, int | None]:
 class Backfill:
     def __init__(self, opened: Session, settings: config.Settings, photos: Photos, person: Person, reader: immich.ManagedReader, now: float, tools: Tools) -> None:
         self.opened, self.settings, self.photos, self.person, self.reader, self.now, self.tools = opened, settings, photos, person, reader, now, tools
+        self.owner_id = str(person.immich_user_id)
         self.report = Summary()
         self.handled: set[int] = set()
 
@@ -212,7 +213,7 @@ class Backfill:
 
     def current(self, ids: tuple[int, int], saved: list[tuple[str, str, int, str, int | None]]) -> bool:
         person = self.opened.get(Person, self.person.id, populate_existing=True)
-        if person is None or person.managed_backfill != ON or person.immich_user_id != self.reader.owner_id:
+        if person is None or person.managed_backfill != ON or person.immich_user_id != self.owner_id:
             return False
         for item_id, before in zip(ids, saved, strict=True):
             current = self.opened.get(MediaItem, item_id, populate_existing=True)
@@ -646,7 +647,7 @@ class Backfill:
         halves = live_halves(self.opened, self.person, takeouts, pending) if pending else set()
         sources = {item.id: item for item in takeouts}
         pending_ids = {item.id for item in pending}
-        frozen = backfill_live.frozen(self.opened, self.person.id, self.reader.owner_id, pending_ids) if pending else backfill_live.Groups({}, {})
+        frozen = backfill_live.frozen(self.opened, self.person.id, self.owner_id, pending_ids) if pending else backfill_live.Groups({}, {})
         recorded = backfill_live.recorded(self.opened, self.person.id, halves - frozen.holds.keys(), sources.keys()) if halves else backfill_live.Groups({}, {})
         pairs = recorded.pairs | frozen.pairs
         paired_ids = {other for pair in pairs.values() for other in pair.items}
