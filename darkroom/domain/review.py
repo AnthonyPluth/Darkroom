@@ -676,11 +676,11 @@ def reassign(opened: Session, photos: Photos, item_id: int, person_id: int, now:
     export, current, target = reassign_checks(opened, item, person_id)
     if target.id == current.id:
         return item, Changed(export)
+    if same_shot.pending_for_item(opened, item.id):
+        raise WrongState(same_shot.WAITS_FOR_REASSIGNMENT)
     guard_folders(opened, photos, {current.id, target.id})
     if item.person_id != current.id:
         raise WrongState("the photo changed people before the move, so it was left where it is")
-    if same_shot.pending_for_item(opened, item.id):
-        raise WrongState(same_shot.WAITS_FOR_REASSIGNMENT)
     try:
         source = photos.google_only_file(item.path)
     except (paths.NotALibraryCopy, paths.OutsideRoot) as error:
