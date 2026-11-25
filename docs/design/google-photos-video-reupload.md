@@ -46,6 +46,8 @@ After replacement proof, wait for Trash expiry by default. If the owner wants fa
 
 ## Disposable tests to record on #266
 
+Use the [test runbook and fixture generator](../spikes/pixel-reupload.md) to prepare generated videos, compare copies and record the observations below.
+
 Use a separate Google account, an isolated first-generation Pixel setup with only the disposable folder, and generated videos backed by a disposable Immich owner and recovery point. Record device model, Android and Photos app versions, folder and account settings, times, whether the old and new items were distinct, whether both copies were present at each step, whether the byte comparison passed, observed Trash expiry, and the Google One Photos subtotal. Use a video large enough for a measurable quota change that stays well below both caps. Keep account names, locators, credentials and real media out of the issue. Record each row as passed, failed or inconclusive, with the observed order and what evidence was missing. [#266 live evidence](https://github.com/AnthonyPluth/Darkroom/issues/266)
 
 | Test | What to establish |
