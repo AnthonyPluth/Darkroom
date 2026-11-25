@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from darkroom import monitoring
@@ -15,7 +15,7 @@ from darkroom.domain import accounts, backfill, dedupe, events, exports, managed
 from darkroom.domain.ingest import cleanup, finish_export, metadata, pairing, place, sidecar
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
-from darkroom.storage import paths
+from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, Event, Export, GoogleAccount, MediaItem, Person, PixelCopy, ReviewItem, User, known_contents
 from darkroom.storage.paths import Photos
 
@@ -462,10 +462,20 @@ def keep_in_immich(opened: Session, photos: Photos, hit: Found, now: float, read
     person = exports.owner_of(opened, hit.export)
     if hold is None or person is None:
         raise WrongState("the held copy from the export is gone, so it cannot be kept")
-    _, fields = kept_fields(opened, photos, hit, hold, person.id, now, read)
     try:
+        live = hit.decision.id in finish_export.live_decisions(opened, hit.export)
+        if live:
+            db.write_lock(opened)
+            claimed = opened.execute(update(ReviewItem).where(ReviewItem.id == hit.review.id, ReviewItem.status == "pending")
+                                     .values(status="pending").returning(ReviewItem.id)).scalar_one_or_none()
+            if claimed is None:
+                raise WrongState("this pair is already decided")
+            opened.expire_all()
+            items = finish_export.live_review_items(opened, hit.export, hit.decision.id)
+            return set(), [], managed_ingest.keep_live(opened, photos, hit.export, person, hit.review, items, now, read)
+        _, fields = kept_fields(opened, photos, hit, hold, person.id, now, read)
         managed_ingest.keep_for_immich(opened, photos, hit.export, hit.review, hold, fields.sha1, Path(hit.decision.source_path or hold.name).name,
-                                       hit.decision.id in finish_export.live_decisions(opened, hit.export), now, read)
+                                       False, now, read)
     except managed_ingest.Refused as refused:
         raise WrongState(str(refused)) from None
     return set(), [], ", to be uploaded to Immich"

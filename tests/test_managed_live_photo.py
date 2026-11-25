@@ -5,9 +5,9 @@ from unittest import mock
 
 from sqlalchemy import select, update
 
-from darkroom.domain import managed_compound, managed_ingest, managed_metadata, managed_upload, same_shot
+from darkroom.domain import dedupe, managed_compound, managed_ingest, managed_metadata, managed_upload, review, same_shot
 from darkroom.domain.ingest import finish_export, part_reader
-from darkroom.storage.models import ManagedCompound, ManagedCompoundMember, ManagedImportReceipt, TakeoutEntry
+from darkroom.storage.models import DedupeDecision, Export, ManagedCompound, ManagedCompoundMember, ManagedImportReceipt, ReviewItem, TakeoutEntry
 from tests.fakes.immich import FakeAsset, extract
 from tests.import_world import NOW
 from tests.privacy import no_leaks
@@ -61,6 +61,127 @@ class LiveWorld(ManagedWorld):
         asset = FakeAsset(str(uuid.uuid4()), OWNER, data, name=name, kind=kind, exif=extract(data, None), **fields)
         self.fake.add_asset(asset)
         return asset
+
+
+class KeepBothTests(unittest.TestCase):
+    def reviewed(self, world, still, video):
+        decide = dedupe.decide
+
+        def chosen(index, item, settings):
+            result = decide(index, item, settings)
+            tier = video if result.source_path.endswith(".MOV") else still
+            return dataclasses.replace(result, tier=tier, action={1: "skip", 4: "review", 5: "google_only"}[tier])
+
+        with mock.patch.object(dedupe, "decide", chosen):
+            export = world.run_live()
+        self.assertEqual(world.status(export), ("imported", "done"))
+        self.assertEqual((world.receipts(), world.uploads()), ({}, 0))
+        reviews = world.opened.execute(select(ReviewItem, DedupeDecision.source_path).join(DedupeDecision)).all()
+        return {short(path).removeprefix(PHOTOS): row.id for row, path in reviews}
+
+    def keep(self, world, review_id):
+        with review.saving(world.opened) as effects:
+            review.resolve(world.opened, world.photos, review_id, "keep_both", NOW + 1, effects)
+
+    def tick(self, world, at=NOW + 2):
+        with mock.patch.object(managed_ingest.time, "sleep"):
+            finish_export.finish_ready(world.opened, world.settings, at, world.tools)
+
+    def test_keep_both_sends_the_reviewed_and_automatic_halves_as_one_compound(self):
+        for still, video in ((4, 5), (5, 4)):
+            with self.subTest(still=still, video=video):
+                world = LiveWorld(self)
+                review_id = next(iter(self.reviewed(world, still, video).values()))
+                self.assertIsNone(world.alert("managed:held:1"))
+                with no_leaks(self, KEY, SECRET, "IMG_3001.HEIC", "IMG_3001.MOV", world.fake.url):
+                    self.keep(world, review_id)
+                    self.assertEqual((world.opened.get(ReviewItem, review_id).status, world.compound().committed_at, world.uploads()),
+                                     ("kept_both", None, 0))
+                    self.tick(world)
+                    self.tick(world, NOW + 3)
+                self.assertEqual(world.receipts(),
+                                 {"IMG_3001.HEIC": ("committed", "created", None), "IMG_3001.MOV": ("committed", "created", None)})
+                still_asset, video_asset = world.asset_named("IMG_3001.HEIC"), world.asset_named("IMG_3001.MOV")
+                self.assertEqual((still_asset.live_video_id, video_asset.visibility, world.uploads()), (video_asset.id, "hidden", 2))
+                self.assertEqual([asset.name for asset in world.fake.state.assets if asset.owner_id == OWNER], ["IMG_3001.MOV", "IMG_3001.HEIC"])
+                self.assertEqual([f"{m} {p}" for m, p in world.fake.requests() if not ALLOWED.fullmatch(f"{m} {p}")], [])
+                self.assertEqual(world.google_only(), set())
+
+    def test_two_reviewed_halves_wait_for_both_and_a_failed_transaction_keeps_the_second_pending(self):
+        world = LiveWorld(self)
+        reviews = self.reviewed(world, 4, 4)
+        still, video = reviews["IMG_3001.HEIC"], reviews["IMG_3001.MOV"]
+        self.keep(world, video)
+        self.tick(world)
+        self.assertEqual((world.opened.get(ReviewItem, video).status, world.opened.get(ReviewItem, still).status),
+                         ("kept_both", "pending"))
+        self.assertEqual((world.receipts(), world.uploads(), world.compound()), ({}, 0, None))
+        with self.assertRaisesRegex(review.WrongState, "kept in Immich"), review.saving(world.opened) as effects:
+            review.undo(world.opened, world.photos, video, NOW + 2, effects)
+        with mock.patch("darkroom.domain.review.events.record", side_effect=Crash()), self.assertRaises(Crash):
+            self.keep(world, still)
+        self.assertEqual(world.opened.get(ReviewItem, still).status, "pending")
+        self.assertEqual((world.receipts(), world.compound()), ({}, None))
+        self.keep(world, still)
+        self.tick(world)
+        self.assertIsNotNone(world.compound().committed_at)
+        self.assertEqual(world.uploads(), 2)
+
+    def test_keep_both_refuses_when_the_other_half_matched_in_either_direction(self):
+        for still, video in ((4, 1), (1, 4)):
+            with self.subTest(still=still, video=video):
+                world = LiveWorld(self)
+                review_id = next(iter(self.reviewed(world, still, video).values()))
+                with self.assertRaisesRegex(review.WrongState, "live_partial"):
+                    self.keep(world, review_id)
+                self.tick(world)
+                self.assertEqual((world.opened.get(ReviewItem, review_id).status, world.receipts(), world.uploads()),
+                                 ("pending", {}, 0))
+
+    def test_tick_rechecks_both_frozen_sources_before_sending_either_and_alerts_if_a_copy_changed(self):
+        world = LiveWorld(self)
+        review_id = next(iter(self.reviewed(world, 4, 5).values()))
+        self.keep(world, review_id)
+        held = world.opened.get(ReviewItem, review_id)
+        path = world.root / held.hold_path
+        original = path.read_bytes()
+        path.write_bytes(b"changed")
+        self.tick(world)
+        self.assertIsNone(world.alert(f"managed:kept:{review_id}"))
+        self.tick(world, NOW + 1 + managed_ingest.SETTLE_SECONDS)
+        self.assertEqual(world.uploads(), 0)
+        self.assertIsNotNone(world.alert(f"managed:kept:{review_id}"))
+        path.write_bytes(original)
+        self.tick(world)
+        self.assertIsNotNone(world.compound().committed_at)
+        self.assertEqual(world.uploads(), 2)
+
+    def test_a_kept_compound_with_a_standalone_duplicate_video_holds_and_alerts_once(self):
+        world = LiveWorld(self)
+        review_id = next(iter(self.reviewed(world, 4, 5).values()))
+        self.keep(world, review_id)
+        video = world.entry(f"{PHOTOS}IMG_3001.MOV")
+        world.immich_copy(world.opened.get(Export, video.export_id), "IMG_3001.MOV")
+        self.tick(world)
+        self.assertEqual((world.compound().hold, world.uploads()), ("compound_conflict", 0))
+        alert_id = world.alert(f"managed:kept:{review_id}").id
+        requests = len(world.fake.requests())
+        self.tick(world, NOW + 3)
+        self.assertEqual((world.alert(f"managed:kept:{review_id}").id, len(world.fake.requests())), (alert_id, requests))
+
+    def test_keep_both_retains_review_if_either_halfs_metadata_cannot_be_uploaded(self):
+        world = LiveWorld(self)
+        review_id = next(iter(self.reviewed(world, 4, 5).values()))
+        intend = managed_metadata.intend
+
+        def no_offset(tags, google, kind, role="single", corrects=True):
+            found = intend(tags, google, kind, role, corrects)
+            return dataclasses.replace(found, hold="unknown_offset") if role == "live_video" else found
+
+        with mock.patch.object(managed_metadata, "intend", no_offset), self.assertRaisesRegex(review.WrongState, "offset"):
+            self.keep(world, review_id)
+        self.assertEqual((world.opened.get(ReviewItem, review_id).status, world.compound(), world.receipts(), world.uploads()),
+                         ("pending", None, {}, 0))
 
 
 class FinishTests(unittest.TestCase):
