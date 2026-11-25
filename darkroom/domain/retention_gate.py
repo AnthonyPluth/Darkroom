@@ -1,30 +1,43 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from functools import cached_property
 from typing import Final, Literal
 
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, events, immich_reconcile
+from darkroom.domain import alerts, events, exports, immich_reconcile, managed_ingest, managed_metadata, media
+from darkroom.domain.ingest import sidecar
 from darkroom.providers import immich
 from darkroom.storage import db
 from darkroom.storage.models import (
     REHEARSAL_DATABASES,
+    DedupeDecision,
     Export,
+    ExportPart,
     ImportRun,
     ManagedAssetVersion,
+    ManagedBackfillItem,
+    ManagedCompound,
+    ManagedCompoundMember,
     ManagedImportIntent,
     ManagedImportReceipt,
+    MediaItem,
     Person,
     RecoveryPoint,
     RecoveryPointAsset,
     RetentionAttestation,
+    ReviewItem,
+    TakeoutEntry,
+    TakeoutSidecar,
 )
 
 Kind = Literal["restore_rehearsal", "remote_deletion_boundary"]
@@ -459,6 +472,279 @@ def owner_recorded(opened: Session) -> bool:
     return active(opened, REHEARSAL) is not None and boundary is not None and accepts_current_text(boundary)
 
 
+ReleaseUnit = ExportPart | TakeoutEntry | ReviewItem
+RETENTION_CLOCK: Final = "retention_clock"
+RELEASE_OFF: Final = "release_off"
+NO_REHEARSAL: Final = "no_rehearsal"
+BOUNDARY_NOT_ACCEPTED: Final = "boundary_not_accepted"
+RECEIPT_NOT_COMMITTED: Final = "receipt_not_committed"
+KEEPER_NOT_MANAGED: Final = "keeper_not_managed"
+METADATA_NOT_IN_IMMICH: Final = "metadata_not_in_immich"
+NO_RECOVERY_POINT: Final = "no_recovery_point"
+NOT_COVERED: Final = "not_covered"
+REFUSAL_ORDER: Final = (RETENTION_CLOCK, NO_REHEARSAL, BOUNDARY_NOT_ACCEPTED, RECEIPT_NOT_COMMITTED, KEEPER_NOT_MANAGED, METADATA_NOT_IN_IMMICH,
+                        FAILED_KIND, NO_RECOVERY_POINT, NOT_COVERED, RELEASE_OFF)
+
+
+@dataclass(frozen=True)
+class Need:
+    owner_id: str = field(repr=False)
+    asset_id: str = field(repr=False)
+    sha1: str = field(repr=False)
+    verified_at: float
+
+
+@dataclass(frozen=True)
+class Dependency:
+    needs: tuple[Need, ...] = ()
+    reason: str | None = None
+
+
+def enclosing_export(opened: Session, unit: ReleaseUnit) -> Export | None:
+    if isinstance(unit, ReviewItem):
+        decision = opened.get(DedupeDecision, unit.decision_id)
+        return None if decision is None else opened.get(Export, decision.export_id)
+    return opened.get(Export, unit.export_id)
+
+
+def clock_allows(opened: Session, export: Export, unit: ReleaseUnit, now: float) -> bool:
+    if export.status != "imported":
+        return False
+    cutoff = now - WINDOW
+    if isinstance(unit, ReviewItem) and (unit.status == "pending" or unit.resolved_at is None or unit.resolved_at > cutoff):
+        return False
+    run = opened.execute(select(ImportRun).where(ImportRun.export_id == export.id).order_by(ImportRun.id.desc()).limit(1)).scalar_one_or_none()
+    return run is not None and run.status == "done" and run.finished is not None and run.finished <= cutoff
+
+
+def receipt_need(opened: Session, intent: ManagedImportIntent, key: str, sha1: str | None, size: int | None = None) -> Dependency:
+    receipt = opened.execute(select(ManagedImportReceipt).where(ManagedImportReceipt.intent_id == intent.id, ManagedImportReceipt.resource_key == key,
+                                                               ManagedImportReceipt.source_sha1 == sha1)).scalar_one_or_none()
+    if (receipt is None or receipt.state != "committed" or receipt.metadata_hold is not None or receipt.asset_id is None or receipt.committed_at is None
+            or (size is not None and receipt.expected_bytes != size)):
+        return Dependency(reason=RECEIPT_NOT_COMMITTED)
+    if receipt.compound_key == key:
+        return Dependency((Need(intent.owner_id, receipt.asset_id, receipt.source_sha1, receipt.committed_at),))
+    members = opened.execute(select(ManagedImportReceipt.asset_id, ManagedImportReceipt.source_sha1, ManagedImportReceipt.committed_at).join(
+        ManagedCompoundMember, (ManagedCompoundMember.intent_id == intent.id) & (ManagedCompoundMember.resource_key == ManagedImportReceipt.resource_key)
+        & (ManagedCompoundMember.source_sha1 == ManagedImportReceipt.source_sha1) & (ManagedCompoundMember.expected_bytes == ManagedImportReceipt.expected_bytes))
+        .join(ManagedCompound, ManagedCompound.id == ManagedCompoundMember.compound_id).where(
+            ManagedCompound.intent_id == intent.id, ManagedCompound.compound_key == receipt.compound_key, ManagedCompound.committed_at.is_not(None),
+            ManagedCompound.hold.is_(None), ManagedImportReceipt.intent_id == intent.id, ManagedImportReceipt.compound_key == receipt.compound_key,
+            ManagedImportReceipt.state == "committed", ManagedImportReceipt.metadata_hold.is_(None))).all()
+    needs = tuple(Need(intent.owner_id, asset, digest, committed_at) for asset, digest, committed_at in members if asset is not None and committed_at is not None)
+    if len(needs) != 2 or len({need.asset_id for need in needs}) != 2 or not any(need.asset_id == receipt.asset_id and need.sha1 == receipt.source_sha1 for need in needs):
+        return Dependency(reason=RECEIPT_NOT_COMMITTED)
+    return Dependency(needs)
+
+
+def metadata_shown(raw: str | None, item: MediaItem, version: ManagedAssetVersion) -> bool:
+    if raw is None:
+        return True
+    google = sidecar.parse(raw)
+    if google is None:
+        return False
+    try:
+        seen = json.loads(version.metadata_snapshot)
+    except (ValueError, RecursionError):
+        return False
+    if not isinstance(seen, dict):
+        return False
+    if google.lat is not None and google.lon is not None:
+        lat, lon = seen.get("latitude"), seen.get("longitude")
+        if (not isinstance(lat, int | float) or not isinstance(lon, int | float) or not managed_metadata.number(lat) or not managed_metadata.number(lon)
+                or abs(lat - google.lat) >= managed_metadata.SAME_PLACE_DEGREES or abs(lon - google.lon) >= managed_metadata.SAME_PLACE_DEGREES):
+            return False
+    if google.description is not None:
+        described = seen.get("description")
+        if not isinstance(described, str) or managed_metadata.normalized(described) != managed_metadata.normalized(google.description):
+            return False
+    if google.photo_taken_utc is None:
+        return True
+    taken, zone = seen.get("taken"), seen.get("zone")
+    instant = managed_metadata.instant_of(taken if isinstance(taken, str) else None)
+    if instant is None or abs(instant - google.photo_taken_utc) >= managed_metadata.SAME_INSTANT_SECONDS:
+        return False
+    offset = item.offset_minutes if google.lat is None else media.wall_clock_at(google.photo_taken_utc, google.lat, google.lon)[1]
+    return offset is not None and managed_metadata.zone_offset(zone if isinstance(zone, str) else None, instant) == offset
+
+
+def keeper_need(opened: Session, intent: ManagedImportIntent, decision: DedupeDecision, raw: str | None, metadata_pending: bool = False) -> Dependency:
+    item = None if decision.matched_item_id is None else opened.get(MediaItem, decision.matched_item_id)
+    if item is None or item.person_id != intent.person_id:
+        return Dependency(reason=KEEPER_NOT_MANAGED)
+    version = opened.execute(select(ManagedAssetVersion).join(ManagedBackfillItem, ManagedBackfillItem.version_id == ManagedAssetVersion.id).where(
+        ManagedBackfillItem.item_id == item.id, ManagedBackfillItem.person_id == intent.person_id, ManagedBackfillItem.outcome == "mapped",
+        ManagedAssetVersion.person_id == intent.person_id, ManagedAssetVersion.owner_id == intent.owner_id, ManagedAssetVersion.state == "bytes_verified",
+        ManagedAssetVersion.library_id.is_(None), ManagedAssetVersion.sha1 == item.sha1, ManagedAssetVersion.bytes == item.bytes)).scalar_one_or_none()
+    if version is None or version.bytes_verified_at is None:
+        return Dependency(reason=KEEPER_NOT_MANAGED)
+    need = Need(version.owner_id, version.asset_id, version.sha1, version.bytes_verified_at)
+    return Dependency((need,), METADATA_NOT_IN_IMMICH if metadata_pending or not metadata_shown(raw, item, version) else None)
+
+
+def review_dependency(opened: Session, intent: ManagedImportIntent, decision: DedupeDecision, review: ReviewItem, sha1: str | None) -> Dependency:
+    if review.hold_path is None or sha1 is None or review.hold_sha1 != sha1:
+        return Dependency(reason=KEEPER_NOT_MANAGED)
+    if review.status == "kept_both":
+        return receipt_need(opened, intent, f"{managed_ingest.KEPT}{review.id}", sha1)
+    if review.status == "skipped":
+        return keeper_need(opened, intent, decision, review.sidecar_json)
+    return Dependency(reason=None if review.status == "pending" else KEEPER_NOT_MANAGED)
+
+
+def entry_dependency(opened: Session, intent: ManagedImportIntent, export: Export, entry: TakeoutEntry) -> Dependency:
+    root = entry
+    if entry.outcome == "copy":
+        copied = None if entry.copy_of_id is None else opened.get(TakeoutEntry, entry.copy_of_id)
+        if copied is None or copied.export_id != export.id or copied.sha1 != entry.sha1:
+            return Dependency(reason=KEEPER_NOT_MANAGED)
+        root = copied
+    if (root.kind != "media" or root.outcome not in ("placed", "skipped", "review") or root.copy_of_id is not None or root.sha1 is None
+            or root.decision_id is None):
+        return Dependency(reason=KEEPER_NOT_MANAGED)
+    decision = opened.get(DedupeDecision, root.decision_id)
+    if (decision is None or decision.export_id != export.id or decision.account_id != export.account_id or decision.person_id != intent.person_id
+            or decision.reversed_at is not None):
+        return Dependency(reason=KEEPER_NOT_MANAGED)
+    if root.outcome == "review":
+        review = opened.execute(select(ReviewItem).where(ReviewItem.decision_id == decision.id)).scalar_one_or_none()
+        return Dependency(reason=KEEPER_NOT_MANAGED) if review is None else review_dependency(opened, intent, decision, review, root.sha1)
+    if root.outcome == "skipped" and decision.decided_by == "owner" and decision.matched_item_id is None:
+        return Dependency()
+    if root.outcome == "placed" and managed_ingest.wanted(opened, export, root):
+        return receipt_need(opened, intent, managed_ingest.resource_key(root), root.sha1, root.bytes)
+    if root.outcome == "skipped" and decision.decided_by == "auto" and decision.tier in (1, 2, 3):
+        raw = opened.execute(select(TakeoutSidecar.text).where(TakeoutSidecar.export_id == export.id,
+                                                              TakeoutSidecar.entry_id == root.sidecar_entry_id)).scalar_one_or_none()
+        return keeper_need(opened, intent, decision, raw, root.metadata_pending or (root.sidecar_entry_id is not None and raw is None))
+    return Dependency(reason=KEEPER_NOT_MANAGED)
+
+
+def dependencies(opened: Session, export: Export, intent: ManagedImportIntent, unit: ReleaseUnit) -> list[Dependency]:
+    if isinstance(unit, ReviewItem):
+        decision = opened.get(DedupeDecision, unit.decision_id)
+        if (decision is None or decision.account_id != export.account_id or decision.person_id != intent.person_id or decision.reversed_at is not None):
+            return [Dependency(reason=KEEPER_NOT_MANAGED)]
+        return [review_dependency(opened, intent, decision, unit, unit.hold_sha1)]
+    if isinstance(unit, TakeoutEntry):
+        return [entry_dependency(opened, intent, export, unit)]
+    rows = opened.execute(select(TakeoutEntry).where(TakeoutEntry.export_id == export.id, TakeoutEntry.part_number == unit.number)).scalars().all()
+    if unit.ingest_state != "ingested" or unit.entries is None or len(rows) != unit.entries:
+        return [Dependency(reason=KEEPER_NOT_MANAGED)]
+    return [entry_dependency(opened, intent, export, row) for row in rows if row.kind == "media"]
+
+
+def backup_health_failed(opened: Session, now: float) -> bool:
+    latest = latest_finished(opened)
+    return (latest is not None and latest.state != "succeeded") or opened.execute(select(RecoveryPoint.id).where(
+        RecoveryPoint.state == "open", RecoveryPoint.opened_at <= now - OPEN_LIMIT).limit(1)).first() is not None
+
+
+def eligible_points(opened: Session, now: float) -> list[RecoveryPoint]:
+    return list(opened.execute(select(RecoveryPoint).where(
+        RecoveryPoint.state == "succeeded", RecoveryPoint.scopes == ",".join(SCOPES), RecoveryPoint.taken_at.between(now - WINDOW, now),
+        RecoveryPoint.kept_until > now).order_by(RecoveryPoint.opened_at.desc(), RecoveryPoint.id.desc())).scalars())
+
+
+def manifest_rows(opened: Session, point_id: int) -> set[tuple[str, str, str]]:
+    rows = opened.execute(select(RecoveryPointAsset.owner_id, RecoveryPointAsset.asset_id, RecoveryPointAsset.sha1)
+                          .where(RecoveryPointAsset.recovery_point_id == point_id))
+    return {(owner, asset, digest) for owner, asset, digest in rows}
+
+
+class Coverage:
+    def __init__(self, opened: Session, now: float) -> None:
+        self.opened, self.now = opened, now
+        self.manifests: dict[int, set[tuple[str, str, str]] | None] = {}
+
+    @cached_property
+    def failed(self) -> bool:
+        return backup_health_failed(self.opened, self.now)
+
+    @cached_property
+    def points(self) -> list[RecoveryPoint]:
+        return eligible_points(self.opened, self.now)
+
+    def covers(self, point: RecoveryPoint, needs: set[Need]) -> bool:
+        if any(need.verified_at > point.opened_at for need in needs):
+            return False
+        if point.id not in self.manifests:
+            found = manifest_rows(self.opened, point.id)
+            self.manifests[point.id] = found if len(found) == point.manifest_count and manifest_sha256(found) == point.manifest_sha256 else None
+        listed = self.manifests[point.id]
+        return listed is not None and all((need.owner_id, need.asset_id, need.sha1) in listed for need in needs)
+
+
+def unit_refusal(opened: Session, unit: ReleaseUnit, now: float, release_enabled: bool, coverage: Coverage) -> str | None:
+    export = enclosing_export(opened, unit)
+    if export is None or not clock_allows(opened, export, unit, now):
+        return RETENTION_CLOCK
+    if not release_enabled:
+        return RELEASE_OFF
+    if active(opened, REHEARSAL) is None:
+        return NO_REHEARSAL
+    boundary = active(opened, BOUNDARY)
+    if boundary is None or not accepts_current_text(boundary):
+        return BOUNDARY_NOT_ACCEPTED
+    uncommitted = select(ManagedImportReceipt.id).join(ManagedImportIntent, ManagedImportIntent.id == ManagedImportReceipt.intent_id).where(
+        ManagedImportIntent.export_id == export.id, ManagedImportIntent.kind == "import",
+        (ManagedImportReceipt.state != "committed") | ManagedImportReceipt.metadata_hold.is_not(None)).limit(1)
+    if opened.execute(uncommitted).first() is not None:
+        return RECEIPT_NOT_COMMITTED
+    intent = managed_ingest.intent_of(opened, export)
+    person = exports.owner_of(opened, export)
+    if person is None or intent is None or person.id != intent.person_id or person.immich_user_id != intent.owner_id:
+        return KEEPER_NOT_MANAGED
+    required = dependencies(opened, export, intent, unit)
+    reasons = {found.reason for found in required}
+    for reason in (RECEIPT_NOT_COMMITTED, KEEPER_NOT_MANAGED, METADATA_NOT_IN_IMMICH):
+        if reason in reasons:
+            return reason
+    if coverage.failed:
+        return FAILED_KIND
+    if not coverage.points:
+        return NO_RECOVERY_POINT
+    needs = {need for found in required for need in found.needs}
+    return None if any(coverage.covers(point, needs) for point in coverage.points) else NOT_COVERED
+
+
+def refusal(opened: Session, unit: ReleaseUnit, now: float, *, release_enabled: bool = False) -> str | None:
+    return unit_refusal(opened, unit, now, release_enabled, Coverage(opened, now))
+
+
+def units(opened: Session, export_id: int) -> Iterable[ReleaseUnit]:
+    yield from opened.execute(select(ExportPart).where(ExportPart.export_id == export_id, ExportPart.filename.is_not(None),
+                                                      ExportPart.freed_at.is_(None))).scalars()
+    yield from opened.execute(select(TakeoutEntry).where(TakeoutEntry.export_id == export_id, TakeoutEntry.kind == "media",
+                                                       TakeoutEntry.held_path.is_not(None), TakeoutEntry.held_freed_at.is_(None))).scalars()
+    yield from opened.execute(select(ReviewItem).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id).where(
+        DedupeDecision.export_id == export_id, ReviewItem.status != "pending", ReviewItem.hold_path.is_not(None))).scalars()
+
+
+def export_refusals(opened: Session, export_id: int, now: float, coverage: Coverage | None = None) -> Counter[str]:
+    checked = Coverage(opened, now) if coverage is None else coverage
+    return Counter(unit_refusal(opened, unit, now, True, checked) or RELEASE_OFF for unit in units(opened, export_id))
+
+
+def cleanup_detail(opened: Session, export_id: int, now: float) -> str | None:
+    reasons = export_refusals(opened, export_id, now)
+    reason = next((reason for reason in REFUSAL_ORDER[1:] if reasons[reason]), None)
+    return managed_ingest.KEPT_ONLY if reason == NO_REHEARSAL else reason
+
+
+def recovery_status(opened: Session, now: float) -> list[str]:
+    latest_open = opened.execute(select(RecoveryPoint).where(RecoveryPoint.state == "open")
+                                 .order_by(RecoveryPoint.opened_at.desc(), RecoveryPoint.id.desc()).limit(1)).scalar_one_or_none()
+    points = [f"{point.id} ({point.state})" for point in (latest_open, latest_finished(opened)) if point is not None]
+    counts: Counter[str] = Counter()
+    coverage = Coverage(opened, now)
+    for export_id in waiting_exports(opened, now):
+        counts.update(export_refusals(opened, export_id, now, coverage))
+    waiting = [f"  {reason}: {counts[reason]}" for reason in REFUSAL_ORDER[1:] if counts[reason]]
+    return [f"Latest recovery points: {', '.join(points) or 'none'}", "Managed files waiting:", *(waiting or ["  none"])]
+
+
 def waiting_exports(opened: Session, now: float) -> list[int]:
     done = select(ImportRun.export_id, func.max(ImportRun.finished).label("finished")).where(ImportRun.status == "done").group_by(ImportRun.export_id).subquery()
     managed = select(ManagedImportIntent.export_id).where(ManagedImportIntent.kind == "import")
@@ -475,15 +761,7 @@ def waiting_needs(opened: Session, exports: list[int]) -> set[tuple[str, str, st
 
 
 def covering_exists(opened: Session, now: float, needs: set[tuple[str, str, str]]) -> bool:
-    points = opened.execute(select(RecoveryPoint.id).where(
-        RecoveryPoint.state == "succeeded", RecoveryPoint.scopes == ",".join(SCOPES), RecoveryPoint.taken_at >= now - WINDOW, RecoveryPoint.kept_until > now).order_by(
-        RecoveryPoint.id.desc())).scalars().all()
-    for point_id in points:
-        listed = set(opened.execute(select(RecoveryPointAsset.owner_id, RecoveryPointAsset.asset_id, RecoveryPointAsset.sha1).where(
-            RecoveryPointAsset.recovery_point_id == point_id)).tuples())
-        if needs <= listed:
-            return True
-    return False
+    return any(needs <= manifest_rows(opened, point.id) for point in eligible_points(opened, now))
 
 
 def waiting_since(opened: Session, now: float) -> float | None:

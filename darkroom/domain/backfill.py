@@ -16,7 +16,8 @@ from sqlalchemy import Select, and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, dedupe, events, immich_reconcile, managed_ingest, managed_manifest, managed_metadata, managed_upload, media, pixel_folder, pixel_source, xmp
+from darkroom.domain import (alerts, backfill_live, dedupe, events, immich_reconcile, managed_compound, managed_ingest, managed_manifest, managed_metadata,
+                             managed_upload, media, pixel_folder, pixel_source, xmp)
 from darkroom.domain.ingest import pairing
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import exiftool, immich
@@ -33,6 +34,7 @@ SOURCE: Final = "media-item:"
 IMMICH_FOLDER: Final = "immich"
 NEAR_TIERS: Final = (2, 3, 4)
 RETRIED: Final = ("pending", "mismatch", "export_unfinished")
+REVISIT: Final = (*RETRIED, "live_photo")
 CHUNK: Final = 1024 * 1024
 LIVE_SECONDS: Final = 1.0
 MOVED: Final = "moved"
@@ -44,7 +46,11 @@ REASONS: Final[dict[str, str]] = {
     "changed": "the file's bytes are not the ones Darkroom recorded",
     "unreadable": "the file's metadata could not be read",
     "name_refused": "Immich does not take a file with this name",
-    "live_photo": "a Live Photo half, left for the Live Photo step (#553)",
+    "live_photo": "a Live Photo whose companion cannot be established from its recorded Takeout paths",
+    "live_partial": "one half of the Live Photo is missing or is already represented by another photo",
+    "live_ambiguous": "the Live Photo's Takeout paths do not identify just one still and one video",
+    "embedded_motion": "the still already contains motion video",
+    "compound_conflict": "Immich already holds conflicting parts of the Live Photo",
     "same_shot": "the same shot as a phone original with other bytes, or an edited copy, left for the same-shot step (#554)",
     "export_unfinished": ("its Takeout export failed or expired before it was imported, so its companions may be unknown; retry a failed export's import "
                           "from the Exports page and it is backfilled once that import finishes; an expired export cannot finish, so its photos stay listed"),
@@ -75,6 +81,13 @@ class Tools:
     pause: Callable[[float], None] = time.sleep
 
 
+@dataclass(frozen=True)
+class Verified:
+    asset: immich.Asset
+    snapshot: str
+    receipt: ManagedImportReceipt | None = None
+
+
 def due(opened: Session) -> list[Person]:
     people = opened.execute(select(Person).where(Person.managed_backfill == ON).order_by(Person.id)).scalars().all()
     return [person for person in people if immich.is_canonical_id(person.immich_user_id)]
@@ -85,7 +98,7 @@ def copied(opened: Session, item_id: int) -> bool:
     may_be_sent = or_(ManagedImportReceipt.state != "prepared", ManagedImportReceipt.metadata_hold.is_(None),
                       ManagedImportReceipt.metadata_hold.not_in(managed_metadata.HELD_BEFORE_UPLOAD))
     receipt = (select(ManagedImportReceipt.id).join(ManagedImportIntent, ManagedImportIntent.id == ManagedImportReceipt.intent_id)
-               .where(ManagedImportIntent.kind == KIND, ManagedImportReceipt.resource_key == f"{KEY}{item_id}", may_be_sent).limit(1))
+               .where(ManagedImportIntent.kind == KIND, ManagedImportReceipt.resource_key.in_((f"{KEY}{item_id}", f"{SOURCE}{item_id}")), may_be_sent).limit(1))
     return opened.execute(mapped).first() is not None or opened.execute(receipt).first() is not None
 
 
@@ -106,6 +119,12 @@ def note(opened: Session, person: Person, item_id: int, reason: str | None, now:
     if item is None or item.person_id != person.id:
         opened.commit()
         return False
+    record(opened, person, item_id, reason, now, version_id, receipt_id)
+    opened.commit()
+    return True
+
+
+def record(opened: Session, person: Person, item_id: int, reason: str | None, now: float, version_id: int | None, receipt_id: int | None) -> None:
     row = opened.execute(select(ManagedBackfillItem).where(ManagedBackfillItem.item_id == item_id)).scalar_one_or_none()
     outcome = "mapped" if version_id is not None else "exception"
     if row is None:
@@ -114,8 +133,6 @@ def note(opened: Session, person: Person, item_id: int, reason: str | None, now:
     elif (row.outcome, row.reason) != (outcome, reason):
         row.since = now
     row.person_id, row.outcome, row.reason, row.version_id, row.receipt_id, row.checked_at = person.id, outcome, reason, version_id, receipt_id, now
-    opened.commit()
-    return True
 
 
 def version_of(opened: Session, person: Person, asset_id: str, sha1: str, size: int, kind: str, video_id: str | None, snapshot: str, now: float) -> ManagedAssetVersion:
@@ -132,6 +149,10 @@ def version_of(opened: Session, person: Person, asset_id: str, sha1: str, size: 
         if version.bytes is not None and version.bytes != size:
             raise immich.NotCustody("the recorded Immich version holds another size")
         version.bytes, version.state, version.library_id, version.seen_at, version.bytes_verified_at = size, pixel_source.VERIFIED, None, now, now
+    if video_id is not None and version.linked_video_asset_id != video_id:
+        if version.linked_video_asset_id is not None:
+            raise immich.NotCustody("the recorded Immich version is linked to another video")
+        version.linked_video_asset_id, version.metadata_snapshot = video_id, snapshot
     opened.flush()
     return version
 
@@ -165,10 +186,16 @@ class Moved(RuntimeError):
     pass
 
 
+def contents(item: MediaItem) -> tuple[str, str, int, str, int | None]:
+    return item.path, item.sha1, item.bytes, item.source, item.export_id
+
+
 class Backfill:
     def __init__(self, opened: Session, settings: config.Settings, photos: Photos, person: Person, reader: immich.ManagedReader, now: float, tools: Tools) -> None:
         self.opened, self.settings, self.photos, self.person, self.reader, self.now, self.tools = opened, settings, photos, person, reader, now, tools
+        self.owner_id = str(person.immich_user_id)
         self.report = Summary()
+        self.handled: set[int] = set()
 
     def mapped(self, item: MediaItem, version: ManagedAssetVersion, reason: str | None, receipt_id: int | None, queue: bool) -> None:
         version_id = version.id
@@ -184,14 +211,132 @@ class Backfill:
         if note(self.opened, self.person, item.id, reason, self.now):
             self.report.exceptions[reason] += 1
 
+    def current(self, ids: tuple[int, int], saved: list[tuple[str, str, int, str, int | None]]) -> bool:
+        person = self.opened.get(Person, self.person.id, populate_existing=True)
+        if person is None or person.managed_backfill != ON or person.immich_user_id != self.owner_id:
+            return False
+        for item_id, before in zip(ids, saved, strict=True):
+            current = self.opened.get(MediaItem, item_id, populate_existing=True)
+            if current is None or current.person_id != person.id or contents(current) != before:
+                return False
+            export = None if current.export_id is None else self.opened.get(Export, current.export_id, populate_existing=True)
+            if export is not None and export.status != IMPORTED:
+                return False
+        return True
+
+    def verify_pair(self, items: tuple[MediaItem, MediaItem], ids: tuple[str, str],
+                    receipts: tuple[ManagedImportReceipt | None, ManagedImportReceipt | None]) -> tuple[Verified, Verified]:
+        still, video = (self.reader.get_asset(asset_id) for asset_id in ids)
+        if still.kind != "IMAGE" or video.kind != "VIDEO" or still.id == video.id or still.live_video_id != video.id or video.visibility != "hidden":
+            raise immich.NotCustody("Immich's assets are not one linked Live Photo")
+        verified = []
+        for item, asset, receipt in zip(items, (still, video), receipts, strict=True):
+            if asset.sha1 != item.sha1 or (receipt is not None and (receipt.verified_sha1, receipt.verified_bytes) != (item.sha1, item.bytes)):
+                raise immich.ChecksumMismatch("the Live Photo's verified original differs from the file Darkroom recorded")
+            self.reader.verify_original(asset.id, item.sha1, item.bytes)
+            snapshot = str(receipt.metadata_evidence) if receipt is not None else json.dumps({"origin": "phone", "live_video_id": asset.live_video_id},
+                                                                                            sort_keys=True)
+            verified.append(Verified(asset, snapshot, receipt))
+        return verified[0], verified[1]
+
+    def mapped_pair(self, items: tuple[MediaItem, MediaItem], found: tuple[Verified, Verified], kind: str, wanted: Callable[[], bool]) -> None:
+        db.write_lock(self.opened)
+        if not wanted():
+            self.opened.rollback()
+            raise Moved("the Live Photo changed while the backfill ran")
+        mapped = []
+        for item, member in zip(items, found, strict=True):
+            asset, receipt = member.asset, member.receipt
+            version = version_of(self.opened, self.person, asset.id, item.sha1, item.bytes, asset.kind, asset.live_video_id, member.snapshot, self.now)
+            origin(self.opened, version, kind, item, receipt, self.now)
+            receipt_id = None if receipt is None else receipt.id
+            record(self.opened, self.person, item.id, None, self.now, version.id, receipt_id)
+            mapped.append((version.id, receipt_id))
+        self.opened.commit()
+        self.report.mapped += 2
+        for item, (version_id, receipt_id) in zip(items, mapped, strict=True):
+            refused = pixels(self.opened, self.settings, item, version_id, self.now, self.report)
+            if refused and note(self.opened, self.person, item.id, refused, self.now, version_id, receipt_id):
+                self.report.exceptions[refused] += 1
+
+    def pair_exception(self, items: tuple[MediaItem, MediaItem], reason: str) -> None:
+        self.opened.commit()
+        db.write_lock(self.opened)
+        counted = 0
+        for item_id in [item.id for item in items]:
+            current = self.opened.get(MediaItem, item_id, populate_existing=True)
+            mapped = self.opened.scalar(select(ManagedBackfillItem.id).where(ManagedBackfillItem.item_id == item_id,
+                                                                             ManagedBackfillItem.outcome == "mapped"))
+            if current is not None and current.person_id == self.person.id and mapped is None:
+                record(self.opened, self.person, item_id, reason, self.now, None, None)
+                counted += 1
+        self.opened.commit()
+        if counted:
+            self.report.exceptions[reason] += counted
+
+    def stored_phone(self, item_id: int) -> list[ImmichAsset]:
+        return list(self.opened.scalars(select(ImmichAsset).where(ImmichAsset.person_id == self.person.id,
+                                                                ImmichAsset.original_item_id == item_id)
+                                        .order_by(ImmichAsset.id).execution_options(populate_existing=True)))
+
+    def phone_pair(self, item: MediaItem, first: ImmichAsset) -> None:
+        query = select(ImmichAsset).where(ImmichAsset.person_id == self.person.id, ImmichAsset.asset_id == first.linked_asset_id)
+        linked = self.opened.execute(query.execution_options(populate_existing=True)).scalar_one_or_none()
+        if linked is None or linked.original_item_id is None or linked.original_item_id == item.id:
+            self.exception(item, "live_partial")
+            return
+        other = self.opened.get(MediaItem, linked.original_item_id, populate_existing=True)
+        if other is None or other.person_id != self.person.id or other.source != "phone" or not other.path.startswith(f"{self.person.slug}/originals/{IMMICH_FOLDER}/"):
+            self.exception(item, "live_partial")
+            return
+        items, records = ((other, item), (linked, first)) if first.kind == "live_video" else ((item, other), (first, linked))
+        still, video = records
+        ids = items[0].id, items[1].id
+        self.handled.update(ids)
+        asset_ids = still.asset_id, video.asset_id
+        saved = [contents(half) for half in items]
+
+        def wanted() -> bool:
+            if not self.current(ids, saved):
+                return False
+            live = [self.stored_phone(half) for half in ids]
+            if any(len(rows) != 1 for rows in live):
+                return False
+            still_row, video_row = live[0][0], live[1][0]
+            return (still_row.kind == "photo" and video_row.kind == "live_video" and still_row.status == video_row.status == "stored"
+                    and (still_row.asset_id, video_row.asset_id) == asset_ids and (video_row.linked_asset_id, still_row.linked_asset_id) == asset_ids
+                    and all(expected[2] > 0 and expected[1] == row.sha1 for expected, row in zip(saved, (still_row, video_row), strict=True)))
+
+        if not wanted():
+            self.pair_exception(items, "live_partial")
+            return
+        self.finish_pair(items, asset_ids, (None, None), "phone", wanted)
+
+    def finish_pair(self, items: tuple[MediaItem, MediaItem], ids: tuple[str, str],
+                    receipts: tuple[ManagedImportReceipt | None, ManagedImportReceipt | None], kind: str, wanted: Callable[[], bool]) -> None:
+        try:
+            found = self.verify_pair(items, ids, receipts)
+            self.mapped_pair(items, found, kind, wanted)
+        except Moved:
+            return
+        except (immich.NotCustody, immich.NotVisible):
+            self.opened.rollback()
+            self.pair_exception(items, "unusable")
+        except immich.ChecksumMismatch:
+            self.pair_exception(items, "changed")
+        except immich.ImmichFailed:
+            self.pair_exception(items, "pending")
+
     def phone(self, item: MediaItem) -> None:
-        reason = self.phone_problem(item)
+        assets = self.stored_phone(item.id)
+        if len(assets) == 1 and assets[0].linked_asset_id is not None:
+            self.phone_pair(item, assets[0])
+            return
+        reason = self.phone_problem(item, assets)
         if reason is not None:
             self.exception(item, reason)
 
-    def phone_problem(self, item: MediaItem) -> str | None:
-        assets = self.opened.execute(select(ImmichAsset).where(ImmichAsset.person_id == self.person.id, ImmichAsset.original_item_id == item.id)
-                                     .order_by(ImmichAsset.id)).scalars().all()
+    def phone_problem(self, item: MediaItem, assets: Sequence[ImmichAsset]) -> str | None:
         stored = [asset for asset in assets if asset.status == "stored"]
         if any(asset.kind == "live_video" or asset.linked_asset_id is not None for asset in assets):
             return "live_photo"
@@ -265,6 +410,143 @@ class Backfill:
         reason = self.takeout_problem(item)
         if reason is not None and reason != MOVED:
             self.exception(item, reason)
+
+    def pair_input(self, item: MediaItem, role: managed_compound.MemberRole, handle: BinaryIO,
+                   still_sidecar: str | None = None) -> managed_compound.Planned | str:
+        pinned = paths.OPEN_FILES / str(handle.fileno())
+        tags = self.tools.read([pinned]).get(pinned)
+        if tags is None or "Error" in tags:
+            return "unreadable"
+        if role == "live_still" and managed_compound.embedded_motion(tags):
+            return "embedded_motion"
+        kind: managed_metadata.Kind = "IMAGE" if role == "live_still" else "VIDEO"
+        borrowed = item.sidecar_from_still or (item.sidecar_json is None and still_sidecar is not None)
+        sidecar = item.sidecar_json if item.sidecar_json is not None else still_sidecar
+        intended = managed_metadata.intend(tags, xmp.GoogleMetadata.of(sidecar), kind, role, corrects=not borrowed)
+        return managed_compound.Planned(f"{SOURCE}{item.id}", role, item.sha1, item.bytes, intended)
+
+    def drive_pair(self, intent: ManagedImportIntent, pair: backfill_live.Pair, items: tuple[MediaItem, MediaItem],
+                   frozen: managed_compound.Frozen, handles: list[BinaryIO], names: list[str]) -> str | None:
+        if frozen.hold is not None:
+            return frozen.hold
+        still_id, video_id = (frozen.receipts.get(f"{SOURCE}{item.id}") for item in items)
+        if still_id is None or video_id is None:
+            return "live_partial"
+        still, video = (managed_upload.fresh(self.opened, receipt_id) for receipt_id in (still_id, video_id))
+        for item, receipt in zip(items, (still, video), strict=True):
+            if (receipt.source_sha1, receipt.expected_bytes) != (item.sha1, item.bytes):
+                return "changed"
+        if still.state == video.state == "committed":
+            return None
+        try:
+            decision, linked = managed_upload.preflight_matches(self.reader, still, video)
+            if decision == "conflict":
+                managed_compound.set_hold(self.opened, intent.id, pair.key, managed_compound.CONFLICT)
+                return managed_compound.CONFLICT
+            if linked is not None:
+                for row, asset_id in zip((still, video), linked, strict=True):
+                    managed_upload.move(self.opened, row, ("prepared",), self.now, state="returned", asset_id=asset_id, upload_outcome="duplicate")
+        except immich.ImmichFailed:
+            self.opened.rollback()
+            return "pending"
+
+        def resource(row: ManagedImportReceipt, handle: BinaryIO, name: str) -> managed_metadata.Resource:
+            def original() -> immich.UploadSource:
+                handle.seek(0)
+                return immich.UploadSource(handle, row.expected_bytes, row.source_sha1)
+            return managed_metadata.Resource(row.id, original, name)
+
+        report = managed_metadata.complete_live_photo(self.opened, self.reader, resource(video, handles[1], names[1]),
+                                                      resource(still, handles[0], names[0]), self.now, self.tools.pause)
+        if report.outcome == "unusable":
+            managed_compound.set_hold(self.opened, intent.id, pair.key, managed_compound.UNUSABLE)
+            return "unusable"
+        for receipt_id in (still_id, video_id):
+            row = managed_upload.fresh(self.opened, receipt_id)
+            if row.metadata_hold in managed_ingest.TERMINAL:
+                return row.metadata_hold
+            if managed_ingest.gave_up(self.opened, row, self.now):
+                return managed_ingest.NOT_SETTLED
+        return None if report.outcome == "verified" else "pending"
+
+    def takeout_pair_problem(self, intent: ManagedImportIntent, pair: backfill_live.Pair, items: tuple[MediaItem, MediaItem],
+                             wanted: Callable[[], bool]) -> str | None:
+        names = [PurePosixPath(item.path).name for item in items]
+        if not all(managed_ingest.nameable(name) for name in names):
+            return "name_refused"
+        if managed_manifest.resource_of(intent.resource_manifest) != "media_item":
+            return "pending"
+        previous = managed_compound.settled(self.opened, intent.id, pair.key)
+        if previous is not None and previous.hold is not None:
+            return previous.hold
+        if previous is not None and previous.committed_at is not None:
+            return None
+        with contextlib.ExitStack() as stack:
+            try:
+                handles = [stack.enter_context(paths.open_library_file(self.photos, self.person.slug, item.path)) for item in items]
+                if any(item.bytes <= 0 or os.fstat(handle.fileno()).st_size != item.bytes or sha1_of(handle) != item.sha1
+                       for item, handle in zip(items, handles, strict=True)):
+                    return "changed"
+                members = [] if previous is not None else [self.pair_input(items[0], "live_still", handles[0]),
+                                                          self.pair_input(items[1], "live_video", handles[1], items[0].sidecar_json)]
+            except (ValueError, FileNotFoundError, NotADirectoryError, IsADirectoryError):
+                return "missing"
+            except (exiftool.Missing, exiftool.Unreadable, OSError):
+                return "pending"
+            plans = [member for member in members if not isinstance(member, str)]
+            if len(plans) != len(members):
+                return next(member for member in members if isinstance(member, str))
+            try:
+                if previous is None:
+                    frozen = managed_compound.freeze(self.opened, intent.id, pair.key, plans, self.now, wanted)
+                else:
+                    db.write_lock(self.opened)
+                    if not wanted():
+                        self.opened.rollback()
+                        return MOVED
+                    frozen = managed_compound.frozen(self.opened, previous)
+                    self.opened.commit()
+            except managed_compound.Refused:
+                return MOVED
+            return self.drive_pair(intent, pair, items, frozen, handles, names)
+
+    def takeout_pair(self, pair: backfill_live.Pair, items: tuple[MediaItem, MediaItem], frozen: bool) -> None:
+        self.handled.update(pair.items)
+        saved = [contents(item) for item in items]
+        export = self.opened.get(Export, pair.export, populate_existing=True)
+        if export is None or export.status != IMPORTED:
+            self.pair_exception(items, "export_unfinished")
+            return
+        if not frozen and any(copied(self.opened, item.id) for item in items):
+            self.pair_exception(items, "compound_conflict")
+            return
+        intent = self.intent(export)
+
+        def current() -> bool:
+            found = self.opened.get(Export, pair.export, populate_existing=True)
+            return found is not None and found.status == IMPORTED and self.current(pair.items, saved)
+
+        def wanted() -> bool:
+            if not current():
+                return False
+            if frozen:
+                return True
+            if any(copied(self.opened, item.id) for item in items):
+                return False
+            check = backfill_live.recorded(self.opened, self.person.id, pair.items, pair.items, pair.export)
+            return check.pairs.get(pair.still) == pair
+
+        reason = self.takeout_pair_problem(intent, pair, items, wanted)
+        if reason is not None:
+            if reason != MOVED:
+                self.pair_exception(items, reason)
+            return
+        rows = {row.resource_key: row for row in managed_metadata.members(self.opened, intent.id, pair.key)}
+        still, video = (rows.get(f"{SOURCE}{half}") for half in pair.items)
+        if still is None or video is None or still.state != "committed" or video.state != "committed" or still.asset_id is None or video.asset_id is None:
+            self.pair_exception(items, "pending")
+            return
+        self.finish_pair(items, (still.asset_id, video.asset_id), (still, video), "takeout", current)
 
     def sent(self, item: MediaItem, intent: ManagedImportIntent, name: str) -> tuple[str | int, Report | None]:
         known = self.opened.execute(receipt_query(intent, item)).scalar_one_or_none()
@@ -349,8 +631,8 @@ class Backfill:
         self.convert_deferred()
         row = ManagedBackfillItem
         mine = and_(row.item_id == MediaItem.id, row.person_id == self.person.id)
-        unsettled = ~exists(select(row.id).where(mine, or_(row.reason.is_(None), row.reason.not_in(RETRIED))))
-        retried = exists(select(row.id).where(mine, row.reason.in_(RETRIED)))
+        unsettled = ~exists(select(row.id).where(mine, or_(row.reason.is_(None), row.reason.not_in(REVISIT))))
+        retried = exists(select(row.id).where(mine, row.reason.in_(REVISIT)))
         checked = func.coalesce(select(row.checked_at).where(mine).scalar_subquery(), 0.0)
         finished = ~exists(select(Export.id).where(Export.id == MediaItem.export_id, Export.status.not_in((IMPORTED, *ENDED))))
         google_only = and_(MediaItem.source == "takeout", MediaItem.path.startswith(f"{self.person.slug}/google-only/"))
@@ -363,8 +645,16 @@ class Backfill:
         takeouts = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, known_contents(), google_only)
                                        .order_by(MediaItem.id)).scalars().all() if pending else []
         halves = live_halves(self.opened, self.person, takeouts, pending) if pending else set()
-        near = same_shots(self.opened, self.person, pending)
+        sources = {item.id: item for item in takeouts}
+        pending_ids = {item.id for item in pending}
+        frozen = backfill_live.frozen(self.opened, self.person.id, self.owner_id, pending_ids) if pending else backfill_live.Groups({}, {})
+        recorded = backfill_live.recorded(self.opened, self.person.id, halves - frozen.holds.keys(), sources.keys()) if halves else backfill_live.Groups({}, {})
+        pairs = recorded.pairs | frozen.pairs
+        paired_ids = {other for pair in pairs.values() for other in pair.items}
+        near = same_shots(self.opened, self.person, [item for item in takeouts if item.id in paired_ids or item.id in pending_ids])
         for item in waiting:
+            if item.id in self.handled:
+                continue
             seen = None if item.export_id is None else status.get(item.export_id)
             if item.source == "phone":
                 self.phone(item)
@@ -372,8 +662,17 @@ class Backfill:
                 self.exception(item, "export_unfinished")
             elif item.export_id is not None and seen != IMPORTED:
                 continue
-            elif item.id in halves:
-                self.exception(item, "live_photo")
+            elif (pair := pairs.get(item.id)) is not None:
+                still, video = (sources.get(half) for half in pair.items)
+                if still is None or video is None:
+                    self.exception(item, "live_partial")
+                elif item.id not in frozen.pairs and near.intersection(pair.items):
+                    self.handled.update(pair.items)
+                    self.pair_exception((still, video), "same_shot")
+                else:
+                    self.takeout_pair(pair, (still, video), item.id in frozen.pairs)
+            elif item.id in halves or item.id in frozen.holds:
+                self.exception(item, recorded.holds.get(item.id, "live_photo"))
             elif item.id in near:
                 self.exception(item, "same_shot")
             else:
@@ -464,10 +763,13 @@ def live_halves(opened: Session, person: Person, items: Sequence[MediaItem], can
         for export_id, source in opened.execute(select(DedupeDecision.export_id, DedupeDecision.source_path)
                                                 .where(DedupeDecision.export_id.in_(exports), DedupeDecision.source_path.is_not(None))).all():
             found.add(export_id, PurePosixPath(str(source)), None)
-        for export_id, name, captured in opened.execute(select(TakeoutEntry.export_id, TakeoutEntry.name, TakeoutEntry.captured_utc)
-                                                        .where(TakeoutEntry.export_id.in_(exports), TakeoutEntry.kind == "media")).all():
-            found.add(export_id, PurePosixPath(name), None)
-            found.add(("ledger", export_id), PurePosixPath(name), captured)
+        ledger = select(TakeoutEntry.export_id, TakeoutEntry.name, TakeoutEntry.captured_utc, TakeoutEntry.item_id)
+        for export_id, name, captured, item_id in opened.execute(ledger.where(TakeoutEntry.export_id.in_(exports), TakeoutEntry.kind == "media")):
+            path = PurePosixPath(name)
+            found.add(export_id, path, None)
+            found.add(("ledger", export_id), path, captured)
+            if item_id is not None and item_id in wanted:
+                sources[item_id].append((export_id, path))
     halves: set[int] = set()
     for item in candidates:
         path = PurePosixPath(item.path)

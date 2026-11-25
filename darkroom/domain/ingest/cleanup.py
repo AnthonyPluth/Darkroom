@@ -11,7 +11,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import events, exports, managed_ingest, managed_switch
+from darkroom.domain import events, exports, managed_ingest, managed_switch, retention_gate
 from darkroom.domain.ingest import place, run, unpack
 from darkroom.storage import db, paths
 from darkroom.storage.models import DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem, TakeoutEntry
@@ -171,7 +171,7 @@ def unsafe_reviews(opened: Session, photos: Photos, export: Export, per_part: bo
     )
 
 
-def note_switch_kept(opened: Session, now: float, subject: str, detail: str) -> None:
+def note_kept(opened: Session, now: float, subject: str, detail: str) -> None:
     last = opened.execute(select(Event.detail).where(Event.type == "cleanup_kept", Event.subject == subject).order_by(Event.id.desc()).limit(1)).scalar_one_or_none()
     if last != detail:
         events.record(opened, now, "cleanup_kept", subject, detail)
@@ -188,7 +188,7 @@ def switch_allows(opened: Session, photos: Photos, person: Person | None, writer
         managed_switch.hold(opened, photos, person, writer, export)
     except managed_switch.Paused as paused:
         report.kept += 1
-        note_switch_kept(opened, now, subject, str(paused))
+        note_kept(opened, now, subject, str(paused))
         opened.commit()
         monitoring.log("cleanup kept while the managed switch is not off", writer=writer, state=person.managed_imports or "off")
         return False
@@ -284,7 +284,10 @@ def clean_export(opened: Session, photos: Photos, export: Export, now: float, re
     person = exports.owner_of(opened, export)
     if place.managed_import(opened, export):
         report.kept += 1
-        note_once(opened, now, "cleanup_kept", f"export {export.id}", managed_ingest.KEPT_ONLY)
+        detail = retention_gate.cleanup_detail(opened, export.id, now)
+        if detail is not None:
+            db.write_lock(opened)
+            note_kept(opened, now, f"export {export.id}", detail)
         return
     done = latest_done_run(opened, export)
     if done is not None and done.failed > 0:

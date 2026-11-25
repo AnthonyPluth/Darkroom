@@ -15,6 +15,7 @@ from darkroom.domain.ingest import cleanup, part_free
 from darkroom.storage import db
 from darkroom.storage.models import Alert, Event, Export, ImportRun, ManagedImportIntent, RecoveryPoint, RecoveryPointAsset, RetentionAttestation
 from tests import test_recovery_points as base
+from tests.import_world import NOW as IMPORT_NOW
 from tests.import_world import tree
 from tests.privacy import no_leaks
 from tests.test_managed_ingest import ManagedWorld
@@ -613,13 +614,15 @@ class NothingIsRemovedTests(unittest.TestCase):
         self.assertTrue(zips)
         url = "https://github.com/AnthonyPluth/Darkroom/issues/266#issuecomment-7100000001"
         with db.session(world.engine, writing=True) as opened:
-            retention_gate.record_rehearsal(opened, NOW, retention_gate.checked_rehearsal(url, "2026-11-20", "v3.4.1", "v5.9.0", "sqlite", "2026-11-24"))
-            retention_gate.accept_boundary(opened, NOW, url)
+            retention_gate.record_rehearsal(opened, IMPORT_NOW, retention_gate.checked_rehearsal(url, "2026-11-20", "v3.4.1", "v5.9.0", "sqlite", "2026-11-24"))
+            retention_gate.accept_boundary(opened, IMPORT_NOW, url)
         engine = world.engine
-        begun = retention_gate.begin(engine, world.settings, NOW + 60.0, None)
+        first_check = IMPORT_NOW + 30 * DAY
+        begun = retention_gate.begin(engine, world.settings, first_check - 3600.0, None)
         with db.session(engine) as opened:
-            retention_gate.finish(opened, NOW + 3000.0, begun.point_id, report(taken_at=datetime.fromtimestamp(NOW + 120.0, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")))
-        for at in (NOW + 30 * DAY, NOW + 90 * DAY):
+            retention_gate.finish(opened, first_check - 60.0, begun.point_id, report(taken_at=stamp(first_check - 120.0)))
+            self.assertEqual(set(retention_gate.export_refusals(opened, export.id, first_check)), {"release_off"})
+        for at in (first_check, IMPORT_NOW + 90 * DAY):
             with db.session(engine, writing=True) as opened:
                 retention_gate.watch(opened, world.settings, at, lambda *_: alerts.SENT)
             self.assertEqual(cleanup.clean(world.opened, world.photos, at, world.settings).parts, 0)

@@ -533,7 +533,7 @@ def retention_action(opened: Session, args: argparse.Namespace, today: str) -> l
         return [f"Withdrawn: {KIND_NAMES[found.kind]} (record {found.id}). It no longer counts."]
     current = retention_gate.status(opened)
     return [*describe_attestation(retention_gate.REHEARSAL, current.rehearsal), *describe_attestation(retention_gate.BOUNDARY, current.boundary),
-            f"Withdrawn records: {current.withdrawn}", RETENTION_KEPT]
+            f"Withdrawn records: {current.withdrawn}", *retention_gate.recovery_status(opened, now), RETENTION_KEPT]
 
 
 RECOVERY_NOT_MIGRATED = "recovery-point: the database has no recovery points table yet; run `python run.py migrate` (or start the service once), then run this again"
@@ -601,6 +601,10 @@ def retention(argv: list[str]) -> int:
     if not inspect(engine).has_table(RetentionAttestation.__tablename__):
         engine.dispose()
         print(RETENTION_NOT_MIGRATED, file=sys.stderr)
+        return 1
+    if args.action == "status" and not inspect(engine).has_table(RecoveryPoint.__tablename__):
+        engine.dispose()
+        print(RECOVERY_NOT_MIGRATED, file=sys.stderr)
         return 1
     try:
         with db.session(engine) as opened:

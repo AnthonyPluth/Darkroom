@@ -446,17 +446,20 @@ if __name__ == "__main__":
 
 class BackfillDeletesNothing(unittest.TestCase):
     def test_the_backfill_calls_no_remover_and_writes_no_file(self):
-        tree = ast.parse(Path(backfill.__file__).read_text())
-        calls = {node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "") for node in ast.walk(tree) if isinstance(node, ast.Call)}
         forbidden = {"remove_losing_copy", "restore_losing_copy", "remove_part_zip", "remove_held_copy", "remove_inbox_file", "remove_inbox_tree", "remove_pixel_copy",
                      "sweep_scratch", "sweep_placements", "prune", "prune_copy", "unlink", "rmdir", "rmtree", "remove", "rename", "replace", "write_bytes",
                      "write_text", "write_once", "write_xmp", "write_sidecar", "place_google_only", "resolve", "resolve_person", "delete", "chmod", "chown", "open"}
-        self.assertEqual(calls & forbidden, set())
-        imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import | ast.ImportFrom) for alias in node.names}
-        imported |= {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
-        self.assertFalse(imported & {"takeout_copies", "cleanup", "part_free", "shutil", "darkroom.domain.takeout_copies"})
-        names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
-        self.assertFalse(names & {"DuplicateRemoval", "remove_losing_copy", "delete"})
+        for module in (backfill, backfill.backfill_live):
+            with self.subTest(module=module.__name__):
+                tree = ast.parse(Path(module.__file__).read_text())
+                nodes = list(ast.walk(tree))
+                calls = {node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "") for node in nodes if isinstance(node, ast.Call)}
+                self.assertEqual(calls & forbidden, set())
+                imported = {alias.name for node in nodes if isinstance(node, ast.Import | ast.ImportFrom) for alias in node.names}
+                imported |= {node.module or "" for node in nodes if isinstance(node, ast.ImportFrom)}
+                self.assertFalse(imported & {"takeout_copies", "cleanup", "part_free", "shutil", "darkroom.domain.takeout_copies"})
+                names = {node.id for node in nodes if isinstance(node, ast.Name)} | {node.attr for node in nodes if isinstance(node, ast.Attribute)}
+                self.assertFalse(names & {"DuplicateRemoval", "remove_losing_copy", "delete"})
 
 
 class RetentionGateDeletesNothing(unittest.TestCase):
