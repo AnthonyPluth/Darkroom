@@ -174,26 +174,32 @@ def frozen(opened: Session, compound: ManagedCompound) -> Frozen:
 
 
 def freeze(opened: Session, intent_id: int, compound_key: str, members: Sequence[Planned], now: float, wanted: Callable[[], bool]) -> Frozen:
+    db.write_lock(opened)
+    try:
+        result = freeze_locked(opened, intent_id, compound_key, members, now, wanted)
+    except Refused:
+        opened.rollback()
+        raise
+    opened.commit()
+    return result
+
+
+def freeze_locked(opened: Session, intent_id: int, compound_key: str, members: Sequence[Planned], now: float, wanted: Callable[[], bool]) -> Frozen:
     still, video = checked(members)
     if not compound_key:
         raise Refused("a Live Photo needs a compound key")
-    db.write_lock(opened)
     existing = opened.execute(select(ManagedCompound).where(ManagedCompound.intent_id == intent_id, ManagedCompound.compound_key == compound_key)
                               .execution_options(populate_existing=True)).scalar_one_or_none()
     if existing is not None:
-        result = frozen(opened, existing)
-        opened.commit()
-        return result
+        return frozen(opened, existing)
     keys = [still.resource_key, video.resource_key]
     receipt, member = ManagedImportReceipt, ManagedCompoundMember
     taken = opened.execute(select(receipt.id).where(receipt.intent_id == intent_id, or_(receipt.resource_key.in_(keys), receipt.compound_key.in_([*keys, compound_key])))
                            .limit(1)).first()
     named = opened.execute(select(member.id).where(member.intent_id == intent_id, member.resource_key.in_(keys)).limit(1)).first()
     if taken is not None or named is not None:
-        opened.rollback()
         raise Refused("a half of the Live Photo already has a receipt or belongs to another compound")
     if not wanted():
-        opened.rollback()
         raise Refused("a half of the Live Photo is no longer wanted")
     hold = next((half.intended.hold for half in (still, video) if half.intended.hold in managed_metadata.HELD_BEFORE_UPLOAD), None)
     compound = ManagedCompound(intent_id=intent_id, compound_key=compound_key, kind=KIND, hold=hold, frozen_at=now)
@@ -205,9 +211,7 @@ def freeze(opened: Session, intent_id: int, compound_key: str, members: Sequence
         opened.add(ManagedImportReceipt(intent_id=intent_id, resource_key=half.resource_key, compound_key=compound_key, source_sha1=half.sha1,
                                         expected_bytes=half.bytes, expected_metadata=managed_metadata.snapshot(half.intended), updated_at=now))
     opened.flush()
-    result = frozen(opened, compound)
-    opened.commit()
-    return result
+    return frozen(opened, compound)
 
 
 def settled(opened: Session, intent_id: int, compound_key: str) -> ManagedCompound | None:

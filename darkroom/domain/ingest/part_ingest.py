@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final
+from typing import BinaryIO, Final
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
@@ -108,6 +108,24 @@ def queued_parts(opened: Session) -> list[tuple[int, int]]:
 
 def part_of(opened: Session, export_id: int, number: int) -> ExportPart | None:
     return opened.execute(select(ExportPart).where(ExportPart.export_id == export_id, ExportPart.number == number)).scalar_one_or_none()
+
+
+def copy_archived_media(opened: Session, photos: Photos, export: Export, person: Person, entry: TakeoutEntry, destination: BinaryIO) -> None:
+    part = part_of(opened, export.id, entry.part_number)
+    unavailable = "the archived copy could not be read"
+    if entry.export_id != export.id or entry.kind != "media" or part is None or part.ingest_state != INGESTED or part.free_state is not None:
+        raise OSError(unavailable)
+    path = unpack.part_path(export, part, photos, person)
+    try:
+        with unpack.open_part(photos, path, part.number) as handle, part_reader.zip_of(handle, path, part.number) as archive:
+            listed = part_reader.entry_listing(archive.infolist())
+            found = next((item for item in listed if item.name == entry.name and item.kind == "media"), None)
+            if found is None or (found.bytes, found.crc32) != (entry.bytes, entry.crc32):
+                raise OSError(unavailable)
+            for chunk in part_reader.entry_chunks(archive, found.info, part.number, [0]):
+                destination.write(chunk)
+    except (unpack.UnpackFailed, part_reader.PartRefused):
+        raise OSError(unavailable) from None
 
 
 def run_queued(opened: Session, settings: config.Settings, now: float, tools: run.Tools | None = None,
