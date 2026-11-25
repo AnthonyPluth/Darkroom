@@ -1,6 +1,7 @@
 import dataclasses
 import unittest
 import uuid
+from pathlib import Path
 from unittest import mock
 
 from sqlalchemy import select, update
@@ -179,6 +180,18 @@ class KeepBothTests(unittest.TestCase):
             return dataclasses.replace(found, hold="unknown_offset") if role == "live_video" else found
 
         with mock.patch.object(managed_metadata, "intend", no_offset), self.assertRaisesRegex(review.WrongState, "offset"):
+            self.keep(world, review_id)
+        self.assertEqual((world.opened.get(ReviewItem, review_id).status, world.compound(), world.receipts(), world.uploads()),
+                         ("pending", None, {}, 0))
+
+    def test_keep_both_retains_review_when_the_automatic_half_has_an_unreadable_archive(self):
+        world = LiveWorld(self)
+        review_id = next(iter(self.reviewed(world, 4, 5).values()))
+        video = world.entry(f"{PHOTOS}IMG_3001.MOV")
+        export = world.opened.get(Export, video.export_id)
+        archive = world.part(export, video.part_number)
+        (Path(export.inbox_dir) / archive.filename).write_bytes(b"damaged archive")
+        with self.assertRaisesRegex(review.WrongState, "could not be read"):
             self.keep(world, review_id)
         self.assertEqual((world.opened.get(ReviewItem, review_id).status, world.compound(), world.receipts(), world.uploads()),
                          ("pending", None, {}, 0))

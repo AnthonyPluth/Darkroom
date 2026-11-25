@@ -13,11 +13,11 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
 from darkroom.domain import alerts, immich_reconcile, managed_compound, managed_manifest, managed_metadata, managed_upload, media, same_shot, xmp
-from darkroom.domain.ingest import part_reader, place, unpack
+from darkroom.domain.ingest import place, unpack
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, paths
-from darkroom.storage.models import Alert, DedupeDecision, Export, ExportPart, ManagedCompound, ManagedCompoundMember, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry
+from darkroom.storage.models import Alert, DedupeDecision, Export, ManagedCompound, ManagedCompoundMember, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry
 from darkroom.storage.paths import Photos
 
 ON: Final = "on"
@@ -311,8 +311,10 @@ def live_original(opened: Session, photos: Photos, export: Export, person: Perso
             path = paths.held_copy_at(photos, entry.held_path, unpack.staging_name(export))
             original = handles.enter_context(paths.open_inbox_file(photos, path))
         else:
+            from darkroom.domain.ingest import part_ingest
+
             original = handles.enter_context(tempfile.TemporaryFile())
-            copy_live_from_zip(opened, photos, export, person, entry, original)
+            part_ingest.copy_archived_media(opened, photos, export, person, entry, original)
             original.seek(0)
         digest, identity = paths.fingerprint(original)
         if (digest, identity[2]) != (entry.sha1, entry.bytes):
@@ -321,21 +323,7 @@ def live_original(opened: Session, photos: Photos, export: Export, person: Perso
         yield original
 
 
-def copy_live_from_zip(opened: Session, photos: Photos, export: Export, person: Person, entry: TakeoutEntry, destination: BinaryIO) -> None:
-    part = opened.execute(select(ExportPart).where(ExportPart.export_id == export.id, ExportPart.number == entry.part_number)).scalar_one_or_none()
-    if part is None or part.ingest_state != "ingested" or part.free_state is not None:
-        raise Refused(LIVE_UNREADABLE)
-    path = unpack.part_path(export, part, photos, person)
-    with unpack.open_part(photos, path, part.number) as handle, part_reader.zip_of(handle, path, part.number) as archive:
-        listed = part_reader.entry_listing(archive.infolist())
-        found = next((item for item in listed if item.name == entry.name and item.kind == "media"), None)
-        if found is None or (found.bytes, found.crc32) != (entry.bytes, entry.crc32):
-            raise Refused(LIVE_UNREADABLE)
-        for chunk in part_reader.entry_chunks(archive, found.info, part.number, [0]):
-            destination.write(chunk)
-
-
-LIVE_READ_FAILURES = (OSError, paths.OutsideRoot, paths.NotAHeldCopy, unpack.UnpackFailed, part_reader.PartRefused, exiftool.Missing, exiftool.Unreadable)
+LIVE_READ_FAILURES = (OSError, paths.OutsideRoot, paths.NotAHeldCopy, exiftool.Missing, exiftool.Unreadable)
 
 
 def keep_live(opened: Session, photos: Photos, export: Export, person: Person, current: ReviewItem, items: tuple[Item, Item], now: float, read: xmp.Reader) -> str:
