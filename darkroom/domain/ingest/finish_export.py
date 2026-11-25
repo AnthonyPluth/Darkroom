@@ -12,11 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, dedupe, events, exports, managed_compound, managed_ingest, same_shot
-from darkroom.domain.ingest import pairing, part_ingest, part_pairing, run
+from darkroom.domain import alerts, dedupe, events, exports, holds, managed_compound, managed_ingest, same_shot
+from darkroom.domain.ingest import hold_apply, pairing, part_ingest, part_pairing, run
 from darkroom.providers import immich
 from darkroom.storage import db, paths
-from darkroom.storage.models import Alert, DedupeDecision, Export, ExportPart, ImportRun, Person, TakeoutEntry, TakeoutSidecar
+from darkroom.storage.models import Alert, DedupeDecision, Export, ExportPart, ImportRun, ManagedImportReceipt, Person, TakeoutEntry, TakeoutSidecar
 from darkroom.storage.paths import Photos
 
 COMMIT_HOOK: Callable[[], None] | None = None
@@ -507,6 +507,26 @@ def ready_exports(opened: Session) -> list[int]:
     return [export.id for export in found if ready(opened, export)]
 
 
+def source_for_resolution(opened: Session, settings: config.Settings, photos: Photos, stack: contextlib.ExitStack,
+                          receipt: ManagedImportReceipt, export: Export, person: Person) -> hold_apply.Source:
+    stack.enter_context(run.account_lock(settings, export.account_id))
+    opened.refresh(export)
+    root_id = holds.number_after(receipt.resource_key, "takeout-entry:")
+    canon = canonical(opened, export)
+    unit = next((item for item in canon.units if item.root.id == root_id), None)
+    if (export.status not in (*STILL_OPEN, "imported") or run.before(export, "placed")
+            or unit is None or unit.root.id in live_roots(canon) or unit.item.sidecar_from_still
+            or not managed_ingest.wanted(opened, export, unit.root)
+            or (unit.root.sha1, unit.root.bytes) != (receipt.source_sha1, receipt.expected_bytes)):
+        raise hold_apply.UnreadableSource
+    part = part_ingest.part_of(opened, export.id, unit.root.part_number)
+    if part is None:
+        raise hold_apply.UnreadableSource
+    text = opened.scalars(select(TakeoutSidecar.text).where(TakeoutSidecar.export_id == export.id, TakeoutSidecar.entry_id == unit.sidecar_id)).one_or_none()
+    source = stack.enter_context(part_ingest.resolution_copy(photos, export, part, person, unit.root))
+    return hold_apply.Source(stack.enter_context(paths.open_inbox_file(photos, source)), Path(unit.path).name, text, entry=unit.root)
+
+
 def finish_ready(opened: Session, settings: config.Settings, now: float, tools: run.Tools | None = None) -> list[int]:
     chosen = tools or run.Tools()
     done = []
@@ -521,5 +541,8 @@ def finish_ready(opened: Session, settings: config.Settings, now: float, tools: 
             continue
         done.append(export_id)
     alert_unfinished(opened, settings, now, chosen)
-    managed_ingest.send_kept(opened, settings, Photos(settings.photos_root), now, chosen.immich)
+    photos = Photos(settings.photos_root)
+    managed_ingest.send_kept(opened, settings, photos, now, chosen.immich)
+    hold_apply.apply(opened, settings, photos, now, chosen,
+                     lambda stack, receipt, export, person: source_for_resolution(opened, settings, photos, stack, receipt, export, person))
     return done

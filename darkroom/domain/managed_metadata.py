@@ -25,13 +25,14 @@ from darkroom.storage.models import ManagedCompound, ManagedCompoundMember, Mana
 
 Role = Literal["single", "live_still", "live_video"]
 Kind = Literal["IMAGE", "VIDEO"]
-Source = Literal["media", "sidecar", "sidecar_offset"]
+Source = Literal["media", "sidecar", "sidecar_offset", "owner"]
 Hold = Literal["unknown_offset", "no_instant", "unwritable", "mismatch", "not_enriched", "not_linked"]
 SCHEMA = 1
 NOT_A_CAPTURE_DATE = "DateCreated"
 ROLES = ("single", "live_still", "live_video")
 KINDS = ("IMAGE", "VIDEO")
-SOURCES = (None, "media", "sidecar", "sidecar_offset")
+FILE_OR_GOOGLE_SOURCES = (None, "media", "sidecar", "sidecar_offset")
+SOURCES = (*FILE_OR_GOOGLE_SOURCES, "owner")
 HELD_BEFORE_UPLOAD = ("unknown_offset", "no_instant", "unwritable")
 KEYS = {"schema", "role", "kind", "taken_utc", "offset", "taken_from", "latitude", "longitude", "place_from", "description", "description_from", "sidecar", "hold"}
 POLLS = 5
@@ -74,6 +75,14 @@ class Resource:
     filename: str = field(repr=False)
 
 
+@dataclass(frozen=True)
+class OwnerValues:
+    offset: int | None = None
+    wall: datetime | None = None
+    instant: float | None = None
+    drop_description: bool = False
+
+
 def agreed_offset(local: str | None, google: xmp.GoogleMetadata, corrects: bool) -> int | None:
     if local is None or google.taken_utc is None or not corrects:
         return None
@@ -108,7 +117,35 @@ def taken_of(own: dict[str, object], fields: dict[str, str], place: tuple[float 
     return utc, offset, "media", None
 
 
-def intend(tags: dict[str, object], google: xmp.GoogleMetadata, kind: Kind, role: Role = "single", corrects: bool = True) -> Intended:
+def owner_time(own: dict[str, object], fields: dict[str, str], google: xmp.GoogleMetadata, place: tuple[float | None, float | None],
+               owner: OwnerValues) -> tuple[float | None, int | None, Source | None, Hold | None] | None:
+    offset = owner.offset
+    if offset is None:
+        return None
+    instant = owner.instant
+    if instant is None and owner.wall is not None:
+        instant = media.utc_or_none(owner.wall, offset)
+    if instant is None and xmp.CREATED in fields:
+        instant = google.taken_utc
+    if instant is None:
+        own_lat, own_lon, _ = media.location(own)
+        utc, local, _, source = media.capture(own, own_lat, own_lon)
+        if source == "quicktime_utc":
+            instant = utc
+        elif local is not None:
+            whole = media.utc_or_none(datetime.fromisoformat(local), offset)
+            instant = None if whole is None else whole + media.seconds_fraction(own)
+    if instant is None or media.wall_clock_at(instant, *place)[1] not in (None, offset):
+        return None, None, None, "unknown_offset"
+    created = xmp.created_text(instant, None, None, offset)
+    if created is None:
+        return None, None, None, "unknown_offset"
+    fields[xmp.CREATED] = created
+    return instant, offset, "owner", None
+
+
+def intend(tags: dict[str, object], google: xmp.GoogleMetadata, kind: Kind, role: Role = "single", corrects: bool = True,
+           owner: OwnerValues = OwnerValues()) -> Intended:
     own = {key: value for key, value in tags.items() if key.rsplit(":", 1)[-1] != NOT_A_CAPTURE_DATE}
     fields = xmp.gaps(own, {}, google, with_date=True, still=kind == "IMAGE", corrects=corrects)
     own_lat, own_lon, _ = media.location(own)
@@ -116,11 +153,13 @@ def intend(tags: dict[str, object], google: xmp.GoogleMetadata, kind: Kind, role
     place_from: Source | None = None if own_lat is None else "media"
     if xmp.LATITUDE in fields:
         lat, lon, place_from = float(fields[xmp.LATITUDE]), float(fields[xmp.LONGITUDE]), "sidecar"
+    if owner.drop_description:
+        fields.pop(xmp.DESCRIPTION, None)
     description = media.text(media.tag(own, *xmp.DESCRIPTION_TAGS))
     description_from: Source | None = None if description is None else "media"
     if xmp.DESCRIPTION in fields:
         description, description_from = fields[xmp.DESCRIPTION], "sidecar"
-    taken, offset, taken_from, hold = taken_of(own, fields, (lat, lon), google, corrects)
+    taken, offset, taken_from, hold = owner_time(own, fields, google, (lat, lon), owner) or taken_of(own, fields, (lat, lon), google, corrects)
     try:
         xmp.upload_sidecar(fields)
     except ValueError:
@@ -142,7 +181,7 @@ def number(value: object) -> bool:
 def readable(found: dict[str, Any]) -> bool:
     sidecar, offset = found["sidecar"], found["offset"]
     if (found["role"] not in ROLES or found["kind"] not in KINDS or found["hold"] not in (None, *HELD_BEFORE_UPLOAD)
-            or any(found[name] not in SOURCES for name in ("taken_from", "place_from", "description_from"))
+            or found["taken_from"] not in SOURCES or any(found[name] not in FILE_OR_GOOGLE_SOURCES for name in ("place_from", "description_from"))
             or not isinstance(sidecar, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in sidecar.items())
             or not (found["description"] is None or isinstance(found["description"], str))
             or not all(found[name] is None or number(found[name]) for name in ("taken_utc", "latitude", "longitude"))
@@ -313,7 +352,8 @@ def complete_receipt(opened: Session, reader: immich.ManagedReader, resource: Re
         return Report("pending", "the receipt's intended metadata cannot be read")
     if intended.hold is not None and intended.hold in HELD_BEFORE_UPLOAD:
         if row.metadata_hold != intended.hold:
-            managed_upload.move(opened, row, (row.state,), now, metadata_hold=intended.hold)
+            managed_upload.move(opened, row, (row.state,), now, ManagedImportReceipt.expected_metadata == row.expected_metadata,
+                                ManagedImportReceipt.metadata_hold == row.metadata_hold, metadata_hold=intended.hold)
         return Report("held", REASONS[intended.hold])
     if (intended.role == "live_still") != (live_video_id is not None):
         return Report("pending", "a Live Photo's still is sent only after its video, linked to it")
@@ -325,7 +365,7 @@ def complete_receipt(opened: Session, reader: immich.ManagedReader, resource: Re
     def body() -> immich.MultipartUpload:
         return immich.MultipartUpload(resource.original(), resource.filename, taken, taken, sidecar_source(intended), live_video_id)
     try:
-        uploaded = managed_upload.upload_receipt(opened, reader, row.id, body, now)
+        uploaded = managed_upload.upload_receipt(opened, reader, row.id, body, now, expected_metadata=row.expected_metadata)
     except (immich.ImmichFailed, OSError):
         return Report("pending", "the upload could not be built from the source")
     if uploaded.outcome != "verified":

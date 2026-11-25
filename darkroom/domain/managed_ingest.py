@@ -17,7 +17,8 @@ from darkroom.domain.ingest import place, unpack
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, paths
-from darkroom.storage.models import Alert, DedupeDecision, Export, ManagedCompound, ManagedCompoundMember, ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry
+from darkroom.storage.models import (Alert, DedupeDecision, Export, ManagedCompound, ManagedCompoundMember, ManagedHoldResolution,
+                                     ManagedImportIntent, ManagedImportReceipt, Person, ReviewItem, TakeoutEntry)
 from darkroom.storage.paths import Photos
 
 ON: Final = "on"
@@ -392,6 +393,10 @@ def keep_for_immich(opened: Session, photos: Photos, export: Export, review: Rev
 
 def send_one(opened: Session, settings: config.Settings, photos: Photos, receipt_id: int, now: float, client: immich.Client | None) -> bool:
     row = managed_upload.fresh(opened, receipt_id)
+    resolution = select(ManagedHoldResolution.id).where(ManagedHoldResolution.receipt_id == receipt_id, ManagedHoldResolution.state == "applied",
+                                                        ManagedHoldResolution.result == "cleared")
+    if opened.execute(resolution).first() is not None:
+        return False
     intent = opened.get(ManagedImportIntent, row.intent_id)
     person = None if intent is None else opened.get(Person, intent.person_id)
     review = opened.get(ReviewItem, int(row.resource_key.removeprefix(KEPT)))
