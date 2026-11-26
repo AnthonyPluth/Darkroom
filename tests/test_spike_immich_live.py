@@ -2,13 +2,15 @@ import io
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from tests.fakes.immich import FakeAsset, FakeImmich, FakePerson
-from tools.spikes import immich_live
+from tools.spikes import immich_live, live_photo_fixtures
 
 KEY_A, KEY_B, KEY_Q = "canary-key-a-7f3e91", "canary-key-b-c41d02", "canary-key-q-9a8b7c"
 KEY_AALL, KEY_BALL, KEY_READ, KEY_REVOKED = "canary-key-aall-31c7d4", "canary-key-ball-8e2f60", "canary-key-read-5b9a13", "canary-revoked-5e4d"
@@ -200,6 +202,92 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(self.row(text, "trashed"), "pass")
         self.assertTrue(trash_me.trashed)
         self.assert_only_safe_requests()
+
+    def test_live_photo_mode_reports_duplicate_link_visibility_and_invalid_links(self):
+        with mock.patch.object(immich_live.shutil, "which", return_value=None):
+            code, printed, text = self.run_harness("--live-photo", IMMICH_LIVE_KEY_B=KEY_B)
+        self.assertEqual(code, 0, printed + text)
+        for key in ("l2", "l3", "l4", "l6_missing", "l6_other"):
+            self.assertEqual(self.row(text, key), "pass", key)
+        for key in ("l1", "l5", "new", "live", "e1"):
+            self.assertEqual(self.row(text, key), "not run", key)
+        self.assertIn("existing still was left unlinked", text)
+        self.assertIn("without visibility: `timeline` before, `hidden` after", text)
+        self.assertIn("`visibility: hidden`: `hidden` before, `hidden` after", text)
+        self.assertIn("400 `Not found or no asset.update permission`", text)
+        self.assertEqual([a.kind for a in self.fake.state.assets if a.owner_id == USER_B], ["VIDEO"])
+        self.assertFalse(any(a.name.endswith(("-missing-video-still.jpg", "-other-user-still.jpg")) for a in self.fake.state.assets))
+        self.assert_no_secret(printed, text)
+        self.assert_only_safe_requests()
+
+    def test_live_photo_case_with_no_link_is_not_verified_and_the_second_owner_is_optional(self):
+        self.fake.state.keep_unlinked = True
+        with (mock.patch.object(immich_live.shutil, "which", return_value="ffmpeg"),
+              mock.patch.object(live_photo_fixtures, "video", side_effect=lambda _encoder, seed, *_args: seed.encode())):
+            code, printed, text = self.run_harness("--live-photo", "--extraction-timeout", "0.1")
+        self.assertEqual(code, 1, printed + text)
+        for key in ("l1", "l3", "l4", "l5"):
+            self.assertEqual(self.row(text, key), "not verified", key)
+        self.assertEqual(self.row(text, "l6_other"), "not run")
+        self.assertIn("No embedded-video checksum match was observed", text)
+
+    def test_live_photo_observations_wait_for_linking_and_inventory_the_extracted_video(self):
+        embedded = b"generated embedded video"
+        original_wait = immich_live.Run.wait
+        generated_calls = []
+
+        def generate(encoder, seed, suffix, content_id=None):
+            generated_calls.append((encoder, seed, suffix, content_id))
+            return embedded if seed.endswith("-embedded-motion") else seed.encode()
+
+        def after_extraction(run, account, asset_id, ready, timeout=None):
+            still = next(a for a in self.fake.state.assets if a.id == asset_id)
+            if still.name.endswith("-apple-still.heic"):
+                clip = next(a for a in self.fake.state.assets if a.name.endswith("-apple-video.mov"))
+            else:
+                self.assertTrue(still.name.endswith("-embedded-still.jpg"))
+                self.assertTrue(still.data.endswith(embedded))
+                self.assertIn(f'GCamera:MicroVideoOffset="{len(embedded)}"'.encode(), still.data)
+                clip = self.fake.add_asset(FakeAsset(str(uuid.uuid4()), USER_A, embedded,
+                                                      name=still.name.removesuffix(".jpg") + ".mp4", kind="VIDEO"))
+            self.assertNotEqual(still.live_video_id, clip.id)
+            still.live_video_id, clip.visibility = clip.id, "hidden"
+            return original_wait(run, account, asset_id, ready, timeout)
+
+        with (mock.patch.object(immich_live.shutil, "which", return_value="ffmpeg"),
+              mock.patch.object(live_photo_fixtures, "video", side_effect=generate),
+              mock.patch.object(immich_live.Run, "wait", new=after_extraction)):
+            code, printed, text = self.run_harness("--live-photo")
+        self.assertEqual(code, 0, printed + text)
+        self.assertEqual(self.row(text, "l1"), "pass")
+        self.assertEqual(self.row(text, "l5"), "pass")
+        self.assertEqual([call[2] for call in generated_calls], ["mov", "mp4", "mp4"])
+        apple = next(asset for asset in self.fake.state.assets if asset.name.endswith("-apple-still.heic"))
+        self.assertIn(generated_calls[0][3].encode(), apple.data)
+        self.assertIn('"label": "extracted-motion"', text)
+        self.assert_no_secret(printed, text)
+        self.assert_only_safe_requests()
+
+    def test_live_photo_mode_does_not_mix_with_another_phase(self):
+        for mode in (("--phase", "second-account"), ("--large-video-mb", "1"), ("--extraction-timeout", "inf")):
+            with self.subTest(mode=mode):
+                code, printed, text = self.run_harness("--live-photo", *mode)
+                self.assertEqual(code, 2, printed)
+                self.assertIn("--live-photo runs alone", printed)
+                self.assertEqual(text, "")
+        self.assertEqual(self.fake.requests(), [])
+
+    def test_live_photo_mode_appends_results_with_fresh_assets(self):
+        with mock.patch.object(immich_live.shutil, "which", return_value=None):
+            first, printed, text = self.run_harness("--live-photo")
+            self.assertEqual(first, 0, printed + text)
+            first_ids = {asset.id for asset in self.fake.state.assets}
+            code, printed, text = self.run_harness("--live-photo", "--append-results", str(self.folder / "result.md"), out="merged.md")
+        self.assertEqual(code, 0, printed + text)
+        self.assertEqual(self.row(text, "l2"), "pass")
+        self.assertEqual(len(self.fake.state.assets), 2 * len(first_ids))
+        merged = immich_live.load_data(self.folder / "merged.md")
+        self.assertEqual({asset["id"] for asset in merged["created"]}, {asset.id for asset in self.fake.state.assets})
 
     ENRICH_ENV = {"IMMICH_LIVE_ENRICH_KEY": KEY_AALL, "IMMICH_LIVE_ENRICH_KEY_2": KEY_BALL, "IMMICH_LIVE_ENRICH_READ_KEY": KEY_READ, "IMMICH_LIVE_REVOKED_KEY": KEY_REVOKED}
 

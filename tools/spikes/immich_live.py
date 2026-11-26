@@ -5,9 +5,11 @@ import base64
 import hashlib
 import io
 import json
+import math
 import os
 import random
 import re
+import shutil
 import struct
 import sys
 import threading
@@ -26,6 +28,7 @@ from PIL import ExifTags, Image, ImageDraw
 
 from darkroom import config, tls
 from darkroom.providers import immich
+from tools.spikes import live_photo_fixtures
 
 MARKER = "darkroom-spike"
 USER_AGENT = "immich-spike/1.0"
@@ -38,10 +41,12 @@ ALBUM_ROUTE = re.compile(rf"/api/albums\?assetId={UUID}")
 UPDATE_ROUTE = re.compile(rf"/api/assets/{UUID}")
 MAX_VIDEO_MB = 256
 OPT_IN = "not run: opt in with --enrich"
+LIVE_OPT_IN = "not run: opt in with --live-photo"
 READ_ONLY_REFUSED = frozenset({"all", "asset.update"})
 CHUNK = 1024 * 1024
 DENIED = (400, "Not found or no asset.read access")
 QUOTA = (400, "Quota has been exceeded!")
+LINK_REFUSED = (400, "Not found or no asset.update permission")
 DATA_START, DATA_END = "```json immich-live-data", "```"
 ROWS = (
     ("grants", "Server version and the key's exact grants (refused before any upload if broader or an admin user)", ""),
@@ -56,6 +61,13 @@ ROWS = (
     ("trashed", "Trashed duplicate", "not run: needs the after-trash phase (runbook, steps 4 and 5)"),
     ("offline", "Offline / external-library duplicate versus managed upload", "not run: needs an external library, which needs an admin key this harness refuses"),
     ("live", "Generated Live Photo pairing, interrupted between uploads", ""),
+    ("l1", "L1 HEIC and MOV with a shared Apple content identifier", LIVE_OPT_IN),
+    ("l2", "L2 Duplicate still sent with a Live Photo video ID", LIVE_OPT_IN),
+    ("l3", "L3 Link a new still to a previously visible video", LIVE_OPT_IN),
+    ("l4", "L4 Video visibility before and after linking with and without a hidden upload", LIVE_OPT_IN),
+    ("l5", "L5 Embedded JPEG motion versus a separate Live Photo video ID", LIVE_OPT_IN),
+    ("l6_missing", "L6 Refusal for a nonexistent Live Photo video ID", LIVE_OPT_IN),
+    ("l6_other", "L6 Refusal for a Live Photo video owned by the other disposable user", LIVE_OPT_IN),
     ("raw", "RAW/JPEG pair", ""),
     ("edited", "Edited representations", "not run: needs an edit in Immich's editor and `asset.update`, which this harness refuses"),
     ("video", "Large video and async extraction delay", "not run: opt in with --large-video-mb"),
@@ -280,21 +292,29 @@ class Run:
         return f"{MARKER}-{self.run_id}-{label}.{suffix}"
 
     def upload(self, account: Account, label: str, suffix: str, data: bytes, sidecar: bytes | None = None,
-               live: str | None = None, taken: str = "2024-01-02T03:04:05+00:00") -> immich.UploadResult:
+               live: str | None = None, taken: str = "2024-01-02T03:04:05+00:00", *, hidden: bool = False) -> immich.UploadResult:
         name = self.name(label, suffix)
         side = immich.UploadSource(io.BytesIO(sidecar), len(sidecar), sha1(sidecar)) if sidecar else None
         body = immich.MultipartUpload(immich.UploadSource(io.BytesIO(data), len(data), sha1(data)), name, taken, taken, side, live)
-        status, found = account.api.call("POST", "/api/assets", raw=b"".join(body), headers=body.headers)
+        raw, headers = b"".join(body), body.headers
+        if hidden:
+            boundary = raw.partition(b"\r\n")[0]
+            raw = boundary + b'\r\nContent-Disposition: form-data; name="visibility"\r\n\r\nhidden\r\n' + raw
+            headers["Content-Length"] = str(len(raw))
+        status, found = account.api.call("POST", "/api/assets", raw=raw, headers=headers)
         if status not in (200, 201):
             raise Failed(f"upload of {label} answered {status} ({message(found)})", status, message(found))
         try:
             result = immich.upload_result(status, found)
         except immich.ImmichFailed as error:
             raise Failed(f"upload of {label}: {error}") from None
-        with self.lock:
-            if not any(c["id"] == result.asset_id for c in self.created):
-                self.created.append({"label": label, "file": name, "id": result.asset_id, "account": account.label})
+        self.record_asset(account, label, name, result.asset_id)
         return result
+
+    def record_asset(self, account: Account, label: str, name: str, asset_id: str) -> None:
+        with self.lock:
+            if not any(c["id"] == asset_id for c in self.created):
+                self.created.append({"label": label, "file": name, "id": asset_id, "account": account.label})
 
     def asset(self, account: Account, asset_id: str) -> dict[str, Any]:
         status, found = account.api.call("GET", f"/api/assets/{asset_id}")
@@ -347,7 +367,7 @@ class Run:
     def step(self, row: str, action: Callable[[], tuple[str, str]]) -> None:
         try:
             self.rows[row] = action()
-        except (Failed, Refused) as error:
+        except (Failed, Refused, live_photo_fixtures.FixtureFailed) as error:
             self.rows[row] = ("fail", str(error))
         except (immich.ImmichFailed, OSError, ValueError) as error:
             self.rows[row] = ("fail", f"unexpected {type(error).__name__}")
@@ -525,6 +545,154 @@ def single_account(run: Run, a: Account, large_video_mb: float) -> None:
             found, delay = run.wait(a, up.asset_id, lambda f: type(f.get("duration")) is int and f["duration"] > 0)
             return ("pass" if delay is not None else "fail"), f"{len(data)} bytes uploaded in {took}s, bytes verified; duration `{found.get('duration')}` ms {run.waited(delay)}"
         run.step("video", video)
+
+
+def live_fixture(run: Run, account: Account, label: str, suffix: str, data: bytes, *, linked_video: str | None = None,
+                 hidden: bool = False) -> tuple[str, dict[str, Any]]:
+    result = run.upload(account, label, suffix, data, live=linked_video, hidden=hidden)
+    if result.status != "created":
+        raise Failed(f"the generated {label} was not a new asset")
+    return result.asset_id, run.verify(account, result.asset_id, data)
+
+
+def video_visibility(asset: dict[str, Any]) -> str:
+    visibility = asset.get("visibility")
+    if asset.get("type") != "VIDEO" or visibility not in ("timeline", "hidden", "archive", "locked"):
+        raise Failed("a video read-back did not give a recognized visibility")
+    return str(visibility)
+
+
+def linked_video_of(asset: dict[str, Any]) -> str | None:
+    if asset.get("type") != "IMAGE" or "livePhotoVideoId" not in asset:
+        raise Failed("a still read-back did not give a Live Photo video ID field")
+    linked = asset["livePhotoVideoId"]
+    if linked is not None and not immich.is_upload_id(linked):
+        raise Failed("a still read-back gave an invalid Live Photo video ID")
+    return None if linked is None else str(linked)
+
+
+def auto_live_photo(run: Run, account: Account, encoder: str) -> tuple[str, str]:
+    content_id = str(uuid.uuid4()).upper()
+    photo = live_photo_fixtures.apple_heic(content_id)
+    video = live_photo_fixtures.video(encoder, f"{run.run_id}-apple", "mov", content_id)
+    clip, _ = live_fixture(run, account, "apple-video", "mov", video)
+    still, _ = live_fixture(run, account, "apple-still", "heic", photo)
+    found, delay = run.wait(account, still, lambda asset: linked_video_of(asset) == clip)
+    if delay is None:
+        observed = "no link" if linked_video_of(found) is None else "a different link"
+        return "not verified", f"the still showed {observed} through the {run.extraction_timeout:g} s observation window"
+    visibility = video_visibility(run.verify(account, clip, video))
+    return "pass", f"With no video ID sent on upload, `livePhotoVideoId` matched the MOV {run.waited(delay)}. The video's visibility was `{visibility}`."
+
+
+def duplicate_live_still(run: Run, account: Account) -> tuple[str, str]:
+    data = jpeg(f"{run.run_id}-duplicate-still")
+    still, found = live_fixture(run, account, "duplicate-still", "jpg", data)
+    if linked_video_of(found) is not None:
+        raise Failed("the new still was already linked")
+    clip, _ = live_fixture(run, account, "duplicate-video", "avi", avi(f"{run.run_id}-duplicate-video", 0.05))
+    try:
+        duplicate = run.upload(account, "duplicate-still-retry", "jpg", data, live=clip)
+    except Failed as error:
+        if error.status != 400 or error.reply == "no message":
+            raise
+        reply = f"400 `{error.reply}`"
+    else:
+        if (duplicate.status, duplicate.asset_id) != ("duplicate", still):
+            raise Failed("the retry did not identify the existing still as a duplicate")
+        reply = "200 duplicate with the existing ID"
+    observed = linked_video_of(run.verify(account, still, data))
+    if observed not in (None, clip):
+        return "not verified", f"{reply}. The existing still linked to a different video."
+    return "pass", f"{reply}. The existing still was {'linked to the supplied video' if observed == clip else 'left unlinked'} on read-back."
+
+
+def linked_visibility(run: Run, account: Account, label: str, *, hidden: bool = False) -> tuple[str, str, bool]:
+    data = avi(f"{run.run_id}-{label}-video", 0.05)
+    clip, before_clip = live_fixture(run, account, f"{label}-video", "avi", data, hidden=hidden)
+    before = video_visibility(before_clip)
+    photo = jpeg(f"{run.run_id}-{label}-still")
+    _, found = live_fixture(run, account, f"{label}-still", "jpg", photo, linked_video=clip)
+    linked = linked_video_of(found) == clip
+    after = video_visibility(run.verify(account, clip, data))
+    return before, after, linked
+
+
+def embedded_live_photo(run: Run, account: Account, encoder: str) -> tuple[str, str]:
+    separate = live_photo_fixtures.video(encoder, f"{run.run_id}-separate-motion", "mp4")
+    embedded = live_photo_fixtures.video(encoder, f"{run.run_id}-embedded-motion", "mp4")
+    if sha1(separate) == sha1(embedded) or run.bulk_check(account, embedded).get("action") != "accept":
+        raise Failed("the embedded video was not distinct and new")
+    clip, _ = live_fixture(run, account, "separate-motion", "mp4", separate)
+    photo = live_photo_fixtures.motion_jpeg(jpeg(f"{run.run_id}-embedded-still"), embedded)
+    still, _ = live_fixture(run, account, "embedded-still", "jpg", photo, linked_video=clip)
+    found, delay = run.wait(account, still, lambda asset: linked_video_of(asset) not in (None, clip))
+    link = linked_video_of(found)
+    extracted = run.bulk_check(account, embedded)
+    match = extracted.get("assetId")
+    if (extracted.get("action"), extracted.get("reason")) != ("reject", "duplicate") or not immich.is_upload_id(match):
+        observed = "the separate video" if link == clip else "no video" if link is None else "an unidentified video"
+        return "not verified", f"The still showed {observed}. No embedded-video checksum match was observed within {run.extraction_timeout:g} s."
+    if match == clip:
+        raise Failed("the embedded-video checksum resolved to the separate video")
+    motion_id = str(match)
+    video_visibility(run.verify(account, motion_id, embedded))
+    run.record_asset(account, "extracted-motion", run.name("embedded-still", "mp4"), motion_id)
+    if link != match:
+        return "not verified", "a second video with the embedded video's bytes exists, but the still did not link to it within the observation window"
+    return "pass", f"The still linked to a second asset with the embedded video's exact bytes {run.waited(delay)}. That link replaced the separately supplied one."
+
+
+def refused_live_video(run: Run, account: Account, video_id: str, label: str) -> tuple[str, str]:
+    photo = jpeg(f"{run.run_id}-{label}")
+    try:
+        run.upload(account, label, "jpg", photo, live=video_id)
+    except Failed as error:
+        if error.status is None:
+            raise
+        reply = (error.status, error.reply)
+        if reply != LINK_REFUSED:
+            return "not verified", f"upload answered {error.status} `{error.reply}`"
+        if run.bulk_check(account, photo).get("action") != "accept":
+            return "fail", "the refused still's checksum was found after the request"
+        return "pass", f"{error.status} `{error.reply}`. The still's checksum remained absent."
+    return "fail", "Immich accepted the still with an unavailable video ID"
+
+
+def live_photo_run(run: Run, account: Account, other: Account | None) -> None:
+    encoder = shutil.which("ffmpeg")
+    if encoder:
+        run.step("l1", lambda: auto_live_photo(run, account, encoder))
+        run.step("l5", lambda: embedded_live_photo(run, account, encoder))
+    else:
+        run.rows["l1"] = run.rows["l5"] = ("not run", "needs FFmpeg with libx264 to generate the video fixture")
+    run.step("l2", lambda: duplicate_live_still(run, account))
+
+    def visible() -> tuple[str, str]:
+        before, after, linked = linked_visibility(run, account, "previously-visible")
+        ok = before == "timeline" and linked
+        return ("pass" if ok else "not verified"), f"Visibility was `{before}` before and `{after}` after. The still {'linked' if linked else 'did not link'} to the video."
+    run.step("l3", visible)
+
+    def compare_visibility() -> tuple[str, str]:
+        default_before, default_after, default_linked = linked_visibility(run, account, "visibility-default")
+        default = f"without visibility: `{default_before}` before, `{default_after}` after, linked: {default_linked}"
+        try:
+            hidden_before, hidden_after, hidden_linked = linked_visibility(run, account, "visibility-hidden", hidden=True)
+        except Failed as error:
+            return "not verified", f"{default}. `visibility: hidden`: {error}"
+        hidden = f"`visibility: hidden`: `{hidden_before}` before, `{hidden_after}` after, linked: {hidden_linked}"
+        return ("pass" if default_linked and hidden_linked else "not verified"), f"{default}. {hidden}."
+    run.step("l4", compare_visibility)
+    run.step("l6_missing", lambda: refused_live_video(run, account, str(uuid.uuid4()), "missing-video-still"))
+
+    def other_video() -> tuple[str, str]:
+        if other is None or other.user_id == account.user_id:
+            return "not run", "needs a second disposable user with its own key"
+        data = avi(f"{run.run_id}-other-video", 0.05)
+        clip, _ = live_fixture(run, other, "other-user-video", "avi", data)
+        return refused_live_video(run, account, clip, "other-user-still")
+    run.step("l6_other", other_video)
 
 
 def two_accounts(run: Run, b: Account, data: bytes, a_asset: str, a_owner: str) -> None:
@@ -890,7 +1058,9 @@ def main(argv: list[str] | None = None, out: TextIO = sys.stdout, environ: dict[
     parser.add_argument("--allow-public-address", action="store_true")
     parser.add_argument("--large-video-mb", type=float, default=0.0)
     parser.add_argument("--extraction-timeout", type=float, default=180.0)
-    parser.add_argument("--enrich", action="store_true", help="run only the E rows of section 16 of the enrichment design, with IMMICH_LIVE_ENRICH_KEY")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--enrich", action="store_true", help="run only the E rows of section 16 of the enrichment design, with IMMICH_LIVE_ENRICH_KEY")
+    mode.add_argument("--live-photo", action="store_true", help="run only the L rows in the Live Photo design, on a disposable Immich instance")
     parser.add_argument("--settle-seconds", type=float, default=600.0)
     args = parser.parse_args(argv)
     env = os.environ if environ is None else environ
@@ -909,13 +1079,15 @@ def main(argv: list[str] | None = None, out: TextIO = sys.stdout, environ: dict[
             raise Refused(f"--large-video-mb is limited to {MAX_VIDEO_MB}")
         if args.enrich and (args.phase != "main" or args.large_video_mb or not 0 <= args.settle_seconds <= 3600 or not enrich_keys[0]):
             raise Refused("--enrich runs alone (no other phase, no large video), needs IMMICH_LIVE_ENRICH_KEY and a --settle-seconds of at most 3600")
-        if not args.enrich and (args.phase == "main") != (args.append_results is None):
+        if args.live_photo and (args.phase != "main" or args.large_video_mb or not math.isfinite(args.extraction_timeout) or args.extraction_timeout <= 0):
+            raise Refused("--live-photo runs alone (no other phase, no large video) with a finite, positive --extraction-timeout")
+        if not (args.enrich or args.live_photo) and (args.phase == "main") != (args.append_results is None):
             raise Refused("--append-results goes with --phase second-account or after-trash, and only with them")
         address = check_address(url, args.allow_public_address)
         if not os.environ.get("SSL_CERT_FILE") and (bundle := os.environ.get("CURL_CA_BUNDLE") or os.environ.get("REQUESTS_CA_BUNDLE")):
             os.environ["SSL_CERT_FILE"] = bundle
         previous = load_data(args.append_results) if args.append_results else None
-        run = Run(previous["run_id"] if previous else uuid.uuid4().hex[:8], poll_seconds=poll_seconds,
+        run = Run(previous["run_id"] if previous and not args.live_photo else uuid.uuid4().hex[:8], poll_seconds=poll_seconds,
                   extraction_timeout=args.extraction_timeout, address=address, version=previous["version"] if previous else "")
         a = Account("B" if args.phase == "second-account" else "A", Api(url, key_a))
         preflight(run, a)
@@ -923,12 +1095,14 @@ def main(argv: list[str] | None = None, out: TextIO = sys.stdout, environ: dict[
         if key_b and args.phase == "main" and not args.enrich:
             b = Account("B", Api(url, key_b))
             preflight(run, b)
-        if quota_key and args.phase == "main" and not args.enrich:
+        if quota_key and args.phase == "main" and not (args.enrich or args.live_photo):
             quota = Account("quota", Api(url, quota_key))
             preflight(run, quota)
         run.rows["grants"] = ("pass", f"exactly {', '.join(a.grants)}; non-admin user{'s' if b else ''}")
         if args.enrich:
             enrich_run(run, url, a, enrich_keys, revoked_key, args.settle_seconds)
+        elif args.live_photo:
+            live_photo_run(run, a, b)
         elif args.phase == "main":
             shared = jpeg(f"{run.run_id}-shared")
             first = run.upload(a, "shared", "jpg", shared)
