@@ -9,9 +9,20 @@ depends_on = None
 JOURNALS = (("export_parts", "release_point_id"), ("takeout_entries", "held_release_point_id"))
 
 
+def begin_sqlite_ddl(connection: sa.Connection) -> None:
+    if connection.dialect.name != "sqlite":
+        return
+    driver = connection.connection.driver_connection
+    assert driver is not None
+    if not driver.in_transaction:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+
+
 def upgrade() -> None:
+    connection = op.get_bind()
+    begin_sqlite_ddl(connection)
     for table, column in JOURNALS:
-        if op.get_bind().dialect.name == "sqlite":
+        if connection.dialect.name == "sqlite":
             op.execute(f"ALTER TABLE {table} ADD COLUMN {column} INTEGER REFERENCES recovery_points(id)")
         else:
             op.add_column(table, sa.Column(column, sa.Integer(), nullable=True))
@@ -20,6 +31,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     connection = op.get_bind()
+    begin_sqlite_ddl(connection)
     for table, column in JOURNALS:
         journal = sa.table(table, sa.column(column))
         if connection.execute(sa.select(journal.c[column]).where(journal.c[column].is_not(None)).limit(1)).first() is not None:

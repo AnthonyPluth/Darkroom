@@ -752,8 +752,16 @@ class MigrationTests(unittest.TestCase):
                                        "VALUES (1, 1, 1, 'fixture.jpg', 'media', 2, 0, 1.0, 'freed')")
             connection.exec_driver_sql("INSERT INTO recovery_points (id, opened_at, state, manifest_count, manifest_sha256) "
                                        f"VALUES (1, 1.0, 'open', 0, '{'a' * 64}')")
-        db.migrate(self.engine)
         columns = (("export_parts", "free_state", "release_point_id", "freeing"), ("takeout_entries", "held_state", "held_release_point_id", "freed"))
+        with self.assertRaisesRegex(RuntimeError, "abort upgrade"), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0063")
+            raise RuntimeError("abort upgrade")
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0062")
+            for table, _, point, _ in columns:
+                self.assertNotIn(point, {column["name"] for column in inspect(connection).get_columns(table)})
+        db.migrate(self.engine)
         with self.engine.begin() as connection:
             self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
             for table, state, point, before in columns:
@@ -769,6 +777,14 @@ class MigrationTests(unittest.TestCase):
         with self.engine.begin() as connection:
             for table, _, point, _ in columns:
                 connection.exec_driver_sql(f"UPDATE {table} SET {point} = NULL")
+        with self.assertRaisesRegex(RuntimeError, "abort downgrade"), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0062")
+            raise RuntimeError("abort downgrade")
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0063")
+            for table, _, point, _ in columns:
+                self.assertIsNone(connection.exec_driver_sql(f"SELECT {point} FROM {table}").scalar_one())
             config.attributes["connection"] = connection
             command.downgrade(config, "0062")
             for table, state, _, before in columns:
