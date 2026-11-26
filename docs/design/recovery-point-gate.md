@@ -148,6 +148,8 @@ An asset is covered by R when it is in R's manifest. That means it was committed
 
 ### When backups fail or go stale
 
+The stale-backup clock follows imports with a remaining ZIP, held copy, or review hold. A ZIP or held copy leaves the count when its journal records both `freed` and a completion time. Interrupted claims and review holds still on record keep the export in the count even while release is off.
+
 | Situation | What cleanup does | What the owner sees |
 | --- | --- | --- |
 | The latest finished point is `failed` or `abandoned` | Pauses every managed release (G8), even where an older point would cover | An alert `retention:backup_failed`, opened once, "The last Immich backup Darkroom was told about did not succeed, so Darkroom keeps every Immich import's files in the inbox. Check the backup job." It closes when a later point succeeds |

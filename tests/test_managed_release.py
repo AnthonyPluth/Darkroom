@@ -7,7 +7,7 @@ from unittest import mock
 
 from sqlalchemy import select
 
-from darkroom.domain import retention_gate
+from darkroom.domain import alerts, retention_gate
 from darkroom.domain.ingest import part_free, part_reader, unpack
 from darkroom.providers import immich
 from darkroom.storage import db, paths
@@ -116,6 +116,28 @@ class ReleaseTests(ReleaseFixture):
         self.assertTrue(self.zip.is_file() and held.is_file())
         self.assertEqual(self.world.fake.requests()[start:], [])
         self.assertEqual(self.reasons(), ["part 1: release_off", "held copy: release_off"])
+
+    def test_the_last_release_closes_the_stale_backup_alert_and_a_later_expiry_does_not_reopen_it(self):
+        self.hold()
+        self.authorize()
+
+        def watch(at):
+            with db.session(self.world.engine, writing=True) as opened:
+                return retention_gate.watch(opened, self.world.settings, at, lambda *_: alerts.SENT).backup_stale
+
+        original_expiry = RELEASE_AT + retention_gate.WINDOW
+        self.assertTrue(watch(original_expiry))
+        self.assertIsNone(self.world.alert(retention_gate.STALE_KEY).closed)
+        release_at = original_expiry + DAY
+        self.backup(ahead=release_at - RELEASE_AT)
+        freed = self.tick(at=release_at)
+        self.assertEqual((freed.parts, freed.held), (1, 1))
+
+        self.assertFalse(watch(release_at + retention_gate.WINDOW))
+        self.assertTrue(self.world.alert(retention_gate.STALE_KEY).closed)
+        self.assertFalse(watch(release_at + retention_gate.WINDOW + DAY))
+        self.assertEqual(self.world.opened.scalars(select(Alert.id).where(Alert.key == retention_gate.STALE_KEY)).all(),
+                         [self.world.alert(retention_gate.STALE_KEY).id])
 
     def test_the_files_are_not_candidates_before_14_days(self):
         held = self.hold()

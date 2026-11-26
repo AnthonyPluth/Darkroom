@@ -11,7 +11,7 @@ from datetime import UTC, date, datetime
 from functools import cached_property
 from typing import Final, Literal
 
-from sqlalchemy import Engine, func, select
+from sqlalchemy import Engine, Select, func, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
@@ -792,13 +792,25 @@ def refusal(opened: Session, unit: ReleaseUnit, now: float, *, release_enabled: 
     return unit_refusal(opened, unit, now, release_enabled, Coverage(opened, now))
 
 
+def remaining_parts() -> Select[ExportPart]:
+    return select(ExportPart).where(ExportPart.filename.is_not(None) | (ExportPart.free_state == "freeing"),
+                                    ExportPart.free_state.is_distinct_from("freed") | ExportPart.freed_at.is_(None))
+
+
+def remaining_held_copies() -> Select[TakeoutEntry]:
+    return select(TakeoutEntry).where(TakeoutEntry.kind == "media",
+                                     TakeoutEntry.held_path.is_not(None) | (TakeoutEntry.held_state == "freeing"),
+                                     TakeoutEntry.held_state.is_distinct_from("freed") | TakeoutEntry.held_freed_at.is_(None))
+
+
+def review_holds() -> Select[ReviewItem]:
+    return select(ReviewItem).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id).where(ReviewItem.hold_path.is_not(None))
+
+
 def units(opened: Session, export_id: int) -> Iterable[ReleaseUnit]:
-    yield from opened.execute(select(ExportPart).where(ExportPart.export_id == export_id, ExportPart.filename.is_not(None),
-                                                      ExportPart.freed_at.is_(None))).scalars()
-    yield from opened.execute(select(TakeoutEntry).where(TakeoutEntry.export_id == export_id, TakeoutEntry.kind == "media",
-                                                       TakeoutEntry.held_path.is_not(None), TakeoutEntry.held_freed_at.is_(None))).scalars()
-    yield from opened.execute(select(ReviewItem).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id).where(
-        DedupeDecision.export_id == export_id, ReviewItem.status != "pending", ReviewItem.hold_path.is_not(None))).scalars()
+    yield from opened.scalars(remaining_parts().where(ExportPart.export_id == export_id))
+    yield from opened.scalars(remaining_held_copies().where(TakeoutEntry.export_id == export_id))
+    yield from opened.scalars(review_holds().where(DedupeDecision.export_id == export_id, ReviewItem.status != "pending"))
 
 
 def export_refusals(opened: Session, export_id: int, now: float, coverage: Coverage | None = None, *, release_enabled: bool = False) -> Counter[str]:
@@ -832,8 +844,11 @@ def recovery_status(opened: Session, now: float, *, release_enabled: bool = Fals
 def waiting_exports(opened: Session, now: float) -> list[int]:
     done = select(ImportRun.export_id, func.max(ImportRun.finished).label("finished")).where(ImportRun.status == "done").group_by(ImportRun.export_id).subquery()
     managed = select(ManagedImportIntent.export_id).where(ManagedImportIntent.kind == "import")
+    has_files = (remaining_parts().where(ExportPart.export_id == Export.id).exists()
+                 | remaining_held_copies().where(TakeoutEntry.export_id == Export.id).exists()
+                 | review_holds().where(DedupeDecision.export_id == Export.id).exists())
     return list(opened.execute(select(Export.id).join(done, Export.id == done.c.export_id).where(
-        Export.status == "imported", Export.id.in_(managed), done.c.finished <= now - WINDOW).order_by(Export.id)).scalars())
+        Export.status == "imported", Export.id.in_(managed), done.c.finished <= now - WINDOW, has_files).order_by(Export.id)).scalars())
 
 
 def waiting_needs(opened: Session, exports: list[int]) -> set[tuple[str, str, str]]:
@@ -848,8 +863,8 @@ def covering_exists(opened: Session, now: float, needs: set[tuple[str, str, str]
     return any(needs <= manifest_rows(opened, point.id) for point in eligible_points(opened, now))
 
 
-def waiting_since(opened: Session, now: float) -> float | None:
-    found = opened.execute(select(func.max(ImportRun.finished)).where(ImportRun.status == "done", ImportRun.export_id.in_(waiting_exports(opened, now))).group_by(
+def waiting_since(opened: Session, exports: list[int]) -> float | None:
+    found = opened.execute(select(func.max(ImportRun.finished)).where(ImportRun.status == "done", ImportRun.export_id.in_(exports)).group_by(
         ImportRun.export_id)).scalars().all()
     finished = [moment for moment in found if moment is not None]
     return min(finished) + WINDOW if finished else None
@@ -872,8 +887,9 @@ def watch(opened: Session, settings: config.Settings, now: float, notifier: aler
     abandoned = abandon_stale(opened, now)
     latest = latest_finished(opened)
     failed = latest is not None and latest.state != "succeeded"
-    since = waiting_since(opened, now)
-    stale = since is not None and now - since >= STALE_AFTER and owner_recorded(opened) and not covering_exists(opened, now, waiting_needs(opened, waiting_exports(opened, now)))
+    waiting = waiting_exports(opened, now)
+    since = waiting_since(opened, waiting)
+    stale = since is not None and now - since >= STALE_AFTER and owner_recorded(opened) and not covering_exists(opened, now, waiting_needs(opened, waiting))
     for key, kind, message, raised in ((FAILED_KEY, FAILED_KIND, FAILED_MESSAGE, failed), (STALE_KEY, STALE_KIND, STALE_MESSAGE, stale)):
         if raised:
             alerts.open_alert(opened, settings, key, kind, "recovery points", alerts.Wording(alerts.TITLES[kind], message), None, now, notifier=notifier, about=alerts.NOBODY)
