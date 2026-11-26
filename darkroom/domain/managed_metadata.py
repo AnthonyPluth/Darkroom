@@ -432,7 +432,7 @@ def commit_compound(opened: Session, reader: immich.ManagedReader, intent_id: in
                 on_commit()
             opened.commit()
         return Report("verified", "every resource of the item is committed")
-    if not rows or any(row.state not in ("metadata_verified", "committed") or row.metadata_hold is not None for row in rows):
+    if not rows or any(row.state not in ("metadata_verified", "committed") for row in rows):
         return Report("pending", "a resource of the item has no verified metadata yet")
     intents = [intended_of(row.expected_metadata) for row in rows]
     roles = sorted(intent.role if intent is not None else "" for intent in intents)
