@@ -18,6 +18,7 @@ The boards are exported as read from the Design canvas: https://claude.ai/artifa
 | `05-imports-desktop.dc.html`, `05-imports-phone.dc.html` | Imports and Missing GPS |
 | `04-exports-ingest-desktop.dc.html`, `04-exports-ingest-phone.dc.html` | Exports, per-part import (PP-13): each part's import state, the export's totals, parts Darkroom kept, an export that never went per-part; below a dashed line, PP-10's freed state, which PP-13 does not build (signed off by the owner, AnthonyPluth, on 2026-11-20, #490, recorded on #424 and #16; see "Per-part import on Exports" below) |
 | `06-review-desktop.dc.html`, `06-review-phone.dc.html` | Review queue |
+| `06-review-holds-desktop.dc.html`, `06-review-holds-phone.dc.html` | Held photos on Review (#548, slice 6, draft for sign-off) |
 | `07-browser-desktop.dc.html`, `07-browser-phone.dc.html` | Remote browser |
 | `07-browser-several-waiting.md` | Remote browser: the copy when several accounts wait for a sign-in, naming the account whose window is on screen (text spec, signed off by the owner, AnthonyPluth, on 2026-11-20, #496) |
 | `03-people-pairing-desktop.dc.html`, `03-people-pairing-phone.dc.html` | People: pairing a Pixel and its Syncthing column (signed off, #322) |
@@ -65,6 +66,19 @@ Approved departures (#27), approved by the owner and recorded on #16 (https://gi
 4. Imports, Missing GPS: the thumbnail is a plain placeholder tile where no thumbnail can be made.
 
 Approved departure (#548), approved by the owner on 2026-11-24 and recorded on #548 (https://github.com/AnthonyPluth/Darkroom/issues/548#issuecomment-7122813221): Review, a pair kept in an Immich-managed export shows "Kept in Immich, so it can't be undone" in place of "Too late to undo".
+
+## Held photos on Review (#548, draft for sign-off)
+
+The [desktop board](06-review-holds-desktop.dc.html) and [phone board](06-review-holds-phone.dc.html) draw the section proposed in the [terminal holds design](../terminal-holds.md#4-showing-holds-for-review-a-requirement-not-a-screen). The app view ends after Past decisions. The examples below the dashed line show alternate states of the held-photo section.
+
+- The count below the pair summary links to **Held photos**, between Current pair and Past decisions. The Review navigation badge counts pending pairs. The hold count comes from `GET /api/holds`; when it is unknown during loading or after a failed refresh, the count is omitted. The section can show held photos even when there are zero pending pairs.
+- Show one row per hold, using the file name, person, source, export when known, reason and facts from the response. Show the QuickTime file instant in UTC when there is no file clock. Show time and offset values side by side in reading order when they differ, and show the names of differing place and description fields. When a fact is unavailable, distinguish that from an explicit “No” or “Missing.” The proposed rows use names and facts only, including the description length when available.
+- Use the actions returned for that hold. **Record an offset in Darkroom** uses the same sign, hours and minutes as **Supply the offset**, with a legend that names Darkroom. The form starts blank. **Supply the capture time** adds date and local time. Save applies to the current row, while Cancel closes its form. Leaving a row as it is keeps it held. Skip records a decision and keeps the copy.
+- During Save, Undo or Check again, block repeat submissions for that row. Show validation inline and keep the form values for correction. After a conflict or success, reload the list and display the current state. A failed refresh replaces the held rows with **Couldn’t load held photos** and **Try again**. If the first page does not contain all rows, **Load more held photos** requests the next page.
+- While a pre-upload decision waits, show the saved message on the board. After upload, say that Darkroom will check Immich on the next import tick. Show Undo where the response allows it, and the approved send wording when a send prevents undo. A recheck that still differs or is still unusable leaves the current hold visible, with the result and available actions. A resolved hold drops out of the list on refresh.
+- A source-read failure leaves the decision saved. The current backend reports a prolonged failure through its alert, so the row can continue to show the saved decision with the current response fields.
+
+The board sign-off covers the placement, words, form and states shown here, including the proposed name-and-facts treatment for the thumbnail question. Review's existing session access applies, as in the hold routes. Slice 7 builds the approved interaction after sign-off.
 
 Approved departures (#30), approved by the owner and recorded on #16 (https://github.com/AnthonyPluth/Darkroom/issues/16#issuecomment-6646447403). The Exports page builds the board's three parts (schedule, current export parts, earlier exports) and "Check exports now" on top of the per-account cards from #29:
 
