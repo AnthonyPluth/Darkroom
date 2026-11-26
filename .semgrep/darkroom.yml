@@ -737,48 +737,80 @@ rules:
     pattern-either:
       - patterns:
           - pattern-either:
-              - pattern: $M.account_lock(...)
+              - pattern: darkroom.domain.ingest.run.account_lock(...)
               - pattern: account_lock(...)
-          - pattern-inside: |
-              def $F(...):
-                ...
-                <... legacy.person_lock(...) ...>
+          - pattern-either:
+              - pattern-inside: |
+                  def $F(...):
+                    ...
+                    <... darkroom.domain.legacy.person_lock(...) ...>
+              - pattern-inside: |
+                  def $F(...):
+                    ...
+                    <... darkroom.domain.immich_reconcile.person_lock(...) ...>
       - patterns:
           - pattern-either:
-              - pattern: $M.account_lock(...)
-              - pattern: account_lock(...)
-          - pattern-inside: |
-              def $F(...):
-                ...
-                <... immich_reconcile.person_lock(...) ...>
-      - patterns:
+              - pattern: darkroom.domain.legacy.person_lock(...)
+              - pattern: darkroom.domain.immich_reconcile.person_lock(...)
           - pattern-either:
-              - pattern: legacy.person_lock(...)
-          - pattern-inside: |
-              def $F(...):
-                ...
-                <... $M.account_lock(...) ...>
+              - pattern-inside: |
+                  def $F(...):
+                    ...
+                    <... darkroom.domain.ingest.run.account_lock(...) ...>
+              - pattern-inside: |
+                  def $F(...):
+                    ...
+                    <... account_lock(...) ...>
       - patterns:
-          - pattern-either:
-              - pattern: legacy.person_lock(...)
+          - pattern: darkroom.domain.legacy.person_lock(...)
           - pattern-inside: |
               def $F(...):
                 ...
-                <... immich_reconcile.person_lock(...) ...>
+                <... darkroom.domain.immich_reconcile.person_lock(...) ...>
       - patterns:
-          - pattern-either:
-              - pattern: immich_reconcile.person_lock(...)
+          - pattern: darkroom.domain.immich_reconcile.person_lock(...)
           - pattern-inside: |
               def $F(...):
                 ...
-                <... $M.account_lock(...) ...>
-      - patterns:
-          - pattern-either:
-              - pattern: immich_reconcile.person_lock(...)
-          - pattern-inside: |
-              def $F(...):
-                ...
-                <... legacy.person_lock(...) ...>
+                <... darkroom.domain.legacy.person_lock(...) ...>
     paths:
       include: ["/darkroom/", "/run.py"]
       exclude: ["/darkroom/domain/writer_locks.py"]
+
+  - id: darkroom-legacy-writer-locks-one-helper
+    message: Take the legacy import lock together with an account or reconcile lock only through writer_locks.hold.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern: person_lock(...)
+      - pattern-not: darkroom.domain.immich_reconcile.person_lock(...)
+      - pattern-either:
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... darkroom.domain.ingest.run.account_lock(...) ...>
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... darkroom.domain.immich_reconcile.person_lock(...) ...>
+    paths:
+      include: ["/darkroom/domain/legacy.py"]
+
+  - id: darkroom-reconcile-writer-locks-one-helper
+    message: Take the Immich reconcile lock together with an account or legacy import lock only through writer_locks.hold.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern: person_lock(...)
+      - pattern-not: darkroom.domain.legacy.person_lock(...)
+      - pattern-either:
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... darkroom.domain.ingest.run.account_lock(...) ...>
+          - pattern-inside: |
+              def $F(...):
+                ...
+                <... darkroom.domain.legacy.person_lock(...) ...>
+    paths:
+      include: ["/darkroom/domain/immich_reconcile.py"]
