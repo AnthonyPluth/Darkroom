@@ -46,7 +46,7 @@ READ_ONLY_REFUSED = frozenset({"all", "asset.update"})
 CHUNK = 1024 * 1024
 DENIED = (400, "Not found or no asset.read access")
 QUOTA = (400, "Quota has been exceeded!")
-LINK_REFUSED = (400, "Not found or no asset.update permission")
+LINK_REFUSED = (400, "Not found or no asset.update access")
 DATA_START, DATA_END = "```json immich-live-data", "```"
 ROWS = (
     ("grants", "Server version and the key's exact grants (refused before any upload if broader or an admin user)", ""),
@@ -101,9 +101,10 @@ class Refused(Exception):
 
 
 class Failed(Exception):
-    def __init__(self, text: str, status: int | None = None, reply: str = "") -> None:
+    def __init__(self, text: str, status: int | None = None, reply: str = "", *, exact_reply: str | None = None) -> None:
         super().__init__(text)
         self.status, self.reply = status, reply
+        self.exact_reply = exact_reply
 
 
 def allowed(method: str, path: str, enriching: bool = False) -> None:
@@ -303,7 +304,9 @@ class Run:
             headers["Content-Length"] = str(len(raw))
         status, found = account.api.call("POST", "/api/assets", raw=raw, headers=headers)
         if status not in (200, 201):
-            raise Failed(f"upload of {label} answered {status} ({message(found)})", status, message(found))
+            reply = message(found)
+            exact = found.get("message") if isinstance(found, dict) else None
+            raise Failed(f"upload of {label} answered {status} ({reply})", status, reply, exact_reply=exact if isinstance(exact, str) else None)
         try:
             result = immich.upload_result(status, found)
         except immich.ImmichFailed as error:
@@ -650,8 +653,7 @@ def refused_live_video(run: Run, account: Account, video_id: str, label: str) ->
     except Failed as error:
         if error.status is None:
             raise
-        reply = (error.status, error.reply)
-        if reply != LINK_REFUSED:
+        if (error.status, error.exact_reply) != LINK_REFUSED:
             return "not verified", f"upload answered {error.status} `{error.reply}`"
         if run.bulk_check(account, photo).get("action") != "accept":
             return "fail", "the refused still's checksum was found after the request"

@@ -59,7 +59,7 @@ These rows use fresh fixtures on every run. To combine results with another run 
 - L1 uploads a generated HEIC and MOV with the same Apple content identifier. The still is sent without a video ID. The result records whether Immich links it to the MOV during the observation window.
 - L2 to L4 observe duplicate-still handling, the effect of linking a previously visible video, and the effect of the `visibility: hidden` upload field. Visibility and linking are recorded from asset reads.
 - L5 appends a generated MP4 to a JPEG and supplies a different generated MP4 as `livePhotoVideoId`. The harness checks for creation of the embedded clip by checksum and verifies its original bytes before reporting the link. Use a disposable instance because Immich's extraction may replace the link and remove the separately supplied fixture. [Immich v3.4.1 metadata service](https://github.com/immich-app/immich/blob/v3.4.1/server/src/services/metadata.service.ts)
-- L6 records both the HTTP refusal and whether the generated still's checksum is absent. The only video ID used for the other-user case comes from a fresh upload by the second disposable user.
+- L6 requires HTTP 400 with the exact message `Not found or no asset.update access` from v3.4.1 and checks that the generated still's checksum is absent. The only video ID used for the other-user case comes from a fresh upload by the second disposable user. [Immich v3.4.1 access check](https://github.com/immich-app/immich/blob/v3.4.1/server/src/utils/access.ts)
 
 If an asynchronous link or extracted clip does not appear by the deadline, the row reports `not verified`. `--extraction-timeout` defaults to 180 seconds. The mode uses only the normal import-key routes. It sends neither update nor delete requests.
 

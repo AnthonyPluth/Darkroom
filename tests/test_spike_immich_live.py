@@ -214,11 +214,22 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("existing still was left unlinked", text)
         self.assertIn("without visibility: `timeline` before, `hidden` after", text)
         self.assertIn("`visibility: hidden`: `hidden` before, `hidden` after", text)
-        self.assertIn("400 `Not found or no asset.update permission`", text)
+        self.assertIn("400 `Not found or no asset.update access`", text)
         self.assertEqual([a.kind for a in self.fake.state.assets if a.owner_id == USER_B], ["VIDEO"])
         self.assertFalse(any(a.name.endswith(("-missing-video-still.jpg", "-other-user-still.jpg")) for a in self.fake.state.assets))
         self.assert_no_secret(printed, text)
         self.assert_only_safe_requests()
+
+    def test_live_photo_refusal_requires_the_exact_status_and_message(self):
+        account = immich_live.Account("A", immich_live.Api(self.fake.url, KEY_A))
+        run = immich_live.Run("exact-refusal")
+        video_id = str(uuid.uuid4())
+        expected = "Not found or no asset.update access"
+        for status, reply in ((403, expected), (400, expected + "\n"), (400, "Not found or no asset.update permission"), (400, [expected])):
+            with self.subTest(status=status, reply=reply), mock.patch.object(account.api, "call", return_value=(status, {"message": reply})) as call:
+                verdict, _ = immich_live.refused_live_video(run, account, video_id, "missing-video-still")
+                self.assertEqual(verdict, "not verified")
+                call.assert_called_once()
 
     def test_live_photo_case_with_no_link_is_not_verified_and_the_second_owner_is_optional(self):
         self.fake.state.keep_unlinked = True

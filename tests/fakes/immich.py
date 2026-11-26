@@ -379,7 +379,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 video_id = (fields.get("livePhotoVideoId") or b"").decode()
                 video = next((a for a in state.assets if a.id == video_id and a.owner_id == person.user_id and a.kind == "VIDEO"), None)
                 if video_id and video is None:
-                    self.reply(400, {"message": "Not found or no asset.update permission"})
+                    self.reply(400, {"message": "Not found or no asset.update access", "error": "Bad Request", "statusCode": 400})
                     return
                 if video is not None and not state.keep_unlinked:
                     asset.live_video_id, video.visibility = video.id, "hidden"
