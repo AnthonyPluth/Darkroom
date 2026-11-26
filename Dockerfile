@@ -52,8 +52,9 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PATH=/app/.venv/bin:$PATH \
 # packages pull in (python:3.15-slim has none), are named so this layer installs Debian's patched 1.21.3-5+deb13u2
 # rather than reusing a cached layer built with 1.21.3-5+deb13u1; the scan fails on CVE-2026-71199, CVE-2026-71200,
 # CVE-2026-107364, CVE-2026-112315 to CVE-2026-112323, CVE-2026-118380 and CVE-2026-119079 with the older build.
+# Name libzstd1 so apt upgrades the base image's copy to Debian's patched 1.5.7+dfsg-1+deb13u1 or later (CVE-2026-124851).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 zlib1g \
+    && apt-get install -y --no-install-recommends libimage-exiftool-perl libheif1 zlib1g libzstd1 \
        libgssapi-krb5-2 libk5crypto3 libkrb5-3 libkrb5support0 \
        xvfb x11-utils x11vnc novnc websockify tini libatomic1 \
     && rm -rf /var/lib/apt/lists/* \
