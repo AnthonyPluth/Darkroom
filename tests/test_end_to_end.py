@@ -6,6 +6,7 @@ from unittest import mock
 from sqlalchemy import select
 
 from darkroom.domain import alerts, browser_jobs, exports
+from darkroom.domain.ingest import part_ingest
 from darkroom.server import jobs
 from darkroom.storage import db
 from darkroom.storage.models import Alert, BrowserJob, DedupeDecision, Event, Export, GoogleAccount, ImportRun, MediaItem
@@ -162,6 +163,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self.query(lambda opened: opened.get(Export, second).kind), "initial")
         scans_before = len(self.world.scanned())
         self.assertIn("imports", self.tick(notice + 3 * DAY + 2 * HOUR))
+        if self.query(lambda opened: exports.parts_of(opened, second)[0].ingest_state) == part_ingest.QUEUED:
+            self.assertIn("imports", self.tick(self.scheduler.jobs["imports"].next_due))
         run_two = self.query(lambda opened: opened.execute(select(ImportRun).where(ImportRun.export_id == second)).scalar_one())
         self.assertEqual((run_two.status, run_two.added, run_two.skipped_t1, run_two.failed, run_two.review), ("done", 1, 1, 0, 0))
         self.assertIn("Export 2: 1 added, 1 skipped as duplicates, 2 already imported earlier, 0 in review, 1 missing GPS", [message for _, message in self.world.recorder.sent])
