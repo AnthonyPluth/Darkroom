@@ -7,14 +7,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO
 
+from sqlalchemy import ColumnElement, exists, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, backfill, hold_resolutions, holds, managed_ingest, managed_manifest, managed_metadata, managed_upload, media, same_shot, xmp
-from darkroom.domain.ingest import run, unpack
+from darkroom.domain import alerts, backfill, events, hold_resolutions, holds, managed_ingest, managed_manifest, managed_metadata, managed_upload, media, same_shot, xmp
+from darkroom.domain.ingest import hold_readback, run, unpack
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, paths
-from darkroom.storage.models import DedupeDecision, Export, ManagedHoldResolution, ManagedImportIntent, ManagedImportReceipt, MediaItem, Person, ReviewItem, TakeoutEntry
+from darkroom.storage.models import (DedupeDecision, Export, ManagedCompound, ManagedCompoundMember, ManagedHoldResolution, ManagedImportIntent, ManagedImportReceipt,
+                                     MediaItem, Person, ReviewItem, TakeoutEntry)
 from darkroom.storage.paths import Photos
 
 SOURCE_ERRORS = (OSError, paths.OutsideRoot, unpack.UnpackFailed, exiftool.Missing, exiftool.Unreadable)
@@ -87,7 +89,8 @@ def tags_of(source: Source, receipt: ManagedImportReceipt, read: xmp.Reader) -> 
     return tags
 
 
-def send(opened: Session, reader: immich.ManagedReader, source: Source, receipt: ManagedImportReceipt, intent: ManagedImportIntent, now: float) -> bool:
+def send(opened: Session, reader: immich.ManagedReader, source: Source, receipt: ManagedImportReceipt, intent: ManagedImportIntent, now: float,
+         on_commit: Callable[[], None]) -> bool:
     if source.entry is not None and same_shot.gate(opened, reader, intent, receipt.id, source.entry, source.filename, now) != "clear":
         return False
 
@@ -97,10 +100,86 @@ def send(opened: Session, reader: immich.ManagedReader, source: Source, receipt:
 
     report = managed_metadata.complete_receipt(opened, reader, managed_metadata.Resource(receipt.id, original, source.filename), now, time.sleep)
     if report.outcome == "verified":
-        report = managed_metadata.commit_compound(opened, reader, intent.id, receipt.compound_key, now)
+        report = managed_metadata.commit_compound(opened, reader, intent.id, receipt.compound_key, now, on_commit=on_commit)
     if report.outcome == "pending":
         managed_ingest.gave_up(opened, managed_upload.fresh(opened, receipt.id), now)
     return report.outcome == "verified"
+
+
+def revisit(opened: Session, receipt: ManagedImportReceipt, intent: ManagedImportIntent, person: Person, hold: str | None, now: float) -> None:
+    item_id = holds.number_after(receipt.resource_key, backfill.KEY)
+    if intent.kind == backfill.KIND and item_id is not None:
+        backfill.revisit_resolution(opened, person, intent, receipt, item_id, hold, now)
+
+
+def resolved(opened: Session, receipt: ManagedImportReceipt, intent: ManagedImportIntent, person: Person, now: float) -> None:
+    revisit(opened, receipt, intent, person, None, now)
+    if intent.kind != "import" or intent.export_id is None:
+        return
+    review_id = holds.number_after(receipt.resource_key, managed_ingest.KEPT)
+    if review_id is not None:
+        alerts.close(opened, f"managed:kept:{review_id}", now)
+    model = ManagedImportReceipt
+    resolution = ManagedHoldResolution
+    unfinished = exists().where(resolution.receipt_id == model.id, resolution.state == "applied", resolution.result.in_(("cleared", "rechecked")))
+    terminal = select(model.id).where(model.intent_id == intent.id, model.state != "committed",
+                                      or_(model.metadata_hold.in_(managed_ingest.TERMINAL), unfinished)).limit(1)
+    compound = select(ManagedCompound.id).where(ManagedCompound.intent_id == intent.id, ManagedCompound.hold.is_not(None)).limit(1)
+    if not opened.execute(terminal).first() and not opened.execute(compound).first():
+        alerts.close(opened, f"managed:held:{intent.export_id}", now)
+
+
+def owner_binding(receipt: ManagedImportReceipt, intent: ManagedImportIntent, person: Person) -> ColumnElement[bool]:
+    member = ManagedCompoundMember
+    single = ~exists().where(member.intent_id == intent.id, member.resource_key == receipt.resource_key)
+    bound = (select(ManagedImportIntent.id).join(Person, Person.id == ManagedImportIntent.person_id)
+             .where(ManagedImportIntent.id == intent.id, ManagedImportIntent.person_id == person.id, ManagedImportIntent.owner_id == intent.owner_id,
+                    ManagedImportIntent.resource_manifest == intent.resource_manifest, ManagedImportIntent.kind == intent.kind,
+                    ManagedImportIntent.export_id == intent.export_id, Person.immich_user_id == intent.owner_id,
+                    Person.immich_api_key_sealed == person.immich_api_key_sealed, single))
+    if intent.kind != "import":
+        bound = bound.where(Person.managed_backfill == backfill.ON)
+    return bound.exists()
+
+
+def post_upload(opened: Session, settings: config.Settings, row: ManagedHoldResolution, receipt: ManagedImportReceipt, intent: ManagedImportIntent,
+                person: Person, now: float, tools: run.Tools) -> bool:
+    kind = holds.source_of(receipt.resource_key)
+    manifest = managed_manifest.resource_of(intent.resource_manifest)
+    if ((kind == "backfill" and (intent.kind != backfill.KIND or manifest != "media_item"))
+            or (kind in ("import", "kept") and (intent.kind != "import" or manifest != "takeout_entry" or intent.export_id is None)) or kind is None):
+        return False
+    intended = managed_metadata.intended_of(receipt.expected_metadata)
+    if intended is None or intended.role != "single" or receipt.resource_key != receipt.compound_key:
+        return False
+    bound = owner_binding(receipt, intent, person)
+    allowed = opened.scalar(select(bound))
+    opened.commit()
+    if not allowed:
+        return False
+    reader = managed_ingest.reader_of(settings, person, intent, tools.immich)
+    if row.state == "recorded":
+        result = hold_readback.inspect(reader, receipt, intended, row.action, time.sleep)
+        if result is None or not hold_readback.apply(opened, row, receipt, result, bound, now):
+            return False
+        if result.hold is not None:
+            revisit(opened, receipt, intent, person, result.hold, now)
+            opened.commit()
+            return True
+        opened.commit()
+    report = managed_metadata.commit_compound(opened, reader, intent.id, receipt.compound_key, now,
+                                              current=lambda: bool(opened.scalar(select(bound))),
+                                              on_commit=lambda: resolved(opened, receipt, intent, person, now))
+    if report.outcome == "unusable":
+        db.write_lock(opened)
+        if opened.scalar(select(bound)):
+            current = opened.get(ManagedHoldResolution, row.id, populate_existing=True)
+            if current is not None and current.state == "superseded" and current.result in ("cleared", "rechecked"):
+                current.result = "still_unusable"
+                events.record(opened, now, hold_resolutions.APPLIED_EVENT, f"receipt {receipt.id}", current.result)
+            revisit(opened, receipt, intent, person, managed_ingest.UNUSABLE, now)
+        opened.commit()
+    return report.outcome in ("verified", "unusable")
 
 
 def apply_one(opened: Session, settings: config.Settings, photos: Photos, row: ManagedHoldResolution, receipt: ManagedImportReceipt, now: float,
@@ -109,13 +188,17 @@ def apply_one(opened: Session, settings: config.Settings, photos: Photos, row: M
     person = None if intent is None else opened.get(Person, intent.person_id, populate_existing=True)
     if intent is None or person is None or person.immich_user_id != intent.owner_id:
         return
+    if row.action in hold_resolutions.POST_UPLOAD:
+        if not post_upload(opened, settings, row, receipt, intent, person, now, tools):
+            alert_waiting(opened, settings, row, receipt, now, tools, "pending", "Darkroom could not verify the Immich copy for a hold resolution. It tries again.")
+        return
     with ExitStack() as stack:
         source = source_of(opened, photos, stack, receipt, intent, person, import_source)
         tags = tags_of(source, receipt, tools.read)
         if not hold_resolutions.apply(opened, row, receipt, tags, xmp.GoogleMetadata.of(source.sidecar), now):
             return
         reader = managed_ingest.reader_of(settings, person, intent, tools.immich)
-        if not send(opened, reader, source, receipt, intent, now):
+        if not send(opened, reader, source, receipt, intent, now, lambda: resolved(opened, receipt, intent, person, now)):
             alert_waiting(opened, settings, row, receipt, now, tools, "pending",
                           "Darkroom could not complete the upload from a hold resolution. It keeps the copy and tries again.")
 
@@ -149,5 +232,6 @@ def apply(opened: Session, settings: config.Settings, photos: Photos, now: float
         except (immich.ImmichFailed, run.Busy) as error:
             opened.rollback()
             monitoring.log("hold resolution not sent to Immich", receipt=receipt.id, error=type(error).__name__)
-            alert_waiting(opened, settings, row, receipt, now, tools, "pending",
-                          "Darkroom could not complete the upload from a hold resolution. It keeps the copy and tries again.")
+            message = ("Darkroom could not verify the Immich copy for a hold resolution. It tries again." if row.action in hold_resolutions.POST_UPLOAD else
+                       "Darkroom could not complete the upload from a hold resolution. It keeps the copy and tries again.")
+            alert_waiting(opened, settings, row, receipt, now, tools, "pending", message)

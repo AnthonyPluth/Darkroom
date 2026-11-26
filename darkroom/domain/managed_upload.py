@@ -58,7 +58,7 @@ def move(opened: Session, row: ManagedImportReceipt, before: tuple[str, ...], no
 
 def supersede_resolution(opened: Session, receipt_id: int) -> None:
     opened.execute(update(ManagedHoldResolution).where(ManagedHoldResolution.receipt_id == receipt_id, ManagedHoldResolution.state == "applied",
-                                                       ManagedHoldResolution.result == "cleared").values(state="superseded"))
+                                                       ManagedHoldResolution.result.in_(("cleared", "rechecked"))).values(state="superseded"))
 
 
 def hold_unusable(opened: Session, row: ManagedImportReceipt, before: tuple[str, ...], now: float, kind: str, reason: str = UNAVAILABLE) -> Report:

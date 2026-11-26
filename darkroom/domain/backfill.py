@@ -22,7 +22,7 @@ from darkroom.domain.ingest import pairing
 from darkroom.domain.managed_upload import Report
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, paths
-from darkroom.storage.models import (DedupeDecision, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedBackfillItem, ManagedImportIntent,
+from darkroom.storage.models import (HOLD_ACTIONS, DedupeDecision, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedBackfillItem, ManagedImportIntent,
                                      ManagedImportReceipt, ManagedPixelSource, MediaItem, Person, PixelCopy, TakeoutEntry, known_contents)
 from darkroom.storage.paths import Photos
 
@@ -133,6 +133,22 @@ def record(opened: Session, person: Person, item_id: int, reason: str | None, no
     elif (row.outcome, row.reason) != (outcome, reason):
         row.since = now
     row.person_id, row.outcome, row.reason, row.version_id, row.receipt_id, row.checked_at = person.id, outcome, reason, version_id, receipt_id, now
+
+
+def revisit_resolution(opened: Session, person: Person, intent: ManagedImportIntent, receipt: ManagedImportReceipt,
+                       item_id: int, hold: str | None, now: float) -> None:
+    item = opened.get(MediaItem, item_id, populate_existing=True)
+    current = opened.get(Person, person.id, populate_existing=True)
+    if (item is None or current is None or current.immich_user_id != intent.owner_id or current.managed_backfill != ON
+            or item.person_id != person.id or item.source != "takeout"
+            or not item.path.startswith(f"{person.slug}/google-only/") or item.export_id != intent.export_id
+            or (item.sha1, item.bytes) != (receipt.source_sha1, receipt.expected_bytes)):
+        return
+    found = opened.scalars(select(ManagedBackfillItem).where(ManagedBackfillItem.item_id == item.id, ManagedBackfillItem.person_id == person.id,
+                                                            ManagedBackfillItem.outcome == "exception", ManagedBackfillItem.reason.in_(HOLD_ACTIONS))
+                           .execution_options(populate_existing=True)).one_or_none()
+    if found is not None:
+        record(opened, person, item.id, hold or "pending", now, None, None)
 
 
 def version_of(opened: Session, person: Person, asset_id: str, sha1: str, size: int, kind: str, video_id: str | None, snapshot: str, now: float) -> ManagedAssetVersion:
@@ -550,9 +566,12 @@ class Backfill:
 
     def sent(self, item: MediaItem, intent: ManagedImportIntent, name: str) -> tuple[str | int, Report | None]:
         known = self.opened.execute(receipt_query(intent, item)).scalar_one_or_none()
-        if known is not None and managed_upload.fresh(self.opened, known).state == "committed":
-            self.opened.commit()
-            return known, Report("verified", "the receipt is committed")
+        if known is not None:
+            row = managed_upload.fresh(self.opened, known)
+            if row.state == "committed":
+                return known, Report("verified", "the receipt is committed")
+            if row.metadata_hold in managed_ingest.TERMINAL:
+                return known, Report("held", "the receipt is held for review")
         with contextlib.ExitStack() as handles:
             try:
                 handle = handles.enter_context(paths.open_library_file(self.photos, self.person.slug, item.path))
