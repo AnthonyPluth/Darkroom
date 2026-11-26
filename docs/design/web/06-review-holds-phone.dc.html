@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Held Photos on Review — Phone</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+*{box-sizing:border-box}
+body{color-scheme:dark;margin:0;background:#16140F;color:#F1ECE2;font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.ph{width:100%;min-height:2000px;display:flex;flex-direction:column}
+.top{display:flex;align-items:center;justify-content:space-between;padding:6px 16px;min-height:56px;background:#1B1813;border-bottom:1px solid #3A352C}
+.brand{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700}
+.dot{width:12px;height:12px;border-radius:50%;background:#E2693F;display:block}
+.pg{flex:1;padding:20px 16px 28px;display:flex;flex-direction:column;gap:20px}
+.tabs{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));background:#1B1813;border-top:1px solid #3A352C}
+.tabs a{min-height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;font-size:11px;font-weight:600;color:#F1ECE2;text-decoration:none}
+.tabs a.on{background:#F1ECE2;color:#1F1C17}
+.tabs a:focus-visible,.btn:focus-visible,select:focus-visible{outline:3px solid #E2693F;outline-offset:-3px}
+.badge{background:#E2693F;color:#1A0E08;border-radius:999px;font-size:11px;font-weight:700;padding:0 6px;line-height:16px}
+h1{margin:0;font-size:26px;line-height:1.15;letter-spacing:-.01em}
+h2{margin:0;font-size:17px;line-height:1.3}
+.sub{color:#B3AB9D}
+.card{background:#1F1C17;border:1px solid #3A352C;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:14px}
+.chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;white-space:nowrap}
+.chip i{width:8px;height:8px;border-radius:50%;background:currentColor;display:block}
+.ok{color:#7CC38F;background:#1D2B20}.idle{color:#D8D1C3;background:#2B2721}.warn{color:#E0B253;background:#332A12}
+.warn i{border-radius:0;transform:rotate(45deg)}.idle i{background:none;border:2px solid currentColor}
+.btn{min-height:48px;padding:0 16px;border-radius:8px;border:1px solid #7A7260;background:#1F1C17;color:#F1ECE2;font:inherit;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;text-decoration:none;width:100%}
+.btn.p{background:#E2693F;border-color:#E2693F;color:#1A0E08}
+.pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.img{height:150px;border-radius:8px;background:linear-gradient(135deg,#4A4439,#2F2B24);border:1px solid #3A352C;display:flex;align-items:flex-end;padding:8px}
+.img span{background:#F1ECE2;color:#1F1C17;border-radius:4px;padding:2px 8px;font-size:12px;font-weight:600}
+.kv{display:grid;grid-template-columns:minmax(0,1fr);gap:0;margin:0;font-size:14px}
+.kv dt{color:#B3AB9D;font-size:12px;margin-top:6px}.kv dd{margin:0;overflow-wrap:anywhere}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px}
+select{min-height:48px;width:100%;border:1px solid #7A7260;border-radius:8px;background:#1F1C17;color:#F1ECE2;font:inherit;padding:0 12px}
+label{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#B3AB9D}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.dec{display:flex;flex-direction:column;gap:8px;padding:12px 0;border-top:1px solid #2B2721}
+.dec:first-of-type{border-top:0}
+
+.hold-summary{color:#B3AB9D;margin:0}
+.hold-summary a{display:inline-flex;align-items:center;min-height:44px;color:#F1ECE2;text-underline-offset:3px}
+.holds{scroll-margin-top:16px}
+.hold-row{display:grid;grid-template-columns:minmax(0,224px) minmax(0,1fr);gap:16px;padding-top:16px;border-top:1px solid #3A352C}
+.hold-name,.hold-body{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:0}
+.hold-name h3,.hold-row p,.hold-example p{margin:0;overflow-wrap:anywhere}
+.hold-name h3{font-size:14px;line-height:1.45}
+.hold-row .kv{grid-template-columns:132px minmax(0,1fr);gap:4px 12px}
+.hold-actions,.hold-fields{display:flex;flex-wrap:wrap;gap:8px}
+.hold-actions .btn{white-space:normal;text-align:center}
+.hold-form{display:flex;flex-direction:column;gap:8px;margin:4px 0 0}
+.hold-form fieldset{min-width:0;margin:0;border:0;padding:0}
+.hold-form legend{font-weight:600;margin-bottom:8px;padding:0}
+.hold-field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.hold-form input{min-width:0;min-height:44px;border:1px solid #7A7260;border-radius:8px;background:#1F1C17;color:#F1ECE2;font:inherit;padding:0 12px}
+.hold-form input[type=number]{width:92px}
+.hold-form input:focus-visible,.hold-summary a:focus-visible{outline:3px solid #F1ECE2;outline-offset:2px}
+.hold-feedback{color:#F08A84}
+.hold-example{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:16px;border:1px solid #3A352C;border-radius:8px}
+.hold-state{display:flex;flex-direction:column;gap:8px}
+.hold-state>h3{margin:0;font-size:14px}
+.hold-board-states{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;padding-top:20px;border-top:1px dashed #7A7260}
+.hold-board-states>h2{grid-column:1/-1}
+@media(max-width:639px){
+  .hold-row,.hold-board-states{grid-template-columns:minmax(0,1fr)}
+  .hold-row .kv{grid-template-columns:minmax(0,1fr);gap:0}
+  .hold-row .kv dd{overflow-wrap:anywhere}
+  .hold-body,.hold-actions,.hold-form{width:100%}
+  .hold-actions{flex-direction:column}
+  .hold-form input{min-height:48px}
+  .hold-form input[type=number]{width:72px}
+  .hold-fields select{padding-inline:8px}
+}
+</style>
+</helmet>
+<div class="ph">
+<header class="top">
+<div class="brand"><span class="dot"></span>Darkroom</div>
+<button class="btn" type="button" style="width:auto;min-width:44px" aria-label="Account: jo@example.com">Jo</button>
+</header>
+<main class="pg">
+<div style="display:flex;flex-direction:column;gap:4px">
+<h1>Review queue</h1>
+<div class="sub">4 pairs look like the same photo saved twice. Nothing is removed until you decide.</div>
+<p class="hold-summary"><a href="#held-photos">6 held photos</a></p>
+</div>
+
+<div role="status" style="background:#1D2B20;border:1px solid #7CC38F;border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px">
+<span style="display:flex;align-items:center;gap:8px;font-weight:600"><span style="width:8px;height:8px;border-radius:50%;background:#7CC38F;display:block;flex:none"></span>Decision saved: kept both for IMG_2102.HEIC.</span>
+<button class="btn" type="button">Undo</button>
+</div>
+
+<section class="card" aria-label="Current pair">
+<div class="row"><h2>Pair 1 of 4</h2><span class="chip warn"><i></i>Likely re-encode</span></div>
+<div class="pair">
+<div>
+<div class="img" role="img" aria-label="Placeholder for the photo already in the library"><span>In library</span></div>
+<dl class="kv"><dt>File</dt><dd class="mono">IMG_2431.HEIC</dd><dt>Size</dt><dd>3.2 MB</dd><dt>Capture time</dt><dd>12 Sep 2026, 14:03:22</dd><dt>Camera</dt><dd>iPhone 15</dd></dl>
+</div>
+<div>
+<div class="img" role="img" aria-label="Placeholder for the photo from the export"><span>From export</span></div>
+<dl class="kv"><dt>File</dt><dd class="mono">IMG_2431.jpg</dd><dt>Size</dt><dd>1.1 MB, smaller</dd><dt>Capture time</dt><dd>12 Sep 2026, 14:03:22</dd><dt>Camera</dt><dd>iPhone 15</dd></dl>
+</div>
+</div>
+<button class="btn p" type="button">Keep both</button>
+<button class="btn" type="button">Skip</button>
+<div style="display:flex;flex-direction:column;gap:4px;border-top:1px solid #2B2721;padding-top:12px"><label for="rp">Reassign to</label>
+<select id="rp"><option>Jo</option><option>Sam</option></select></div>
+<button class="btn" type="button">Reassign</button>
+<div class="sub" style="font-size:13px">Keep both stores the two files. Skip leaves the pair for later.</div>
+</section>
+
+<section class="card holds" id="held-photos" aria-labelledby="held-heading">
+<h2 id="held-heading">Held photos</h2>
+<article class="hold-row" aria-labelledby="hold-offset">
+<div class="hold-name">
+<h3 id="hold-offset" class="mono">IMG_1082.HEIC</h3>
+<p class="sub">Jo · Takeout export #42</p>
+</div>
+<div class="hold-body">
+<span class="chip warn"><i aria-hidden="true"></i>Missing UTC offset</span>
+<p>The photo says what time it was on the clock, but not which time zone, and Google’s time and the place don’t settle it.</p>
+<dl class="kv"><dt>Photo clock</dt><dd>12 Sep 2026, 14:03:22</dd><dt>Google capture time</dt><dd>12 Sep 2026, 12:03:22 UTC</dd><dt>Place known</dt><dd>No</dd></dl>
+<form class="hold-form">
+<fieldset><legend>Supply the offset</legend>
+<div class="hold-fields">
+<div class="hold-field"><label for="offset-sign">Sign</label><select id="offset-sign" required><option value="">Choose</option><option value="+">+</option><option value="-">−</option></select></div>
+<div class="hold-field"><label for="offset-hours">Hours</label><input id="offset-hours" type="number" inputmode="numeric" min="0" max="14" step="1" required></div>
+<div class="hold-field"><label for="offset-minutes">Minutes</label><select id="offset-minutes" required><option value="">Choose</option><option>00</option><option>15</option><option>30</option><option>45</option></select></div>
+</div>
+</fieldset>
+<p class="sub">UTC−12:00 to UTC+14:00, in 15-minute steps.</p>
+<div class="hold-actions"><button type="button" class="btn p">Save offset</button><button type="button" class="btn">Cancel</button></div>
+</form>
+<div class="hold-actions"><button type="button" class="btn">Skip</button></div>
+</div>
+</article>
+
+<article class="hold-row" aria-labelledby="hold-capture">
+<div class="hold-name">
+<h3 id="hold-capture" class="mono">IMG_1078.JPG</h3>
+<p class="sub">Jo · Backfill</p>
+</div>
+<div class="hold-body">
+<span class="chip warn"><i aria-hidden="true"></i>Missing capture time</span>
+<p>Nothing in the photo or from Google says when it was taken.</p>
+<div class="hold-actions"><button type="button" class="btn p">Supply the capture time</button><button type="button" class="btn">Skip</button></div>
+</div>
+</article>
+
+<article class="hold-row" aria-labelledby="hold-description">
+<div class="hold-name">
+<h3 id="hold-description" class="mono">IMG_1074.HEIC</h3>
+<p class="sub">Sam · Takeout export #41</p>
+</div>
+<div class="hold-body">
+<span class="chip warn"><i aria-hidden="true"></i>Description can’t be sent</span>
+<p>Google’s description has characters that can’t go into the file Immich reads, so nothing was sent.</p>
+<dl class="kv"><dt>Description length</dt><dd>46 characters</dd></dl>
+<div class="hold-actions"><button type="button" class="btn p">Send without the description</button><button type="button" class="btn">Skip</button></div>
+</div>
+</article>
+
+<article class="hold-row" aria-labelledby="hold-enriched">
+<div class="hold-name">
+<h3 id="hold-enriched" class="mono">IMG_1046.JPG</h3>
+<p class="sub">Sam · Kept from Review · Takeout export #41</p>
+</div>
+<div class="hold-body">
+<span class="chip warn"><i aria-hidden="true"></i>Missing metadata in Immich</span>
+<p>Immich already had this photo, so it kept its own copy, which lacks something Google knows (a time, an offset, a place or a description). Darkroom can’t add it to Immich’s copy.</p>
+<dl class="kv"><dt>Fields that differ</dt><dd>Offset, description</dd><dt>Immich offset</dt><dd>Missing</dd><dt>Intended offset</dt><dd>UTC+02:00</dd></dl>
+<div class="hold-actions"><button type="button" class="btn">Accept as it is in Immich</button><button type="button" class="btn">Record an offset in Darkroom</button><button type="button" class="btn">Check again</button></div>
+</div>
+</article>
+
+<article class="hold-row" aria-labelledby="hold-settled">
+<div class="hold-name">
+<h3 id="hold-settled" class="mono">IMG_1034.HEIC</h3>
+<p class="sub">Jo · Takeout export #40</p>
+</div>
+<div class="hold-body">
+<span class="chip warn"><i aria-hidden="true"></i>Metadata still differs</span>
+<p>Immich read the photo, but for a day it showed different metadata than Darkroom sent.</p>
+<dl class="kv"><dt>Fields that differ</dt><dd>Capture time</dd><dt>Immich capture time</dt><dd>11 Sep 2026, 09:14:22 UTC</dd><dt>Intended capture time</dt><dd>11 Sep 2026, 10:14:22 UTC</dd><dt>File verified</dt><dd>2 Nov 2026, 10:05</dd></dl>
+<div class="hold-actions"><button type="button" class="btn">Check again</button><button type="button" class="btn">Accept as it is in Immich</button></div>
+</div>
+</article>
+
+<article class="hold-row" aria-labelledby="hold-unusable">
+<div class="hold-name">
+<h3 id="hold-unusable" class="mono">IMG_1030.JPG</h3>
+<p class="sub">Sam · Backfill</p>
+</div>
+<div class="hold-body">
+<span class="chip warn"><i aria-hidden="true"></i>Copy unavailable in Immich</span>
+<p>Immich’s copy is in the trash, offline, in an external library or someone else’s, so Darkroom can’t count it.</p>
+<dl class="kv"><dt>Last checked</dt><dd>In Immich’s trash</dd></dl>
+<div class="hold-actions"><button type="button" class="btn">Check again</button><button type="button" class="btn">Skip</button></div>
+</div>
+</article>
+</section>
+
+<section class="card" aria-label="Past decisions">
+<h2>Past decisions</h2>
+<div>
+<div class="dec"><div class="row"><span class="mono">IMG_2102.HEIC / .jpg</span><span class="chip ok"><i></i>Kept both</span></div><div class="sub">Today 10:05, Jo</div><button class="btn" type="button">Undo</button></div>
+<div class="dec"><div class="row"><span class="mono">PXL_20260822_101530.jpg</span><span class="chip idle"><i></i>Skipped</span></div><div class="sub">Yesterday 20:41, Sam</div><button class="btn" type="button">Undo</button></div>
+<div class="dec"><div class="row"><span class="mono">IMG_1988.HEIC / .jpg</span><span class="chip ok"><i></i>Reassigned</span></div><div class="sub">Yesterday 20:39, Jo, moved to Sam</div><button class="btn" type="button">Undo</button></div>
+<div class="dec"><div class="row"><span class="mono">IMG_1744.HEIC / .jpg</span><span class="chip ok"><i></i>Kept both</span></div><div class="sub">3 Oct 09:12, Jo</div><button class="btn" type="button">Undo</button></div>
+</div>
+</section>
+<section class="hold-board-states" aria-label="Other Held photos states">
+<h2>Other Held photos states</h2>
+
+<div class="hold-state">
+<h3>Capture-time form</h3>
+<div class="hold-example"><form class="hold-form">
+<fieldset><legend>Supply the capture time</legend>
+<div class="hold-fields">
+<div class="hold-field"><label for="capture-date">Date</label><input id="capture-date" type="date" min="1900-01-01" max="2026-11-26" required aria-invalid="true" aria-describedby="capture-error"></div>
+<div class="hold-field"><label for="capture-time">Local time</label><input id="capture-time" type="time" step="1" required aria-invalid="true" aria-describedby="capture-error"></div>
+</div>
+</fieldset>
+<fieldset><legend>UTC offset</legend>
+<div class="hold-fields">
+<div class="hold-field"><label for="capture-sign">Sign</label><select id="capture-sign" required><option value="">Choose</option><option value="+">+</option><option value="-">−</option></select></div>
+<div class="hold-field"><label for="capture-hours">Hours</label><input id="capture-hours" type="number" inputmode="numeric" min="0" max="14" step="1" required></div>
+<div class="hold-field"><label for="capture-minutes">Minutes</label><select id="capture-minutes" required><option value="">Choose</option><option>00</option><option>15</option><option>30</option><option>45</option></select></div>
+</div>
+</fieldset>
+<p class="sub">UTC−12:00 to UTC+14:00, in 15-minute steps.</p>
+<p class="hold-feedback" id="capture-error" role="alert">Enter a date from 1 Jan 1900 through tomorrow, a local time, and its UTC offset.</p>
+<div class="hold-actions"><button type="button" class="btn p">Save capture time</button><button type="button" class="btn">Cancel</button></div>
+</form></div>
+</div>
+
+<div class="hold-state">
+<h3>Offset rejected</h3>
+<div class="hold-example"><p class="hold-feedback" role="alert">This photo’s place was in a different time zone then, so Immich would not show the offset you gave.</p></div>
+</div>
+
+<div class="hold-state">
+<h3>Saved before upload</h3>
+<div class="hold-example"><p role="status">Saved; it goes to Immich on the next import tick.</p>
+<div class="hold-actions"><button type="button" class="btn">Undo</button></div></div>
+</div>
+<div class="hold-state">
+<h3>Saved after upload</h3>
+<div class="hold-example"><p role="status">Saved. Darkroom will check Immich on the next import tick.</p>
+<p class="sub">Already sent to Immich, so it can't be undone</p></div>
+</div>
+<div class="hold-state">
+<h3>Checked again, still held</h3>
+<div class="hold-example"><p role="status">Checked again. Immich still shows different metadata.</p>
+<div class="hold-actions"><button type="button" class="btn">Check again</button><button type="button" class="btn">Accept as it is in Immich</button></div></div>
+</div>
+<div class="hold-state">
+<h3>Checked again, still unavailable</h3>
+<div class="hold-example"><p role="status">Checked again. Immich still can’t provide a usable copy.</p>
+<div class="hold-actions"><button type="button" class="btn">Check again</button><button type="button" class="btn">Skip</button></div></div>
+</div>
+<div class="hold-state">
+<h3>Saved skip</h3>
+<div class="hold-example"><p role="status">Skipped. Darkroom is keeping the copy.</p>
+<div class="hold-actions"><button type="button" class="btn">Undo</button></div></div>
+</div>
+<div class="hold-state">
+<h3>Loading</h3>
+<div class="hold-example"><p class="sub" role="status">Loading held photos…</p></div>
+</div>
+<div class="hold-state">
+<h3>Empty</h3>
+<div class="hold-example"><p class="sub">No held photos.</p></div>
+</div>
+<div class="hold-state">
+<h3>Initial load or refresh failed</h3>
+<div class="hold-example"><p role="alert">Couldn’t load held photos.</p>
+<div class="hold-actions"><button type="button" class="btn">Try again</button></div></div>
+</div>
+</section>
+</main>
+<nav class="tabs" aria-label="Primary">
+<a href="02-status-phone.dc.html">Status</a>
+<a href="03-people-phone.dc.html">People</a>
+<a href="04-exports-phone.dc.html">Exports</a>
+<a href="05-imports-phone.dc.html">Imports</a>
+<a class="on" href="06-review-holds-phone.dc.html" aria-current="page">Review<span class="badge">4</span></a>
+<a href="07-browser-phone.dc.html">Browser</a>
+</nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":440,"height":7000}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

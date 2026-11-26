@@ -18,6 +18,9 @@ UNDONE_EVENT: Final = "managed_hold_undone"
 APPLIED_EVENT: Final = "managed_hold_applied"
 OPEN: Final = ("recorded", "applied")
 PRE_UPLOAD: Final = ("offset", "capture_time", "drop_description")
+POST_UPLOAD: Final = ("accept", "record_offset", "recheck")
+POST_UPLOAD_STATES: Final = ("returned", "bytes_verified", "metadata_verified")
+POST_UPLOAD_FAILURES: Final = ("still_differs", "still_unusable")
 EASTMOST: Final = media.EASTMOST_OFFSET_MINUTES
 WESTMOST: Final = media.WESTMOST_OFFSET_MINUTES
 STEP: Final = 15
@@ -155,7 +158,7 @@ def resolve(opened: Session, receipt_id: int, action: str, offset_minutes: objec
         raise Conflict(ALREADY)
     offset, taken = values_of(receipt, action, offset_minutes, taken_local, now)
     row = ManagedHoldResolution(receipt_id=receipt_id, hold=hold, action=action, offset_minutes=offset, taken_local=taken, state="recorded", decided_by_person_id=by, decided_at=now)
-    if action in PRE_UPLOAD:
+    if action in (*PRE_UPLOAD, *POST_UPLOAD):
         row.previous_metadata = saved_receipt(receipt)
     try:
         with opened.begin_nested():
@@ -192,16 +195,22 @@ def saved_receipt(receipt: ManagedImportReceipt) -> str:
 
 def due(opened: Session) -> list[int]:
     resolution, receipt = ManagedHoldResolution, ManagedImportReceipt
-    resuming = and_(resolution.state == "applied", receipt.state != "committed",
-                    or_(receipt.metadata_hold.is_(None), receipt.metadata_hold == "mismatch"))
+    pre = and_(resolution.action.in_(PRE_UPLOAD), receipt.state != "committed",
+               or_(receipt.metadata_hold.is_(None), receipt.metadata_hold == "mismatch"))
+    post = and_(resolution.action.in_(POST_UPLOAD), receipt.state == "metadata_verified", receipt.metadata_hold.is_(None))
+    resuming = and_(resolution.state == "applied", or_(pre, post))
     query = (select(resolution.id).join(receipt, receipt.id == resolution.receipt_id)
-             .where(resolution.action.in_(PRE_UPLOAD), or_(resolution.state == "recorded", resuming))
+             .where(or_(and_(resolution.action.in_((*PRE_UPLOAD, *POST_UPLOAD)), resolution.state == "recorded"), resuming))
              .order_by(resolution.id))
     return list(opened.scalars(query))
 
 
 def at_recording(receipt: ManagedImportReceipt, row: ManagedHoldResolution) -> bool:
-    if not unsent(receipt) or receipt.metadata_hold != row.hold or receipt.resource_key != receipt.compound_key:
+    if receipt.metadata_hold != row.hold or receipt.resource_key != receipt.compound_key:
+        return False
+    if row.action in PRE_UPLOAD and not unsent(receipt):
+        return False
+    if row.action in POST_UPLOAD and (receipt.state not in POST_UPLOAD_STATES or receipt.asset_id is None):
         return False
     if row.previous_metadata is None:
         return receipt.updated_at <= row.decided_at
@@ -212,7 +221,7 @@ def pending(opened: Session, resolution_id: int) -> tuple[ManagedHoldResolution,
     db.write_lock(opened)
     row = opened.get(ManagedHoldResolution, resolution_id, populate_existing=True)
     receipt = None if row is None else opened.get(ManagedImportReceipt, row.receipt_id, populate_existing=True)
-    if row is None or receipt is None or row.action not in PRE_UPLOAD or row.state not in OPEN:
+    if row is None or receipt is None or row.action not in (*PRE_UPLOAD, *POST_UPLOAD) or row.state not in OPEN:
         opened.rollback()
         return None
     if row.state == "recorded" and not at_recording(receipt, row):
@@ -307,7 +316,10 @@ def view(row: ManagedHoldResolution, receipt: ManagedImportReceipt) -> dict[str,
 
 def attach(opened: Session, found: list[dict[str, object]]) -> None:
     ids = [int(str(row["id"])) for row in found]
-    rows = {row.receipt_id: row for row in opened.execute(select(ManagedHoldResolution).where(ManagedHoldResolution.receipt_id.in_(ids), ManagedHoldResolution.state.in_(OPEN))).scalars()}
+    resolution = ManagedHoldResolution
+    candidates = (select(resolution).where(resolution.receipt_id.in_(ids), or_(resolution.state.in_(OPEN), resolution.result.in_(POST_UPLOAD_FAILURES)))
+                  .order_by(resolution.id))
+    rows = {row.receipt_id: row for row in opened.scalars(candidates)}
     receipts = {receipt.id: receipt for receipt in opened.execute(select(ManagedImportReceipt).where(ManagedImportReceipt.id.in_(rows))).scalars()}
     for row in found:
         number = int(str(row["id"]))
