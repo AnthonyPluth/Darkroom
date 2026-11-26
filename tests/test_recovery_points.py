@@ -469,9 +469,27 @@ class CustodyAllTests(RecoveryWorld):
     def test_a_deadline_that_passes_midway_refuses_the_rest(self):
         for number in (1, 2, 3):
             self.stored(number)
-        with mock.patch("darkroom.providers.immich.time.monotonic", side_effect=[1.0, 1.0, 9.0]):
+        at = 1.0
+        custody = immich.ManagedReader._read_custody
+
+        def read(reader, identity):
+            nonlocal at
+            found = custody(reader, identity)
+            if identity == asset_id(2):
+                at = 9.0
+            return found
+
+        with mock.patch("darkroom.providers.immich.time.monotonic", side_effect=lambda: at), mock.patch.object(immich.ManagedReader, "_read_custody", read):
             reads = self.reader().custody_all([asset_id(n) for n in (1, 2, 3)], deadline=5.0)
-        self.assertEqual((sorted(reads.found), reads.refused, reads.complete), ([asset_id(1), asset_id(2)], (asset_id(3),), False))
+        self.assertEqual((sorted(reads.found), reads.refused, reads.complete), ([asset_id(1)], (asset_id(2), asset_id(3)), False))
+
+    def test_the_deadline_caps_the_timeout_for_access_and_custody_requests(self):
+        self.stored(1)
+        with mock.patch.object(immich.tls, "urlopen", wraps=immich.tls.urlopen) as calls:
+            reads = self.reader().custody_all([asset_id(1)], deadline=immich.time.monotonic() + 2.0)
+        self.assertTrue(reads.complete)
+        self.assertEqual(calls.call_count, 4)
+        self.assertTrue(all(0 < call.kwargs["timeout"] <= 2.0 for call in calls.call_args_list))
 
     def test_a_failure_other_than_a_missing_asset_stops_the_reads_and_says_incomplete(self):
         for number in (1, 2, 3):

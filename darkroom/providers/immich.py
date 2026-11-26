@@ -10,7 +10,7 @@ import re
 import time
 import urllib.error
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, BinaryIO, Literal
 from urllib.parse import quote, urlsplit
@@ -428,6 +428,7 @@ class Client:
     url: str
     admin_key: str = field(repr=False)
     timeout: float = TIMEOUT
+    deadline: float | None = None
 
     @classmethod
     def of(cls, settings: config.Settings) -> Client:
@@ -456,6 +457,10 @@ class Client:
             headers |= upload.headers
             data = upload
         timeout = self.timeout if upload is None else max(self.timeout, UPLOAD_TIMEOUT)
+        if self.deadline is not None:
+            timeout = min(timeout, self.deadline - time.monotonic())
+            if timeout <= 0:
+                raise ImmichFailed("the Immich read deadline passed")
         return tls.urlopen(f"{self.url}{path}", method=method, headers=headers, data=data, timeout=timeout, allow_http=config.local_host(host))
 
     def call(self, method: str, path: str, keyed: bool = True, key: str | None = None, body: object | None = None, *, importing: bool = False) -> object:
@@ -698,7 +703,10 @@ class ManagedReader:
         return self._read_custody(asset_id)
 
     def custody_all(self, asset_ids: Sequence[str], deadline: float | None = None) -> CustodyReads:
-        self.check_access()
+        if deadline is not None and time.monotonic() >= deadline:
+            return CustodyReads({}, tuple(asset_ids), False)
+        reader = self if deadline is None else replace(self, client=replace(self.client, deadline=deadline))
+        reader.check_access()
         found: dict[str, dict[str, Any]] = {}
         refused: list[str] = []
         for position, asset_id in enumerate(asset_ids):
@@ -708,14 +716,17 @@ class ManagedReader:
                 refused.append(asset_id)
                 continue
             try:
-                found[asset_id] = self._read_custody(asset_id)
+                asset = reader._read_custody(asset_id)
+                if deadline is not None and time.monotonic() >= deadline:
+                    return CustodyReads(found, (*refused, *asset_ids[position:]), False)
+                found[asset_id] = asset
             except (NotCustody, NotVisible):
                 refused.append(asset_id)
             except ImmichFailed as failure:
                 if failure.status != 404:
                     return CustodyReads(found, (*refused, *asset_ids[position:]), False)
                 refused.append(asset_id)
-        return CustodyReads(found, tuple(refused), True)
+        return CustodyReads(found, tuple(refused), deadline is None or time.monotonic() < deadline)
 
     def _read_custody(self, asset_id: str) -> dict[str, Any]:
         found = self.client.call("GET", asset_path(asset_id), key=self.key)

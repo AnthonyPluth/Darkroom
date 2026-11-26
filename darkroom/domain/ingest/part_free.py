@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 import zlib
 import zipfile
 from collections.abc import Iterator
@@ -14,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import events, managed_switch
+from darkroom.domain import alerts, events, managed_switch, retention_gate
 from darkroom.domain.ingest import cleanup, pairing, part_ingest, part_reader, run, unpack
 from darkroom.storage import db, paths
 from darkroom.storage.models import (
@@ -36,13 +37,17 @@ HASH_DIFFERS: Final = "hash_differs"
 KEY_VERSION: Final = 1
 REPROVE_AFTER: Final = 6 * 3600.0
 SWITCH_KEPT: Final = "managed_switch"
+RELEASE_WAITING: Final = "managed_release_immich_waiting"
+RELEASE_RESUMED: Final = "managed_release_immich_resumed"
 
 
 class Refused(Exception):
-    def __init__(self, reason: str, settled: bool = False) -> None:
+    def __init__(self, reason: str, settled: bool = False, *, stop: bool = False, slow_reads: int | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
         self.settled = settled
+        self.stop = stop
+        self.slow_reads = slow_reads
         self.key: str | None = None
 
 
@@ -104,20 +109,20 @@ def export_settled(opened: Session, export: Export) -> None:
         raise Refused("export_busy")
 
 
-def shared_checks(opened: Session, export: Export) -> None:
-    if managed(opened, export):
+def shared_checks(opened: Session, export: Export, releasing_managed: bool = False) -> None:
+    if not releasing_managed and managed(opened, export):
         raise Refused("managed")
     export_settled(opened, export)
     if part_ingest.waits_for_earlier(opened, export):
         raise Refused("earlier_export")
 
 
-def part_checks(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float) -> None:
+def part_checks(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, releasing_managed: bool) -> None:
     if part.ingest_state != part_ingest.INGESTED or part.ingested_at is None or part.ingested_at >= now or part.status != "done":
         raise Refused("not_settled")
     if not in_export_folder(photos, person, export, part):
         raise Refused("not_export_folder")
-    shared_checks(opened, export)
+    shared_checks(opened, export, releasing_managed)
 
 
 def listing(photos: Photos, person: Person, export: Export, part: ExportPart) -> tuple[Identity, list[tuple[str, int, int]]]:
@@ -167,11 +172,12 @@ def never_read(row: TakeoutEntry) -> bool:
 
 
 class Prover:
-    def __init__(self, opened: Session, photos: Photos, export: Export, on_disk: bool, require_held: bool = False) -> None:
+    def __init__(self, opened: Session, photos: Photos, export: Export, on_disk: bool, require_held: bool = False, *, releasing_managed: bool = False) -> None:
         self.opened, self.photos, self.export, self.on_disk, self.require_held = opened, photos, export, on_disk, require_held
         self.proof = Proof()
         self.roots: dict[int, None] = {}
         self.waiting: list[TakeoutEntry] = []
+        self.releasing_managed = releasing_managed
 
     def check(self, path: Path, sha1: str, in_the_inbox: bool) -> None:
         if not self.on_disk:
@@ -239,11 +245,13 @@ class Prover:
         if root.copy_of_id is not None or root.kind != "media":
             raise Refused("undecided_entry")
         if root.outcome == part_ingest.PLACED:
-            self.placed(root)
+            if not self.releasing_managed:
+                self.placed(root)
         elif root.outcome == part_ingest.REVIEW:
             self.review(root)
         elif root.outcome == part_ingest.SKIPPED:
-            self.skipped(root)
+            if not self.releasing_managed:
+                self.skipped(root)
         elif root.outcome in part_ingest.HELD and allow_held:
             self.held(root)
         elif root.outcome == part_ingest.FAILED:
@@ -332,15 +340,15 @@ def hash_first(photos: Photos, part: ExportPart, proof: Proof) -> None:
 
 
 def prove_part(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, hashing: bool,
-               require_held: bool) -> Proof:
-    part_checks(opened, photos, person, export, part, now)
+               require_held: bool, *, releasing_managed: bool = False) -> Proof:
+    part_checks(opened, photos, person, export, part, now, releasing_managed)
     rows = part_rows(opened, export, part)
-    Prover(opened, photos, export, on_disk=False, require_held=require_held).part(rows)
+    Prover(opened, photos, export, on_disk=False, require_held=require_held, releasing_managed=releasing_managed).part(rows)
     identity, listed = listing(photos, person, export, part)
     ledger_matches(rows, listed)
-    prover = Prover(opened, photos, export, on_disk=True, require_held=require_held)
+    prover = Prover(opened, photos, export, on_disk=True, require_held=require_held, releasing_managed=releasing_managed)
     prover.part(rows)
-    if owner_action(photos):
+    if owner_action(photos) or (releasing_managed and not no_claims_left(photos, person, export, part)):
         raise Refused("owner_action")
     if hashing:
         prover.hash_all()
@@ -497,36 +505,124 @@ def put_back_part(photos: Photos, person: Person, export: Export, part: ExportPa
         return
 
 
-def free_part(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, report: FreeReport) -> None:
-    if kept_unchanged(opened, photos, person, export, part, now, report):
-        return
-    if kept_by_switch(opened, photos, person, export, f"part {part.number}", KEPT, now, report):
+def lock_release(opened: Session, person: Person, export: Export, unit: ExportPart | TakeoutEntry) -> None:
+    managed_switch.claim(opened, person)
+    opened.refresh(export)
+    opened.refresh(unit)
+
+
+def release_for(opened: Session, settings: config.Settings, person: Person, unit: ExportPart | TakeoutEntry, now: float) -> retention_gate.Release:
+    checked = retention_gate.release_check(opened, unit, now, settings.managed_release, confirm_metadata_live=True)
+    if isinstance(checked, str):
+        raise Refused(checked)
+    if checked.person_id != person.id:
+        raise Refused("changed")
+    return checked
+
+
+def recheck_release(opened: Session, settings: config.Settings, person: Person, unit: ExportPart | TakeoutEntry, now: float,
+                    first: retention_gate.Release) -> None:
+    if release_for(opened, settings, person, unit, now) != first:
+        raise Refused("changed")
+
+
+def confirm_release(settings: config.Settings, person: Person, release: retention_gate.Release, photos: Photos, proof: Proof, now: float) -> None:
+    started = time.monotonic()
+    result = retention_gate.confirm_release(settings, person, release, now)
+    if result.reason is not None:
+        raise Refused(result.reason, stop=result.stop, slow_reads=result.slow_reads)
+    for found in proof.files.values():
+        try:
+            identity = paths.inbox_identity(photos, found.path)
+        except (OSError, paths.OutsideRoot) as error:
+            raise Refused("changed") from error
+        if identity != found.identity:
+            raise Refused("changed")
+    if now + (time.monotonic() - started) >= release.valid_until:
+        raise Refused(retention_gate.NO_RECOVERY_POINT)
+
+
+def release_availability(opened: Session, settings: config.Settings, person: Person, now: float, waiting: bool) -> None:
+    subject = f"person {person.id}"
+    last = opened.scalars(select(Event).where(Event.subject == subject, Event.type.in_((RELEASE_WAITING, RELEASE_RESUMED))).order_by(Event.id.desc()).limit(1)).first()
+    key = f"managed:release:{person.id}"
+    if waiting:
+        if last is None or last.type != RELEASE_WAITING:
+            events.record(opened, now, RELEASE_WAITING, subject, retention_gate.IMMICH_UNCONFIRMED)
+        elif now >= last.time + alerts.DAY:
+            alerts.open_alert(opened, settings, key, RELEASE_WAITING, subject,
+                              alerts.Wording(alerts.TITLES[RELEASE_WAITING], "Darkroom cannot verify the photos in Immich for release. It keeps the inbox copies."),
+                              None, now, about=alerts.person(person.id))
+    elif last is not None and last.type == RELEASE_WAITING:
+        events.record(opened, now, RELEASE_RESUMED, subject, "Immich answered")
+        alerts.close(opened, key, now)
+
+
+def note_release_refusal(opened: Session, settings: config.Settings, person: Person, export: Export, refused: Refused, now: float) -> None:
+    subject = f"export {export.id}"
+    if refused.reason == retention_gate.IMMICH_UNCONFIRMED:
+        cleanup.note_kept(opened, now, subject, refused.reason)
+    if refused.slow_reads is not None:
+        events.record(opened, now, "managed_release_slow", subject, str(refused.slow_reads))
+    if refused.stop and refused.slow_reads is None:
+        release_availability(opened, settings, person, now, waiting=True)
+
+
+def free_part(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, now: float, report: FreeReport,
+              settings: config.Settings | None = None) -> bool:
+    started = time.monotonic()
+    if settings is None and kept_unchanged(opened, photos, person, export, part, now, report):
+        return False
+    if settings is None and kept_by_switch(opened, photos, person, export, f"part {part.number}", KEPT, now, report):
         put_back_part(photos, person, export, part)
-        return
-    lock(opened, export, part)
+        return False
+    if settings is None:
+        lock(opened, export, part)
+    else:
+        lock_release(opened, person, export, part)
     try:
         recover_claim(photos, zip_path(photos, person, export, part), export)
-        gone = part.free_state == FREEING and zip_gone(photos, person, export, part)
+        journalled = part.free_state == FREEING and (settings is None or part.release_point_id is not None)
+        gone = journalled and zip_gone(photos, person, export, part)
     except Refused as refused:
         opened.rollback()
         report.failed += 1
         monitoring.log("zip freeing failed", export=export.id, part=part.number, reason=refused.reason)
-        return
+        return False
     if gone:
         record_freed(opened, export, part, part.bytes or 0, now, report)
-        return
+        return False
     opened.commit()
     try:
-        first = prove_part(opened, photos, person, export, part, now, hashing=False, require_held=False)
+        release = None if settings is None else release_for(opened, settings, person, part, now)
+        if release is None:
+            first = prove_part(opened, photos, person, export, part, now, hashing=False, require_held=False)
+        else:
+            first = prove_part(opened, photos, person, export, part, now, hashing=False, require_held=True, releasing_managed=True)
         hash_first(photos, part, first)
-        hold_waiting(opened, photos, person, export, part)
+        if release is None:
+            hold_waiting(opened, photos, person, export, part)
         opened.commit()
+        if release is not None:
+            lock_release(opened, person, export, part)
+            if part.free_state not in (None, FREEING):
+                raise Refused("changed")
+            part.release_point_id = release.point_id
         if part.free_state is None:
             part.free_state, part.free_started_at = FREEING, now
         opened.commit()
-        lock_for_removal(opened, photos, person, export, part)
-        second = prove_part(opened, photos, person, export, part, now, hashing=False, require_held=True)
+        if release is None or settings is None:
+            lock_for_removal(opened, photos, person, export, part)
+            second = prove_part(opened, photos, person, export, part, now, hashing=False, require_held=True)
+        else:
+            lock_release(opened, person, export, part)
+            if part.free_state != FREEING or part.release_point_id != release.point_id:
+                raise Refused("changed")
+            recheck_release(opened, settings, person, part, now + (time.monotonic() - started), release)
+            second = prove_part(opened, photos, person, export, part, now, hashing=False, require_held=True, releasing_managed=True)
         checked = confirm(photos, first, second)
+        if release is not None and settings is not None:
+            confirm_release(settings, person, release, photos, second, now + (time.monotonic() - started))
         try:
             removed = paths.remove_part_zip(photos, person.slug, export_name(export), part.filename or "", checked)
         except paths.NotAPartZip as error:
@@ -535,15 +631,25 @@ def free_part(opened: Session, photos: Photos, person: Person, export: Export, p
             raise Refused("zip_changed")
     except Refused as refused:
         opened.rollback()
-        lock(opened, export, part)
+        if settings is None:
+            lock(opened, export, part)
+        else:
+            lock_release(opened, person, export, part)
         if part.free_state == FREEING:
             part.free_state, part.free_started_at = None, None
+            part.release_point_id = None
         part.free_kept_at, part.free_kept_key = now, refused.key
-        kept(opened, export, f"part {part.number}", KEPT, refused.reason, now)
-        report.kept += 1
+        if refused.reason != retention_gate.RETENTION_CLOCK:
+            kept(opened, export, f"part {part.number}", KEPT, refused.reason, now)
+            report.kept += 1
+        if settings is not None:
+            note_release_refusal(opened, settings, person, export, refused, now)
         opened.commit()
-        return
+        return refused.stop
+    if settings is not None:
+        release_availability(opened, settings, person, now, waiting=False)
     record_freed(opened, export, part, (part.bytes or 0) if removed is None else removed, now, report)
+    return False
 
 
 def held_rows(opened: Session, export: Export) -> list[TakeoutEntry]:
@@ -564,17 +670,17 @@ class HeldProof:
     kept: dict[str, int]
 
 
-def prove_held(opened: Session, photos: Photos, export: Export, rows: list[TakeoutEntry], hashing: bool) -> HeldProof:
+def prove_held(opened: Session, photos: Photos, export: Export, rows: list[TakeoutEntry], hashing: bool, *, releasing_managed: bool = False) -> HeldProof:
     if export.status != IMPORTED:
         raise Refused("export_busy")
-    shared_checks(opened, export)
+    shared_checks(opened, export, releasing_managed)
     if any_failed(opened, export):
         raise Refused("failed_entry")
     if owner_action(photos):
         raise Refused("owner_action")
     found = HeldProof(Proof(), [], {})
     for row in rows:
-        prover = Prover(opened, photos, export, on_disk=True)
+        prover = Prover(opened, photos, export, on_disk=True, releasing_managed=releasing_managed)
         try:
             if row.metadata_pending:
                 raise Refused("metadata_unrecorded")
@@ -596,7 +702,10 @@ def prove_held(opened: Session, photos: Photos, export: Export, rows: list[Takeo
             raise Refused("held_differs") from error
         if identity is None:
             raise Refused("held_differs")
-        found.proof.files[path] = Checked(path, row.sha1 or "", identity, in_the_inbox=True)
+        checked = Checked(path, row.sha1 or "", identity, in_the_inbox=True)
+        if releasing_managed and hashing:
+            hashed(photos, checked)
+        found.proof.files[path] = checked
     return found
 
 
@@ -752,6 +861,70 @@ def held_gone(photos: Photos, export: Export, row: TakeoutEntry) -> bool:
         return False
 
 
+def proved_held(opened: Session, photos: Photos, export: Export, row: TakeoutEntry, path: Path, *, hashing: bool) -> Proof:
+    if claims_may_be_left(photos, export, [row]):
+        raise Refused("owner_action")
+    held = prove_held(opened, photos, export, [row], hashing=hashing, releasing_managed=True)
+    if held.kept:
+        raise Refused(next(iter(held.kept)))
+    if path not in held.proof.files:
+        raise Refused("held_missing")
+    return held.proof
+
+
+def release_held(opened: Session, photos: Photos, person: Person, export: Export, row: TakeoutEntry, settings: config.Settings,
+                 now: float, report: FreeReport) -> bool:
+    started = time.monotonic()
+    lock_release(opened, person, export, row)
+    try:
+        try:
+            path = paths.held_copy_path(photos, person.slug, export_name(export), part_reader.scratch_name(row))
+        except (paths.NotAHeldCopy, paths.OutsideRoot) as error:
+            raise Refused("held_differs") from error
+        if row.held_path != path.relative_to(photos.root).as_posix():
+            raise Refused("held_differs")
+        recover_claim(photos, path, export)
+        recovering = row.held_state == FREEING and row.held_release_point_id is not None and held_gone(photos, export, row)
+        if not recovering:
+            opened.commit()
+            release = release_for(opened, settings, person, row, now)
+            first = proved_held(opened, photos, export, row, path, hashing=True)
+            opened.commit()
+            lock_release(opened, person, export, row)
+            if row.held_state not in (None, FREEING):
+                raise Refused("changed")
+            row.held_state, row.held_release_point_id = FREEING, release.point_id
+            opened.commit()
+            lock_release(opened, person, export, row)
+            if row.held_state != FREEING or row.held_release_point_id != release.point_id:
+                raise Refused("changed")
+            recheck_release(opened, settings, person, row, now + (time.monotonic() - started), release)
+            second = proved_held(opened, photos, export, row, path, hashing=False)
+            if not same_files(first, second):
+                raise Refused("changed")
+            confirm_release(settings, person, release, photos, second, now + (time.monotonic() - started))
+            remove_held(photos, export, row, first)
+            if not held_gone(photos, export, row):
+                raise Refused("changed")
+            release_availability(opened, settings, person, now, waiting=False)
+    except Refused as refused:
+        opened.rollback()
+        lock_release(opened, person, export, row)
+        if row.held_state == FREEING:
+            row.held_state, row.held_release_point_id = None, None
+        if refused.reason != retention_gate.RETENTION_CLOCK:
+            kept(opened, export, "held copy", HELD_KEPT, refused.reason, now)
+            report.kept += 1
+        note_release_refusal(opened, settings, person, export, refused, now)
+        opened.commit()
+        return refused.stop
+    row.held_state, row.held_freed_at = FREED, now
+    events.record(opened, now, "export_held_freed", f"export {export.id}", "1 held copy")
+    report.held += 1
+    opened.commit()
+    return False
+
+
 def candidates(opened: Session) -> list[int]:
     parts = select(ExportPart.export_id).where(ExportPart.ingest_state == part_ingest.INGESTED,
                                                ExportPart.free_state.is_(None) | (ExportPart.free_state == FREEING))
@@ -760,28 +933,43 @@ def candidates(opened: Session) -> list[int]:
     return sorted(found)
 
 
-def free_export(opened: Session, photos: Photos, export: Export, now: float, report: FreeReport) -> None:
-    person = run.owner_person(opened, export)
+def free_export(opened: Session, photos: Photos, person: Person, export: Export, now: float, report: FreeReport,
+                settings: config.Settings, started: float) -> bool:
+    managed_settings = settings if managed(opened, export) else None
     for part in list(opened.execute(select(ExportPart).where(ExportPart.export_id == export.id).order_by(ExportPart.number)).scalars()):
         if part.ingest_state != part_ingest.INGESTED or part.free_state == FREED:
             continue
         if part.free_state is None and (not in_export_folder(photos, person, export, part) or not zip_present(photos, person, export, part)):
             continue
-        free_part(opened, photos, person, export, part, now, report)
+        part_at = now if managed_settings is None else now + (time.monotonic() - started)
+        if free_part(opened, photos, person, export, part, part_at, report, managed_settings):
+            return True
     if export.status == IMPORTED:
-        free_held(opened, photos, person, export, now, report)
+        if managed_settings is None:
+            free_held(opened, photos, person, export, now, report)
+        else:
+            for row in held_rows(opened, export):
+                if release_held(opened, photos, person, export, row, managed_settings, now + (time.monotonic() - started), report):
+                    return True
+    return False
 
 
 def free_ready(opened: Session, settings: config.Settings, now: float) -> FreeReport:
     report = FreeReport()
     photos = Photos(settings.photos_root)
+    stopped_people: set[int] = set()
+    started = time.monotonic()
     for export_id in candidates(opened):
         export = opened.get(Export, export_id)
         if export is None:
             continue
         try:
             with run.account_lock(settings, export.account_id):
-                free_export(opened, photos, export, now, report)
+                person = run.owner_person(opened, export)
+                if person.id in stopped_people and managed(opened, export):
+                    continue
+                if free_export(opened, photos, person, export, now, report, settings, started):
+                    stopped_people.add(person.id)
         except run.Busy:
             continue
         except Exception as error:

@@ -41,6 +41,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.port, 8000)
         self.assertEqual(settings.oidc_allowed_groups, ("parents",))
         self.assertFalse(settings.allow_no_auth)
+        self.assertFalse(settings.managed_release)
+
+    def test_managed_release_needs_an_explicit_opt_in(self):
+        for value in ("", "0", "unexpected", "1"):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"DARKROOM_MANAGED_RELEASE": value}, clear=True):
+                self.assertEqual(config.load().managed_release, value == "1")
 
     def test_the_browser_root_is_unset_unless_given_and_must_be_absolute(self):
         with mock.patch.dict(os.environ, {}, clear=True):

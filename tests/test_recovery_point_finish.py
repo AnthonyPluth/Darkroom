@@ -13,7 +13,8 @@ import run
 from darkroom.domain import alerts, retention_gate
 from darkroom.domain.ingest import cleanup, part_free
 from darkroom.storage import db
-from darkroom.storage.models import Alert, Event, Export, ImportRun, ManagedImportIntent, RecoveryPoint, RecoveryPointAsset, RetentionAttestation
+from darkroom.storage.models import (Alert, DedupeDecision, Event, Export, ExportPart, ImportRun, ManagedImportIntent, RecoveryPoint, RecoveryPointAsset,
+                                     RetentionAttestation, ReviewItem, TakeoutEntry)
 from tests import test_recovery_points as base
 from tests.import_world import NOW as IMPORT_NOW
 from tests.import_world import tree
@@ -91,6 +92,9 @@ class FinishWorld(base.RecoveryWorld):
             opened.execute(update(Export).where(Export.id == 1).values(status=status))
             opened.execute(update(ManagedImportIntent).values(kind=kind))
             opened.add(ImportRun(export_id=1, started=finished - 60, finished=finished, status=run_status))
+            part = opened.scalars(select(ExportPart).where(ExportPart.export_id == 1, ExportPart.number == 1)).first()
+            if part is None:
+                opened.add(ExportPart(export_id=1, number=1, filename="fixture.zip", status="done", ingest_state="ingested"))
 
 
 class FinishSucceededTests(FinishWorld):
@@ -512,6 +516,61 @@ class BackupStaleAlertTests(FinishWorld):
     def test_the_oldest_waiting_export_sets_the_clock(self):
         self.import_waiting(NOW - 10 * DAY)
         self.assertFalse(self.watch(self.waiting_since + retention_gate.STALE_AFTER).backup_stale)
+
+    def test_incomplete_zip_journals_keep_the_export_waiting_when_release_is_off(self):
+        for state, freed_at, filename in (("freeing", None, "fixture.zip"), ("freeing", NOW, "fixture.zip"),
+                                          ("freed", None, "fixture.zip"), ("freeing", None, None)):
+            with self.subTest(state=state, freed_at=freed_at, filename=filename), db.session(self.engine, writing=True) as opened:
+                opened.execute(update(ExportPart).values(free_state=state, freed_at=freed_at, filename=filename))
+                self.assertEqual(retention_gate.waiting_exports(opened, NOW), [1])
+        self.assertTrue(self.watch(NOW).backup_stale)
+
+    def test_a_waiting_held_copy_keeps_the_export_waiting_after_the_zip_is_freed(self):
+        with db.session(self.engine, writing=True) as opened:
+            opened.execute(update(ExportPart).values(free_state="freed", freed_at=NOW - DAY))
+            held = TakeoutEntry(export_id=1, part_number=1, name="fixture.jpg", kind="media", bytes=2, crc32=0, listed_at=NOW - 30 * DAY,
+                                held_path="_inbox/jo/held/export-1/1.jpg", held_state="freeing")
+            opened.add(held)
+            opened.flush()
+            self.assertEqual(retention_gate.waiting_exports(opened, NOW), [1])
+        self.assertTrue(self.watch(NOW).backup_stale)
+        with db.session(self.engine, writing=True) as opened:
+            opened.execute(update(TakeoutEntry).values(held_state="freed", held_freed_at=NOW))
+        self.assertFalse(self.watch(NOW + 60.0).backup_stale)
+
+    def test_a_review_hold_keeps_the_export_waiting_after_the_zip_is_freed(self):
+        with db.session(self.engine, writing=True) as opened:
+            opened.execute(update(ExportPart).values(free_state="freed", freed_at=NOW - DAY))
+            decision = DedupeDecision(export_id=1, account_id=1, person_id=1, tier=4, reason="fixture", decided_by="auto", decided_at=NOW - 20 * DAY)
+            opened.add(decision)
+            opened.flush()
+            review = ReviewItem(decision_id=decision.id, hold_path="_inbox/jo/review/export-1/1.jpg", status="pending")
+            opened.add(review)
+            opened.flush()
+            self.assertEqual(retention_gate.waiting_exports(opened, NOW), [1])
+            review.status, review.resolved_at = "skipped", NOW - DAY
+            opened.flush()
+            self.assertEqual(retention_gate.waiting_exports(opened, NOW), [1])
+        self.assertTrue(self.watch(NOW).backup_stale)
+
+    def test_released_exports_do_not_add_receipts_to_another_exports_backup_needs(self):
+        self.receipt(1, committed_at=self.CANDIDATE)
+        self.stored(2, base.SAM)
+        with db.session(self.engine, writing=True) as opened:
+            opened.execute(update(ExportPart).values(free_state="freed", freed_at=NOW - DAY))
+            opened.add(Export(id=2, account_id=1, kind="manual", status="imported"))
+            opened.flush()
+            opened.add_all([
+                ManagedImportIntent(id=3, person_id=2, owner_id=base.SAM, export_id=2, resource_manifest=base.SNAPSHOT, created_at=self.CANDIDATE),
+                ImportRun(export_id=2, started=self.CANDIDATE - 60, finished=self.CANDIDATE, status="done"),
+                ExportPart(export_id=2, number=1, filename="remaining.zip", status="done", ingest_state="ingested"),
+            ])
+        self.receipt(2, intent=3, committed_at=self.CANDIDATE)
+        covering = self.covering()
+        self.assertEqual([(owner, asset) for owner, asset, *_ in self.manifest(covering)], [(base.SAM, base.asset_id(2))])
+        with db.session(self.engine) as opened:
+            self.assertEqual(retention_gate.waiting_exports(opened, NOW), [2])
+        self.assertFalse(self.watch(NOW).backup_stale)
 
 
 class CommandTests(FinishWorld):

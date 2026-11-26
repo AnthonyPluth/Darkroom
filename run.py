@@ -479,7 +479,8 @@ def reopen_setup() -> int:
     return 0
 
 
-RETENTION_KEPT = "Cleanup keeps every file of an Immich-managed import: this version of Darkroom releases none of them, whatever is recorded here."
+RETENTION_KEPT = "Managed file release is off. Darkroom keeps the inbox copies of managed imports."
+RETENTION_ENABLED = "Managed file release is on for Takeout ZIPs and held copies that pass all recovery and file checks."
 RETENTION_NOT_MIGRATED = "retention: the database has no retention records table yet; run `python run.py migrate` (or start the service once), then run this again"
 BOUNDARY_NOT_STORED = "Nothing was recorded. Run this again with --accept to record that you accept this boundary."
 BOUNDARY_TEXT_CURRENT = "text digest: recorded, and it equals the digest of the text shown now"
@@ -517,23 +518,24 @@ def describe_attestation(kind: str, found: retention_gate.Attestation | None) ->
     return lines
 
 
-def retention_action(opened: Session, args: argparse.Namespace, today: str) -> list[str]:
+def retention_action(opened: Session, args: argparse.Namespace, today: str, *, release_enabled: bool = False) -> list[str]:
     now = utc_now().timestamp()
+    release_status = RETENTION_ENABLED if release_enabled else RETENTION_KEPT
     if args.action == "record-rehearsal":
         rehearsal = retention_gate.checked_rehearsal(args.evidence, args.rehearsed_on, args.immich_version, args.darkroom_version, args.database, today)
-        return ["Recorded:", *describe_attestation(retention_gate.REHEARSAL, retention_gate.record_rehearsal(opened, now, rehearsal)), RETENTION_KEPT]
+        return ["Recorded:", *describe_attestation(retention_gate.REHEARSAL, retention_gate.record_rehearsal(opened, now, rehearsal)), release_status]
     if args.action == "accept-boundary":
         retention_gate.checked_evidence(args.evidence)
         if not args.accept:
             return [retention_gate.BOUNDARY_TEXT, BOUNDARY_NOT_STORED]
         return [retention_gate.BOUNDARY_TEXT, "Recorded:", *describe_attestation(retention_gate.BOUNDARY, retention_gate.accept_boundary(opened, now, args.evidence)),
-                RETENTION_KEPT]
+                release_status]
     if args.action == "withdraw":
         found = retention_gate.withdraw(opened, now, args.which)
         return [f"Withdrawn: {KIND_NAMES[found.kind]} (record {found.id}). It no longer counts."]
     current = retention_gate.status(opened)
     return [*describe_attestation(retention_gate.REHEARSAL, current.rehearsal), *describe_attestation(retention_gate.BOUNDARY, current.boundary),
-            f"Withdrawn records: {current.withdrawn}", *retention_gate.recovery_status(opened, now), RETENTION_KEPT]
+            f"Withdrawn records: {current.withdrawn}", *retention_gate.recovery_status(opened, now, release_enabled=release_enabled), release_status]
 
 
 RECOVERY_NOT_MIGRATED = "recovery-point: the database has no recovery points table yet; run `python run.py migrate` (or start the service once), then run this again"
@@ -608,7 +610,7 @@ def retention(argv: list[str]) -> int:
         return 1
     try:
         with db.session(engine) as opened:
-            lines = retention_action(opened, args, local_today(settings.timezone))
+            lines = retention_action(opened, args, local_today(settings.timezone), release_enabled=settings.managed_release)
     except retention_gate.Refused as refused:
         monitoring.log("retention command refused", reason=refused.reason)
         print(f"retention {args.action}: {refused}; nothing was recorded", file=sys.stderr)

@@ -432,6 +432,7 @@ class ExportPart(Base):
     bytes_freed: Mapped[int | None] = mapped_column(Bytes)
     free_kept_at: Mapped[float | None] = mapped_column(Float)
     free_kept_key: Mapped[str | None] = mapped_column(String)
+    release_point_id: Mapped[int | None] = mapped_column(ForeignKey("recovery_points.id"))
 
 
 class TakeoutEntry(Base):
@@ -474,6 +475,7 @@ class TakeoutEntry(Base):
     held_path: Mapped[str | None] = mapped_column(String)
     held_state: Mapped[str | None] = mapped_column(String)
     held_freed_at: Mapped[float | None] = mapped_column(Float)
+    held_release_point_id: Mapped[int | None] = mapped_column(ForeignKey("recovery_points.id"))
     listed_at: Mapped[float] = mapped_column(Float, nullable=False)
     done_at: Mapped[float | None] = mapped_column(Float)
 
