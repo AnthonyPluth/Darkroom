@@ -46,6 +46,23 @@ Where an outbound proxy adds the real key to each request (as in a Claude Code c
 3. With both keys set in one run (and not resolving to the same user), these rows run at once. Each run prints the IDs and file names of the assets it created; the result lists all of them.
 4. The trashed-duplicate row needs a trashed asset, and the harness never trashes. After the main run, trash the asset named `darkroom-spike-<run>-trash-me.jpg` in the web UI, signed in as the first user, then run `--phase after-trash --append-results <latest result> --out <new result>` with the first user's key. It uploads the same bytes again and records what the bulk check and the upload answer, and whether the trashed asset stayed trashed.
 
+## Live Photo rows for #547
+
+Run the [six Live Photo rows](../design/live-photo-compounds.md#spike-rows-to-add-to-266-owner-run-disposable-users-generated-media) on a disposable Immich instance with the same five-grant keys. Use a second disposable non-admin user and `IMMICH_LIVE_KEY_B` to run the second part of L6. L1 and L5 need FFmpeg with `libx264` to generate the MOV and MP4 fixtures. The other rows use the existing generated JPEG and AVI fixtures.
+
+```sh
+poetry run python -m tools.spikes.immich_live --live-photo --out immich-live-photos.md
+```
+
+These rows use fresh fixtures on every run. To combine results with another run against the same Immich version, add `--append-results <earlier result>` and write to a new output file. The standard run still records its interrupted JPEG/AVI pair separately.
+
+- L1 uploads a generated HEIC and MOV with the same Apple content identifier. The still is sent without a video ID. The result records whether Immich links it to the MOV during the observation window.
+- L2 to L4 observe duplicate-still handling, the effect of linking a previously visible video, and the effect of the `visibility: hidden` upload field. Visibility and linking are recorded from asset reads.
+- L5 appends a generated MP4 to a JPEG and supplies a different generated MP4 as `livePhotoVideoId`. The harness checks for creation of the embedded clip by checksum and verifies its original bytes before reporting the link. Use a disposable instance because Immich's extraction may replace the link and remove the separately supplied fixture. [Immich v3.4.1 metadata service](https://github.com/immich-app/immich/blob/v3.4.1/server/src/services/metadata.service.ts)
+- L6 requires HTTP 400 with the exact message `Not found or no asset.update access` from v3.4.1 and checks that the generated still's checksum is absent. The only video ID used for the other-user case comes from a fresh upload by the second disposable user. [Immich v3.4.1 access check](https://github.com/immich-app/immich/blob/v3.4.1/server/src/utils/access.ts)
+
+If an asynchronous link or extracted clip does not appear by the deadline, the row reports `not verified`. `--extraction-timeout` defaults to 180 seconds. The mode uses only the normal import-key routes. It sends neither update nor delete requests.
+
 ## Reading the result
 
 The table has one row per item of #266's "Required evidence", each `pass`, `fail`, `not verified` or `not run` with what was observed: the server version and the exact grants are listed above it. `not run` rows say why; partner-visible, offline/external-library, edited representations and existing-asset enrichment need access this harness refuses by design and stay open in #266. A `pass` on the extraction row records the values Immich reported, including which date won when EXIF and XMP disagree; a duplicate's row records whether the new sidecar changed anything. A row passes only on the specific evidence it names: a timed-out extraction fails, and an answer other than the expected one is `not verified` with the status shown. The cross-user read must be Immich v3.3.6's access denial, `400 Not found or no asset.read access` ([`utils/access.ts`](https://github.com/immich-app/immich/blob/v3.3.6/server/src/utils/access.ts)), and the quota row needs `400 Quota has been exceeded!` ([`requireQuota`](https://github.com/immich-app/immich/blob/v3.3.6/server/src/services/asset-media.service.ts)), both unchanged in [v3.4.1](https://github.com/immich-app/immich/blob/v3.4.1/server/src/utils/access.ts) ([#411](https://github.com/AnthonyPluth/Darkroom/issues/411)); a 500, a proxy limit or a broken connection is not taken for either. The exit status is 0 when every row that ran passed, 1 when one failed or was not verified, and 2 when the run was refused.

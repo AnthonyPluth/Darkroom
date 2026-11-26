@@ -373,12 +373,13 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 name = (fields.get("filename") or b"").decode()
                 kind = "VIDEO" if name.lower().endswith((".avi", ".mp4", ".mov")) else "IMAGE"
                 created = utc(fields["fileCreatedAt"].decode()).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-                asset = FakeAsset(str(uuid.uuid4()), person.user_id, data, name=name, kind=kind, exif=extract(data, sidecar),
+                visibility = (fields.get("visibility") or b"timeline").decode()
+                asset = FakeAsset(str(uuid.uuid4()), person.user_id, data, name=name, kind=kind, visibility=visibility, exif=extract(data, sidecar),
                                   ready_at=time.monotonic() + state.extraction_delay, metadata=(), sidecar=sidecar, file_created_at=created)
                 video_id = (fields.get("livePhotoVideoId") or b"").decode()
                 video = next((a for a in state.assets if a.id == video_id and a.owner_id == person.user_id and a.kind == "VIDEO"), None)
                 if video_id and video is None:
-                    self.reply(400, {"message": "Not found or no asset.update permission"})
+                    self.reply(400, {"message": "Not found or no asset.update access", "error": "Bad Request", "statusCode": 400})
                     return
                 if video is not None and not state.keep_unlinked:
                     asset.live_video_id, video.visibility = video.id, "hidden"
