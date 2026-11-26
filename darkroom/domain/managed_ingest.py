@@ -394,7 +394,7 @@ def keep_for_immich(opened: Session, photos: Photos, export: Export, review: Rev
 def send_one(opened: Session, settings: config.Settings, photos: Photos, receipt_id: int, now: float, client: immich.Client | None) -> bool:
     row = managed_upload.fresh(opened, receipt_id)
     resolution = select(ManagedHoldResolution.id).where(ManagedHoldResolution.receipt_id == receipt_id, ManagedHoldResolution.state == "applied",
-                                                        ManagedHoldResolution.result == "cleared")
+                                                        ManagedHoldResolution.result.in_(("cleared", "rechecked")))
     if opened.execute(resolution).first() is not None:
         return False
     intent = opened.get(ManagedImportIntent, row.intent_id)
@@ -419,6 +419,10 @@ def send_one(opened: Session, settings: config.Settings, photos: Photos, receipt
         kept_alert(opened, settings, person, review.id, report.reason, now)
     elif row.state != "committed":
         overdue(opened, settings, row.id, report.reason, now)
+    else:
+        db.write_lock(opened)
+        alerts.close(opened, f"managed:kept:{review.id}", now)
+        opened.commit()
     return row.state == "committed"
 
 
@@ -433,8 +437,9 @@ def overdue(opened: Session, settings: config.Settings, receipt_id: int, reason:
 
 def kept_alert(opened: Session, settings: config.Settings, person: Person, review_id: int, reason: str, now: float) -> None:
     db.write_lock(opened)
-    once(opened, settings, f"managed:kept:{review_id}", person.slug, f"A photo kept from review {review_id} is not committed to Immich ({reason}); "
-         "its copy is kept in the inbox.", now, None, alerts.person(person.id))
+    message = f"A photo kept from review {review_id} is not committed to Immich ({reason}); its copy is kept in the inbox."
+    alerts.open_alert(opened, settings, f"managed:kept:{review_id}", "failure", person.slug, alerts.Wording("Darkroom needs a look", message), None, now,
+                      about=alerts.person(person.id), keep_open=True)
     opened.commit()
 
 
@@ -494,6 +499,10 @@ def send_kept_compound(opened: Session, settings: config.Settings, photos: Photo
             opened.rollback()
             monitoring.log("kept Live Photo not sent to Immich", compound=compound.id, error=type(error).__name__)
     if uploads is not None and uploads.committed:
+        db.write_lock(opened)
+        for review in kept:
+            alerts.close(opened, f"managed:kept:{review.id}", now)
+        opened.commit()
         return uploads.committed
     for review in kept:
         if terminal is not None or (uploads is not None and (uploads.held or uploads.same)) or (
@@ -536,8 +545,10 @@ def alert(opened: Session, settings: config.Settings, export: Export, held: int,
     subject, about = f"export {export.id}", alerts.account(export.account_id)
     db.write_lock(opened)
     if held:
-        once(opened, settings, f"managed:held:{export.id}", subject, f"{alerts.counted(held, 'item')} of export {export.id} were not uploaded to Immich "
-             "or not committed there, and are kept in the inbox. Open Darkroom for details.", now, notifier, about)
+        message = (f"{alerts.counted(held, 'item')} of export {export.id} were not uploaded to Immich or not committed there, "
+                   "and are kept in the inbox. Open Darkroom for details.")
+        alerts.open_alert(opened, settings, f"managed:held:{export.id}", "failure", subject, alerts.Wording("Darkroom needs a look", message), None, now,
+                          notifier=notifier, about=about, keep_open=True)
     if pending:
         once(opened, settings, f"managed:pending:{export.id}", subject, f"{alerts.counted(pending, 'upload')} of export {export.id} to Immich could not be "
              "completed yet. Darkroom keeps the files and tries again.", now, notifier, about)

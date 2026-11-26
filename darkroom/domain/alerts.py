@@ -214,7 +214,7 @@ def deliver(opened: Session, settings: Settings, alert: Alert, wording: Wording,
 
 
 def open_alert(opened: Session, settings: Settings, key: str, kind: str, subject: str, wording: Wording, link: str | None, now: float,
-               repeats: tuple[float, ...] = REPEAT_AFTER, notifier: Notifier | None = None, *, about: About) -> Alert:
+               repeats: tuple[float, ...] = REPEAT_AFTER, notifier: Notifier | None = None, *, about: About, keep_open: bool = False) -> Alert:
     existing = opened.execute(select(Alert).where(Alert.key == key, Alert.closed.is_(None))).scalars().first()
     if existing is not None:
         return existing
@@ -224,7 +224,7 @@ def open_alert(opened: Session, settings: Settings, key: str, kind: str, subject
     opened.add(alert)
     opened.flush()
     deliver(opened, settings, alert, wording, now, notifier)
-    if len(repeats) == 1:
+    if len(repeats) == 1 and not keep_open:
         alert.closed = now
     return alert
 
@@ -251,7 +251,7 @@ def open_alert_committed(opened: Session, settings: Settings, key: str, kind: st
 def tick(opened: Session, settings: Settings, now: float, notifier: Notifier | None = None) -> int:
     sent = 0
     for alert in opened.execute(select(Alert).where(Alert.closed.is_(None))).scalars():
-        if alert.sent_count >= len(REPEAT_AFTER):
+        if alert.kind in ONE_SHOT_KINDS or alert.sent_count >= len(REPEAT_AFTER):
             continue
         if now >= alert.opened + REPEAT_AFTER[alert.sent_count]:
             deliver(opened, settings, alert, Wording(TITLES.get(alert.kind, alert.subject), alert.message), now, notifier)
