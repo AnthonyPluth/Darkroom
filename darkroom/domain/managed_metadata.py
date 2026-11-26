@@ -375,7 +375,9 @@ def complete_receipt(opened: Session, reader: immich.ManagedReader, resource: Re
 
 def members(opened: Session, intent_id: int, compound_key: str) -> list[ManagedImportReceipt]:
     receipt = ManagedImportReceipt
-    rows = list(opened.scalars(select(receipt).where(receipt.intent_id == intent_id, receipt.compound_key == compound_key).order_by(receipt.id)))
+    query = (select(receipt).where(receipt.intent_id == intent_id, receipt.compound_key == compound_key).order_by(receipt.id)
+             .execution_options(populate_existing=True))
+    rows = list(opened.scalars(query))
     for row in rows:
         opened.expunge(row)
     opened.commit()
@@ -420,11 +422,17 @@ def manifest_refusal(opened: Session, intent_id: int, compound_key: str) -> Repo
     return None
 
 
-def commit_compound(opened: Session, reader: immich.ManagedReader, intent_id: int, compound_key: str, now: float) -> Report:
+def commit_compound(opened: Session, reader: immich.ManagedReader, intent_id: int, compound_key: str, now: float, *,
+                    current: Callable[[], bool] | None = None, on_commit: Callable[[], None] | None = None) -> Report:
     rows = members(opened, intent_id, compound_key)
     if rows and all(row.state == "committed" for row in rows):
+        if on_commit is not None:
+            db.write_lock(opened)
+            if current is None or current():
+                on_commit()
+            opened.commit()
         return Report("verified", "every resource of the item is committed")
-    if not rows or any(row.state not in ("metadata_verified", "committed") for row in rows):
+    if not rows or any(row.state not in ("metadata_verified", "committed") or row.metadata_hold is not None for row in rows):
         return Report("pending", "a resource of the item has no verified metadata yet")
     intents = [intended_of(row.expected_metadata) for row in rows]
     roles = sorted(intent.role if intent is not None else "" for intent in intents)
@@ -446,6 +454,9 @@ def commit_compound(opened: Session, reader: immich.ManagedReader, intent_id: in
         return Report("pending", REASONS["not_linked"] if "live_still" in roles else "separate assets of the item are linked")
     opened.commit()
     db.write_lock(opened)
+    if current is not None and not current():
+        opened.rollback()
+        return Report("pending", "the item's owner or source changed while it was checked")
     refusal = manifest_refusal(opened, intent_id, compound_key)
     if refusal is not None:
         opened.rollback()
@@ -454,7 +465,8 @@ def commit_compound(opened: Session, reader: immich.ManagedReader, intent_id: in
     changed = 0
     for row in rows:
         if row.state == "metadata_verified":
-            changed += opened.connection().execute(update(receipt).where(receipt.id == row.id, receipt.state == "metadata_verified", receipt.asset_id == row.asset_id)
+            changed += opened.connection().execute(update(receipt).where(receipt.id == row.id, receipt.state == "metadata_verified", receipt.asset_id == row.asset_id,
+                                                                        receipt.updated_at == row.updated_at, receipt.metadata_hold.is_(None))
                                                    .values(state="committed", committed_at=now, updated_at=now)).rowcount
     present = set(opened.scalars(select(receipt.id).where(receipt.intent_id == intent_id, receipt.compound_key == compound_key)))
     if changed != sum(row.state == "metadata_verified" for row in rows) or present != {row.id for row in rows}:
@@ -462,6 +474,8 @@ def commit_compound(opened: Session, reader: immich.ManagedReader, intent_id: in
         return Report("pending", "the item changed while it was checked")
     opened.connection().execute(update(ManagedCompound).where(ManagedCompound.intent_id == intent_id, ManagedCompound.compound_key == compound_key,
                                                               ManagedCompound.committed_at.is_(None)).values(committed_at=now))
+    if on_commit is not None:
+        on_commit()
     opened.commit()
     return Report("verified", "every resource of the item is committed")
 
