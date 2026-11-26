@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from darkroom.domain import events
-from darkroom.storage import paths
+from darkroom.storage import db, paths
 from darkroom.storage.models import Export, ExportPart, GoogleAccount, Person
 from darkroom.storage.paths import Photos
 
@@ -264,9 +264,11 @@ def recorded_folder(photos: Photos | None, inbox: Path) -> str:
 
 
 def register_zips(opened: Session, person: Person, folder: Path, now: float, account_email: str | None = None,
-                  photos: Photos | None = None, route: str | None = None) -> list[Export]:
-    from darkroom.domain.ingest import part_ingest
+                  photos: Photos | None = None, route: str | None = None, guard_photos: Photos | None = None) -> list[Export]:
+    from darkroom.domain import managed_switch
+    from darkroom.domain.ingest import part_ingest, run
 
+    db.write_lock(opened)
     account = chosen_account(opened, person, account_email)
     registered = []
     try:
@@ -277,6 +279,8 @@ def register_zips(opened: Session, person: Person, folder: Path, now: float, acc
         canonical = recorded_folder(photos, inbox)
         export = opened.execute(select(Export).where(Export.account_id == account.id, Export.google_id == stamp,
                                                      Export.inbox_dir.in_([canonical, str(inbox)]))).scalars().first()
+        if route == run.WHOLE:
+            managed_switch.hold(opened, guard_photos or photos, person, "whole_registration" if export is None else "whole_import", export)
         if export is None:
             export = Export(account_id=account.id, kind="manual", google_id=stamp, created_at=now, ready_at=now, status="downloaded",
                             inbox_dir=canonical, part_count=max(numbered), owner_person_id=person.id, ingest_route=route)

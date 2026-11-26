@@ -16,7 +16,7 @@ from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from darkroom import config, dates, monitoring
-from darkroom.domain import alerts, dedupe, events, managed_switch, media, pixel_folder, takeout_copies
+from darkroom.domain import alerts, dedupe, events, exports, managed_switch, media, pixel_folder, takeout_copies
 from darkroom.domain.ingest import heartbeat, metadata, pairing, part_pairing, part_reader, place, run, sidecar, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
@@ -81,8 +81,13 @@ class Target:
 
 
 def queue(opened: Session, photos: Photos | None, export: Export, part: ExportPart, now: float) -> None:
-    if run.route_of(opened, photos, export) == run.PER_PART and (not part.ingest_state or part.ingest_state == NOT_QUEUED):
+    try:
+        route = run.admit_import(opened, photos, export)
+    except (managed_switch.Refused, managed_switch.Paused):
+        return
+    if route == run.PER_PART and (not part.ingest_state or part.ingest_state == NOT_QUEUED):
         part.ingest_state, part.ingest_queued_at = QUEUED, now
+    export.ingest_route = route
 
 
 def creation_key(export: Export) -> tuple[float, int]:
@@ -687,9 +692,17 @@ def ingest_part(opened: Session, settings: config.Settings, export: Export, part
             return PartIngest()
         if part.ingest_state not in (QUEUED, INGESTING) or part.status != "done":
             raise run.NotReady("this part is not queued for ingest")
-        person = run.owner_person(opened, export, claim=True)
+        person = run.owner_person(opened, export)
         photos = Photos(settings.photos_root)
-        managed_switch.begin(opened, settings, export, person, now)
+        try:
+            managed_switch.begin(opened, settings, export, person, now)
+        except managed_switch.Refused as error:
+            for queued in exports.parts_of(opened, export.id):
+                if queued.ingest_state in (QUEUED, INGESTING):
+                    queued.ingest_state, queued.ingest_refusal = REFUSED, None
+            run.refused_import(opened, settings, export, error, now, tools)
+            return PartIngest(refused=True)
+        run.owner_person(opened, export, claim=True)
         resumed = part.ingest_state == INGESTING
         part.ingest_state, part.ingest_refusal, part.ingest_failure, part.ingest_failure_type = INGESTING, None, None, None
         opened.commit()

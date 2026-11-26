@@ -190,8 +190,15 @@ def run_index(slug: str | None) -> int:
     return code
 
 
-def unpack_only_export(opened: Session, photos: Photos, person: Person, export: Export, now: float) -> int:
-    report = unpack.unpack(opened, photos, person, export, now)
+def unpack_only_export(opened: Session, settings: config.Settings, person: Person, export: Export, now: float) -> int:
+    photos = Photos(settings.photos_root)
+    try:
+        with ingest_run.account_lock(settings, export.account_id):
+            managed_switch.hold(opened, photos, person, "whole_import", export)
+            report = unpack.unpack(opened, photos, person, export, now)
+    except (ingest_run.Busy, ingest_run.NotReady, managed_switch.Refused) as error:
+        print(f"export {export.id}: {error}", file=sys.stderr)
+        return 1
     monitoring.log("unpacked", person=person.slug, export=export.id, parts=report.parts_unpacked, skipped=report.parts_skipped, files=report.files, problems=len(report.problems))
     for problem in report.problems:
         print(problem, file=sys.stderr)
@@ -207,7 +214,7 @@ def import_one(opened: Session, settings: config.Settings, export: Export, now: 
     except ingest_run.AlreadyImported:
         print(f"Export {export.id} is already imported.")
         return 0
-    except (ingest_run.Busy, ingest_run.NotReady) as error:
+    except (ingest_run.Busy, ingest_run.NotReady, managed_switch.Refused) as error:
         print(f"export {export.id}: {error}", file=sys.stderr)
         return 1
     if done.status in ingest_run.WAITING:
@@ -240,8 +247,9 @@ def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool, 
         else:
             now = utc_now().timestamp()
             try:
-                found = unpack.register_zips(opened, person, Path(folder), now, account, route=ingest_run.WHOLE) if folder else unpack.inspect_manual_inbox(opened, photos, person, now, account, ingest_run.WHOLE)
-            except unpack.UnpackFailed as error:
+                found = (unpack.register_zips(opened, person, Path(folder), now, account, route=ingest_run.WHOLE, guard_photos=photos) if folder
+                         else unpack.inspect_manual_inbox(opened, photos, person, now, account, ingest_run.WHOLE))
+            except (unpack.UnpackFailed, managed_switch.Refused, managed_switch.Paused) as error:
                 print(str(error), file=sys.stderr)
                 found = []
                 code = 1
@@ -251,7 +259,7 @@ def run_import_takeout(slug: str | None, folder: str | None, unpack_only: bool, 
                       else "no Takeout zip files found to import", file=sys.stderr)
                 code = 1
             for export in found:
-                code = max(code, unpack_only_export(opened, photos, person, export, now) if unpack_only else import_one(opened, settings, export, now))
+                code = max(code, unpack_only_export(opened, settings, person, export, now) if unpack_only else import_one(opened, settings, export, now))
     engine.dispose()
     return code
 

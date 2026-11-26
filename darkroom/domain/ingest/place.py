@@ -198,6 +198,15 @@ def managed_import(opened: Session, export: Export) -> bool:
     return opened.execute(select(ManagedImportIntent.id).where(ManagedImportIntent.export_id == export.id, ManagedImportIntent.kind == "import").limit(1)).first() is not None
 
 
+def check_folder(opened: Session, photos: Photos, person: Person) -> None:
+    from darkroom.domain import managed_switch
+
+    try:
+        managed_switch.check(opened, photos, person, "review_folder")
+    except (managed_switch.Paused, managed_switch.Refused) as error:
+        raise PlaceFailed(str(error)) from None
+
+
 def place_google_only(opened: Session, photos: Photos, export: Export, entry: Entry, report: PlaceReport, read: xmp.Reader, write: xmp.Writer,
                       copied: Callable[[Placed], None] = lambda placed: None, ahead: CopyAhead | None = None) -> MediaItem:
     if managed_import(opened, export):
@@ -205,6 +214,7 @@ def place_google_only(opened: Session, photos: Photos, export: Export, entry: En
     person = exports.owner_of(opened, export)
     if person is None:
         raise PlaceFailed("the export's account has no default person")
+    check_folder(opened, photos, person)
     folder = google_only_folder(photos, person.slug, entry.fields)
     if ahead is not None and ahead.sha1 != entry.fields.sha1:
         raise PlaceFailed("the copy made ahead is of another file")
@@ -248,12 +258,20 @@ def hold_for_review(opened: Session, photos: Photos, export: Export, entry: Entr
     return review
 
 
+def can_fill_folder(opened: Session, photos: Photos, person: Person) -> bool:
+    try:
+        check_folder(opened, photos, person)
+    except PlaceFailed:
+        return False
+    return True
+
+
 def matched_original(opened: Session, photos: Photos, decision: DedupeDecision) -> Path | None:
     if decision.decided_by != "auto" or decision.tier not in dedupe.CONFIRMING_TIERS or decision.matched_item_id is None:
         return None
     matched = opened.get(MediaItem, decision.matched_item_id)
     person = None if matched is None else opened.get(Person, matched.person_id)
-    if matched is None or person is None or matched.source != "phone":
+    if matched is None or person is None or matched.source != "phone" or not can_fill_folder(opened, photos, person):
         return None
     original = photos.original(person.slug, matched.path)
     return original if original.is_file() and not original.is_symlink() else None
@@ -323,7 +341,11 @@ def place(opened: Session, photos: Photos, export: Export, entries: Iterable[Ent
         elif decision.tier == 4:
             hold_for_review(opened, photos, export, entry, report)
         elif (matched := matched_takeout(opened, decision)) is not None:
-            refresh_takeout(photos, matched, entry, report, read, write)
+            person = opened.get(Person, matched.person_id)
+            if person is not None and can_fill_folder(opened, photos, person):
+                refresh_takeout(photos, matched, entry, report, read, write)
+            else:
+                report.skipped += 1
         elif decision.tier in dedupe.CONFIRMING_TIERS:
             fill_original(opened, photos, entry, report, read, write)
         else:

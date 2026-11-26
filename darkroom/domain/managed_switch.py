@@ -17,7 +17,7 @@ from darkroom.storage.paths import Photos
 
 State = Literal["off", "pausing", "on", "stopped"]
 Outcome = Literal["run", "wait", "refuse"]
-Writer = Literal["legacy", "route", "ingest", "whole_import", "review", "cleanup", "holds", "sweep", "part_free"]
+Writer = Literal["legacy", "route", "ingest", "part_queue", "whole_import", "whole_registration", "review", "review_folder", "cleanup", "holds", "sweep", "part_free"]
 Row = dict[State, Outcome]
 STATES: Final = get_args(State)
 FINISHED: Final = frozenset({"imported", "failed", "expired"})
@@ -29,6 +29,7 @@ WAITS: Final[dict[State, str]] = {
 }
 UNKNOWN_STATE: Final = "this person's managed-imports setting is not one Darkroom knows, so this waits"
 REFUSED: Final = "this person's imports go to Immich, so nothing is written to their old folders"
+PAUSING_REFUSED: Final = "this person's imports are being switched to Immich, so a new old-folder import cannot start"
 RECONCILE_PAUSED: Final = "the Immich reconcile is paused while this person's imports are switched to Immich, so it only finishes removals it had begun"
 NO_USER_WAIT: Final = "this person's imports go to Immich but they have no Immich user saved, so this waits until one is"
 NO_USER_ALERT: Final = "Immich-managed imports of {slug} are on but they have no Immich user saved, so their new Takeout export {export} waits. Open Darkroom for details."
@@ -55,17 +56,22 @@ OLD: Row = {"off": "run", "pausing": "run", "on": "refuse", "stopped": "refuse"}
 TABLE: Final[dict[tuple[Writer, run.Way | None], Row]] = {
     ("legacy", None): OFF_ONLY,
     ("route", "fresh"): FRESH,
-    ("route", "old"): ALWAYS,
+    ("route", "old"): OLD,
     ("route", "managed"): ALWAYS,
     ("ingest", "fresh"): FRESH,
     ("ingest", "old"): OLD,
     ("ingest", "managed"): ALWAYS,
+    ("part_queue", "fresh"): ALWAYS,
+    ("part_queue", "old"): OLD,
+    ("part_queue", "managed"): ALWAYS,
     ("whole_import", "fresh"): OFF_ONLY,
     ("whole_import", "old"): OLD,
     ("whole_import", "managed"): OFF_ONLY,
+    ("whole_registration", None): OFF_ONLY,
     ("review", "fresh"): OLD,
     ("review", "old"): OLD,
     ("review", "managed"): ALWAYS,
+    ("review_folder", None): OLD,
     ("cleanup", None): KEPT,
     ("holds", None): KEPT,
     ("sweep", None): ALWAYS,
@@ -102,13 +108,16 @@ def claim(opened: Session, person: Person) -> None:
     opened.refresh(person)
 
 
-def hold(opened: Session, photos: Photos, person: Person, writer: Writer, export: Export | None = None) -> None:
+def check(opened: Session, photos: Photos | None, person: Person, writer: Writer, export: Export | None = None) -> None:
     if writer in BY_THE_WAY and export is None:
         raise ValueError(f"{writer} needs the export it writes for")
     claim(opened, person)
+    check_claimed(opened, photos, person, writer, export)
+
+
+def check_claimed(opened: Session, photos: Photos | None, person: Person, writer: Writer, export: Export | None) -> None:
     state = state_of(person)
     if state is None:
-        opened.rollback()
         raise Paused(UNKNOWN_STATE)
     way: run.Way | None = None
     if export is not None and (writer in BY_THE_WAY or writer == "part_free"):
@@ -116,11 +125,24 @@ def hold(opened: Session, photos: Photos, person: Person, writer: Writer, export
         way = run.way(opened, photos, export)
     found = outcome(state, writer, way, export)
     if found == "wait":
-        opened.rollback()
         raise Paused(WAITS[state])
     if found == "refuse":
+        raise Refused(PAUSING_REFUSED if state == "pausing" and writer in ("whole_import", "whole_registration") else REFUSED)
+
+
+def import_route(opened: Session, photos: Photos | None, person: Person, export: Export) -> str:
+    claim(opened, person)
+    route = run.planned_route(opened, photos, export)
+    check_claimed(opened, photos, person, "part_queue" if route == run.PER_PART else "whole_import", export)
+    return route
+
+
+def hold(opened: Session, photos: Photos | None, person: Person, writer: Writer, export: Export | None = None) -> None:
+    try:
+        check(opened, photos, person, writer, export)
+    except (Paused, Refused):
         opened.rollback()
-        raise Refused(REFUSED)
+        raise
 
 
 def reconcile_paused(opened: Session, person: Person) -> bool:
@@ -146,8 +168,9 @@ def begin(opened: Session, settings: config.Settings, export: Export, person: Pe
     photos = Photos(settings.photos_root)
     opened.commit()
     try:
-        hold(opened, photos, person, "route", export)
+        check(opened, photos, person, "route", export)
     except Paused:
+        opened.rollback()
         if state_of(person) == "stopped":
             alerts.open_alert_committed(opened, settings, stopped_alert_key(export), "managed_stopped", person.slug,
                                         alerts.Wording(alerts.TITLES["managed_stopped"], STOPPED_ALERT.format(slug=person.slug, export=export.id)), None, now,

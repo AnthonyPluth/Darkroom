@@ -293,6 +293,8 @@ def part_failed(opened: Session, job_id: int, number: int, reason: str, now: flo
 
 
 def finish(opened: Session, settings: Settings, job_id: int, now: float) -> Export:
+    from darkroom.domain import managed_switch
+
     export = job_export(opened, job_id)
     if export.status in FINISHED_BY_INGEST and exports.all_done(opened, export) and run.route_of(opened, Photos(settings.photos_root), export) == run.PER_PART:
         export.inbox_dir = export.inbox_dir or str(export_folder(settings, person_of(opened, export), export))
@@ -306,10 +308,16 @@ def finish(opened: Session, settings: Settings, job_id: int, now: float) -> Expo
     alerts.close(opened, expiry_key(export.id), now)
     events.record(opened, now, "export_downloaded", str(export.id), f"{export.part_count} parts")
     photos = Photos(settings.photos_root)
-    if run.route_of(opened, photos, export) == run.PER_PART:
-        run.adopt(opened, export, now)
-    else:
-        run.request_import(opened, export.id, photos, now)
+    try:
+        route = run.admit_import(opened, photos, export)
+        if route == run.PER_PART:
+            export.ingest_route = route
+            run.adopt(opened, export, now)
+        else:
+            run.request_import(opened, export.id, photos, now)
+    except managed_switch.Refused as error:
+        export.status = "failed"
+        events.record(opened, now, "export_import_refused", str(export.id), str(error))
     return export
 
 

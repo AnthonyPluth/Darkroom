@@ -61,6 +61,14 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual({key: after[key] for key in before}, before)
         self.assertEqual(set(after) - set(before), {"sam/originals/2019/IMG_1002.JPG.xmp", "sam/originals/IMG_1004.JPG.xmp"})
 
+    def test_a_shared_account_import_leaves_a_managed_persons_originals_and_sidecars_alone(self):
+        self.world.opened.get(Person, self.world.ids["sam"]).managed_imports = "on"
+        self.world.opened.commit()
+        before = tree(self.world.root / "sam" / "originals")
+        done = self.world.run_import(self.export)
+        self.assertEqual((done.status, done.skipped_t1, done.skipped_t2), ("done", 3, 1))
+        self.assertEqual(tree(self.world.root / "sam" / "originals"), before)
+
     def test_immich_scans_each_changed_library_once(self):
         self.world.run_import(self.export)
         self.assertEqual(sorted(self.world.scanned()), ["lib-jo", "lib-sam"])

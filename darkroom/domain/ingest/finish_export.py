@@ -449,6 +449,8 @@ def stages(opened: Session, settings: config.Settings, export: Export, now: floa
 
 
 def finish(opened: Session, settings: config.Settings, export: Export, now: float, tools: run.Tools | None = None) -> ImportRun:
+    from darkroom.domain import managed_switch
+
     if export.status == "imported":
         raise run.AlreadyImported("this export is already imported")
     with run.account_lock(settings, export.account_id):
@@ -461,6 +463,12 @@ def finish(opened: Session, settings: config.Settings, export: Export, now: floa
         if export.status == "expired" or not complete(opened, export):
             opened.rollback()
             raise run.NotReady("not every part of this export has been downloaded and ingested")
+        person = exports.owner_of(opened, export)
+        if person is not None:
+            try:
+                managed_switch.check(opened, Photos(settings.photos_root), person, "ingest", export)
+            except managed_switch.Refused as error:
+                return run.refused_import(opened, settings, export, error, now, tools or run.Tools())
         return stages(opened, settings, export, now, tools or run.Tools())
 
 

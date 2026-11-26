@@ -7,9 +7,9 @@ from unittest import mock
 
 from sqlalchemy import select
 
-from darkroom.domain import downloads, events, exports
+from darkroom.domain import downloads, events, exports, managed_switch
 from darkroom.storage import db
-from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount
+from darkroom.storage.models import Alert, BrowserJob, Export, ExportPart, GoogleAccount, ImportRun, Person
 from darkroom.storage.paths import Photos
 from tests.privacy import no_leaks
 from tests.test_browser_internal_api import TOKEN, WorkerApiServer
@@ -242,6 +242,38 @@ class SpaceCheckTests(SpaceHelpers):
 
 
 class DownloadApiTests(DownloadApiServer):
+    def test_a_completed_whole_download_is_saved_without_queuing_a_refused_import(self):
+        with db.session(self.engine, writing=True) as opened:
+            opened.query(Person).one().managed_imports = "on"
+            opened.get(Export, self.export).ingest_route = "whole"
+        self.assertEqual(self.ingest_state_after_done(), ("not_queued", None))
+        status, reply = self.worker("POST", f"/internal/browser/jobs/{self.job}/done", {"result": {"parts": 1}})
+        self.assertEqual((status, reply["job"]["id"]), (200, self.job))
+        with db.session(self.engine) as opened:
+            export = opened.get(Export, self.export)
+            part = opened.query(ExportPart).one()
+            self.assertEqual((export.status, export.stage, part.status, part.ingest_state), ("failed", None, "done", "not_queued"))
+            self.assertEqual(opened.get(BrowserJob, self.job).status, "done")
+            self.assertEqual(opened.query(ImportRun).count(), 0)
+            self.assertEqual([row.detail for row in events.recent(opened, type="export_import_refused")], [managed_switch.REFUSED])
+            self.assertTrue((Photos(self.photos).export_tree("jo", f"export-{self.export}") / FILE_CANARY).is_file())
+
+    def test_refusing_a_retry_keeps_existing_export_and_part_states(self):
+        with db.session(self.engine, writing=True) as opened:
+            opened.query(Person).one().managed_imports = "stopped"
+            export = opened.get(Export, self.export)
+            export.status, export.stage, export.ingest_route = "failed", "unpacked", "per_part"
+            part = opened.query(ExportPart).one()
+            part.status, part.ingest_state = "done", "failed"
+            opened.add(ImportRun(export_id=export.id, started=NOW, status="failed", error="earlier failure"))
+        status, _, body = self.owner("POST", f"/api/exports/{self.export}/import")
+        self.assertEqual((status, json.loads(body)), (409, {"error": managed_switch.REFUSED}))
+        with db.session(self.engine) as opened:
+            export = opened.get(Export, self.export)
+            part = opened.query(ExportPart).one()
+            prior = opened.query(ImportRun).one()
+            self.assertEqual((export.status, export.stage, part.ingest_state, prior.status, prior.error), ("failed", "unpacked", "failed", "failed", "earlier failure"))
+
     def test_a_download_runs_through_the_worker_routes_and_leaves_its_parts_to_the_per_part_ingest(self):
         logged = io.StringIO()
         handler = logging.StreamHandler(logged)
