@@ -470,10 +470,12 @@ rules:
 
   - id: darkroom-part-zip-one-caller
     message: >-
-      A part's zip is freed before the 14 days, and the export's held copies at its completion, only by
+      A part's zip and the export's held copies are freed only by
       darkroom/domain/ingest/part_free.py, which copies what still waits into the held store, proves every entry has a
       verified outcome, journals the delete (freeing, then freed) and re-checks under the write lock before it calls
-      paths.remove_part_zip or paths.remove_held_copy (AGENTS.md, promise 2; #487). Call part_free.free_ready instead.
+      paths.remove_part_zip or paths.remove_held_copy. For managed files it also checks the 14-day wait, the enabled
+      release setting, the recovery point and fresh Immich custody under the lock (AGENTS.md, promise 2; #487, #545).
+      Call part_free.free_ready instead.
     severity: ERROR
     languages: [python]
     patterns:

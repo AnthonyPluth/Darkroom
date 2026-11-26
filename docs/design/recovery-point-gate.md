@@ -1,6 +1,6 @@
 # Recovery-point gate for managed cleanup
 
-Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. The owner accepted its proposed defaults, including the boundary text digest. Slices A through C implement the owner records, [backup hook](../deploy/backup-hook.md), alerts, and refusal reporting. Slices D and E add release after verification and owner opt-in. Until then, cleanup keeps every zip, held copy and review hold of a managed import. [Owner decision](https://github.com/AnthonyPluth/Darkroom/issues/545#issuecomment-7131017264) · [Managed storage design](immich-managed-storage.md)
+Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. The owner accepted its proposed defaults, including the boundary text digest. Slices A through C implement the owner records, the backup hook, alerts and refusal reporting. Slice D adds verified ZIP and held-copy release with an opt-in that defaults to off. Slice E covers review holds. [Owner decision](https://github.com/AnthonyPluth/Darkroom/issues/545#issuecomment-7131017264) · [Managed storage design](immich-managed-storage.md) · [Backup hook](../deploy/backup-hook.md)
 
 ## 1. Where things stand
 
@@ -124,7 +124,7 @@ This follows `part_free.free_part`'s existing order, with the gate added. Everyt
 
 On PostgreSQL the write lock is a transaction-scoped advisory lock, so steps 3 to 5 are one transaction with no commit in between: the Immich reads and the unlink happen while no other Darkroom writer can change what step 3 checked.
 
-`READ_DEADLINE` bounds how long the write lock is held for network reads. A zip of about 50 GB can stand for thousands of assets; a read takes tens of milliseconds on a LAN, so one zip can hold the lock for minutes and other jobs wait. When the deadline passes, the unit is kept with `immich_unconfirmed` and the lock is released; a `managed_release_slow` event records the count read. The value is an open question (section 10).
+`READ_DEADLINE` gives the network reads 30 seconds per file. Each request uses the time remaining if it is shorter than the usual request timeout. The gate also checks elapsed time after the reads and before authorizing removal. When the deadline passes, the unit is kept with `immich_unconfirmed` and a `managed_release_slow` event records the count read.
 
 The provider gains one read helper, `ManagedReader.custody_all(asset_ids, deadline)`, that calls `check_access` once and then `custody` for each ID; it issues GET requests only and adds no route to the allowlist. The gate uses a reader with access `read_or_import`, so a person's import key also works and nothing in the gate can upload.
 
@@ -221,4 +221,4 @@ Each is something a user would notice. On 2026-11-24 the owner accepted the prop
 6. **Keepers not yet in Immich's managed library.** A zip whose matched keeper is a `google-only/` or `originals/` file the backfill has not mapped stays pinned (G6). Is waiting for the backfill right, or should those zips follow the old-folder rules?
 7. **Where the owner records.** Command line only, or also a page in the app (which needs a signed-off design), and should the Exports page say "kept: waiting for a backup" per export?
 8. **Decided (2026-11-24): one acceptance for the whole installation.** Scope of the boundary acceptance. One acceptance for the whole installation, as designed, or per person (each person whose photos would lose the inbox copy)?
-9. **How long the write lock may wait on Immich.** `READ_DEADLINE`: other jobs wait while a large zip's assets are read under the lock. A short deadline may mean a large zip never goes; a long one pauses imports and placement for minutes.
+9. **How long the write lock may wait on Immich.** Slice D uses 30 seconds. Large ZIPs can exceed this deadline and stay in the inbox. A longer deadline would hold imports and placement while Darkroom reads the assets.

@@ -477,4 +477,4 @@ class RetentionGateDeletesNothing(unittest.TestCase):
         names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
         self.assertFalse(names & {"DuplicateRemoval", "remove_losing_copy", "delete"})
         reached = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "immich"}
-        self.assertLessEqual(reached, {"MANAGED_VERSIONS", "ManagedReader", "Client", "ImmichFailed", "asset_of"})
+        self.assertLessEqual(reached, {"MANAGED_VERSIONS", "ManagedReader", "Client", "ImmichFailed", "asset_of", "extracted_of"})

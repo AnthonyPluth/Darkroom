@@ -2,6 +2,8 @@ import os
 import shutil
 
 from darkroom.domain.ingest import unpack
+from darkroom.domain.ingest import part_free
+from darkroom.domain import retention_gate
 from darkroom.storage import paths
 from darkroom.storage.paths import remove_held_copy
 
@@ -53,6 +55,17 @@ def free_a_held_copy_without_the_proof(photos, person, export, name, identity):
 def name_a_held_copy(photos, person, export, name):
     # ok: darkroom-part-zip-one-caller
     return paths.held_copy_path(photos, person, export, name)
+
+
+def free_a_managed_part_after_only_a_database_check(opened, photos, person, export, part, now, name, identity):
+    if retention_gate.refusal(opened, part, now, release_enabled=True) is None:
+        # ruleid: darkroom-part-zip-one-caller
+        paths.remove_part_zip(photos, person, export, name, identity)
+
+
+def free_ready_parts(opened, settings, now):
+    # ok: darkroom-part-zip-one-caller
+    return part_free.free_ready(opened, settings, now)
 
 
 def zip_gone_by_identity(photos, path):

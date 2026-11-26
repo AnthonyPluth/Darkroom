@@ -168,6 +168,7 @@ class Settings:
     syncthing_key: str = field(default="", repr=False)
     alerts_off: tuple[str, ...] = ()
     build: Build = Build()
+    managed_release: bool = False
 
 
 SECRET_KEY_FILE = "secret-key"
@@ -217,6 +218,7 @@ def load() -> Settings:
         timezone=env("TZ", "UTC"),
         pixel_folder_cap_gb=whole_number(env("PIXEL_FOLDER_CAP_GB", "50")),
         pixel_immich_source=env_flag("DARKROOM_PIXEL_IMMICH_SOURCE"),
+        managed_release=env_flag("DARKROOM_MANAGED_RELEASE"),
         import_stall_minutes=whole_number(env("DARKROOM_IMPORT_STALL_MINUTES", str(IMPORT_STALL_DEFAULT))),
         resend_api_key=env("RESEND_API_KEY"),
         alert_email_from=env("ALERT_EMAIL_FROM"),

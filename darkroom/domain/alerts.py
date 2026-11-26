@@ -41,6 +41,7 @@ TITLES = {
     "managed_pausing": "Immich-managed switch waiting",
     "managed_no_user": "Immich-managed imports need an Immich user",
     "managed_stopped": "Immich-managed imports stopped",
+    "managed_release_immich_waiting": "Immich verification waiting",
     "same_shot": "Photos wait for you",
     "backup_failed": "Immich backup failed",
     "backup_stale": "Immich backup out of date",

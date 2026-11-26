@@ -739,6 +739,41 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
         db.migrate(self.engine)
 
+    def test_0063_managed_release_journals_keep_existing_parts_and_entries_and_reference_the_point(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0062")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO export_parts (id, export_id, number, free_state) VALUES (1, 1, 1, 'freeing')")
+            connection.exec_driver_sql("INSERT INTO takeout_entries (id, export_id, part_number, name, kind, bytes, crc32, listed_at, held_state) "
+                                       "VALUES (1, 1, 1, 'fixture.jpg', 'media', 2, 0, 1.0, 'freed')")
+            connection.exec_driver_sql("INSERT INTO recovery_points (id, opened_at, state, manifest_count, manifest_sha256) "
+                                       f"VALUES (1, 1.0, 'open', 0, '{'a' * 64}')")
+        db.migrate(self.engine)
+        columns = (("export_parts", "free_state", "release_point_id", "freeing"), ("takeout_entries", "held_state", "held_release_point_id", "freed"))
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            for table, state, point, before in columns:
+                self.assertEqual(connection.exec_driver_sql(f"SELECT {state}, {point} FROM {table}").one(), (before, None))
+                with self.assertRaises(IntegrityError), connection.begin_nested():
+                    connection.exec_driver_sql(f"UPDATE {table} SET {point} = 99")
+                connection.exec_driver_sql(f"UPDATE {table} SET {point} = 1")
+        with self.assertRaises(IntegrityError), self.engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM recovery_points WHERE id = 1")
+        with self.assertRaisesRegex(RuntimeError, "managed release journals are kept"), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0062")
+        with self.engine.begin() as connection:
+            for table, _, point, _ in columns:
+                connection.exec_driver_sql(f"UPDATE {table} SET {point} = NULL")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0062")
+            for table, state, _, before in columns:
+                self.assertEqual(connection.exec_driver_sql(f"SELECT {state} FROM {table}").scalar_one(), before)
+
     def test_0054_retention_attestations_hold_one_active_record_of_each_kind_in_its_shape_and_keep_them_on_undo(self):
         config = db.alembic_config(self.engine)
         with self.engine.begin() as connection:

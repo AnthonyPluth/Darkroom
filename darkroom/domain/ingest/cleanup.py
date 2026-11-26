@@ -280,11 +280,11 @@ def clean_per_part(opened: Session, photos: Photos, export: Export, person: Pers
         opened.commit()
 
 
-def clean_export(opened: Session, photos: Photos, export: Export, now: float, report: CleanupReport) -> None:
+def clean_export(opened: Session, photos: Photos, export: Export, now: float, report: CleanupReport, *, release_enabled: bool = False) -> None:
     person = exports.owner_of(opened, export)
     if place.managed_import(opened, export):
         report.kept += 1
-        detail = retention_gate.cleanup_detail(opened, export.id, now)
+        detail = retention_gate.cleanup_detail(opened, export.id, now, release_enabled=release_enabled)
         if detail is not None:
             db.write_lock(opened)
             note_kept(opened, now, f"export {export.id}", detail)
@@ -438,7 +438,7 @@ def clean(opened: Session, photos: Photos, now: float, settings: config.Settings
             with run.account_lock(settings, account_id):
                 export = opened.get(Export, export_id)
                 if export is not None and export.status == "imported":
-                    clean_export(opened, photos, export, now, report)
+                    clean_export(opened, photos, export, now, report, release_enabled=settings.managed_release)
         except run.Busy:
             report.kept += 1
         except OperationalError as error:
