@@ -299,6 +299,30 @@ def same_shot_sha(found):
 
 
 class LiveUploadTests(unittest.TestCase):
+    def test_undo_is_refused_once_either_half_of_a_released_live_photo_was_claimed_and_allowed_before(self):
+        world = LiveWorld(self)
+        export = world.create(live, parts=1)
+        world.ingest_all(export, (1,))
+
+        def held(opened, reader, intent, receipt_id, entry, name, now):
+            return same_shot.make_hold(opened, intent, receipt_id, entry.decision_id, same_shot.Verdict((), True, False), now)
+        with mock.patch.object(same_shot, "gate", held), mock.patch.object(managed_ingest.time, "sleep"):
+            world.finish(export)
+        (hold,) = holds(world)
+        person = world.jo()
+        resolution.act(world.opened, world.settings, None, person, hold.id, "upload", None, None, LATER)
+        video = world.opened.execute(select(ManagedImportReceipt).where(ManagedImportReceipt.id != hold.receipt_id)).scalars().all()
+        self.assertEqual(len(video), 1)
+        video[0].send_attempts = 1
+        world.opened.commit()
+        with self.assertRaises(resolution.Conflict) as raised:
+            resolution.act(world.opened, world.settings, None, person, hold.id, "undo", None, None, LATER + 1)
+        self.assertEqual(str(raised.exception), resolution.SENT)
+        world.opened.rollback()
+        video[0].send_attempts = 0
+        world.opened.commit()
+        self.assertEqual(resolution.act(world.opened, world.settings, None, person, hold.id, "undo", None, None, LATER + 2).status, "pending")
+
     def test_a_released_live_photo_is_sent_as_one_compound_from_an_imported_export_and_closes_its_alert(self):
         world = LiveWorld(self)
         export = world.create(live, parts=1)

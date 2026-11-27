@@ -11,7 +11,7 @@ from darkroom import config
 from darkroom.domain import alerts, backfill, events, hold_resolutions, immich_reconcile, managed_metadata, same_shot
 from darkroom.providers import immich
 from darkroom.storage import db
-from darkroom.storage.models import (Export, ManagedAssetOrigin, ManagedBackfillItem, ManagedImportIntent, ManagedImportReceipt, ManagedPixelSource,
+from darkroom.storage.models import (Export, ManagedAssetOrigin, ManagedBackfillItem, ManagedCompoundMember, ManagedImportIntent, ManagedImportReceipt, ManagedPixelSource,
                                      ManagedSameShotHold, Person)
 
 RESOLVED_EVENT: Final = "same_shot_resolved"
@@ -201,12 +201,22 @@ def depended_on(opened: Session, version_id: int) -> bool:
     return pixel is not None or mapped is not None
 
 
+def compound_unsent(opened: Session, receipt: ManagedImportReceipt) -> bool:
+    member = ManagedCompoundMember
+    compound_ids = select(member.compound_id).where(member.intent_id == receipt.intent_id, member.resource_key == receipt.resource_key)
+    keys = select(member.resource_key).where(member.intent_id == receipt.intent_id, member.compound_id.in_(compound_ids))
+    others = opened.execute(select(ManagedImportReceipt).where(ManagedImportReceipt.intent_id == receipt.intent_id, ManagedImportReceipt.id != receipt.id,
+                                                              ManagedImportReceipt.resource_key.in_(keys))
+                            .execution_options(populate_existing=True)).scalars()
+    return all(hold_resolutions.unsent(each) for each in others)
+
+
 def undo(opened: Session, person: Person, hold_id: int, by: int | None, now: float) -> ManagedSameShotHold:
     db.write_lock(opened)
     hold = held_of(opened, person.id, hold_id)
     receipt = receipt_of(opened, hold)
     if hold.status == "upload":
-        if receipt.metadata_hold is not None or not hold_resolutions.unsent(receipt):
+        if receipt.metadata_hold is not None or not hold_resolutions.unsent(receipt) or not compound_unsent(opened, receipt):
             raise Conflict(SENT)
         receipt.metadata_hold, receipt.updated_at = same_shot.HOLD, now
     elif hold.status == "represented":
