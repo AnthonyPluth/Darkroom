@@ -8,10 +8,12 @@ from sqlalchemy.orm import Session
 from darkroom import config
 from darkroom.domain import immich_reconcile, managed_switch, writer_locks
 from darkroom.providers import immich
+from darkroom.storage import db
 from darkroom.storage.models import Person
 from darkroom.storage.paths import Photos
 
 LIVE_REFUSED: Final = "Immich did not accept this person's user and key: {reason}; nothing was changed"
+CHANGED: Final = "this person's Immich user or key changed while it was being checked; nothing was changed, so ask again"
 SIDE_EFFECT: Final = "New iPhone photos are not copied to originals/immich or queued for the Pixels until the switch is on."
 STOPPED_NOTE: Final = ("Stopped, not off: something already went to Immich, so new Takeout exports wait, old-folder writers stay refused and nothing is taken out of Immich. "
                        "Ask for on to resume.")
@@ -80,10 +82,17 @@ def status_lines(opened: Session, settings: config.Settings, person: Person, now
 
 
 def turn_on(opened: Session, settings: config.Settings, person: Person, now: float, client: immich.Client | None = None) -> Result:
+    checked: tuple[str | None, str | None] | None = None
     if managed_switch.state_of(person) in ("off", "stopped"):
         refused = live_check(settings, person, client)
         if refused is not None:
             return Result(False, (f"{person.slug}: {refused}",))
+        checked = (person.immich_user_id, person.immich_api_key_sealed)
+        db.write_lock(opened)
+        opened.refresh(person)
+        if (person.immich_user_id, person.immich_api_key_sealed) != checked:
+            opened.rollback()
+            return Result(False, (f"{person.slug}: {CHANGED}",))
     refused = managed_switch.request(opened, person, True, now)
     if refused is not None:
         return Result(False, (f"{person.slug}: {refused}",))

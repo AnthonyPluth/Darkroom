@@ -94,7 +94,7 @@ class OnTests(CommandCase):
     def test_on_stays_pausing_and_says_why_while_an_old_way_export_runs(self):
         self.keyed()
         self.export("downloading")
-        code, out, err = self.call("on", "--person", "jo")
+        code, out, _ = self.call("on", "--person", "jo")
         self.assertEqual((code, self.now()), (0, "pausing"))
         self.assertIn("old way", out)
         self.assertIn("Exports waited for:", out)
@@ -112,7 +112,7 @@ class OnTests(CommandCase):
 
     def test_on_is_refused_for_a_key_with_the_wrong_grants(self):
         self.keyed()
-        self.fake.state.permissions = GRANTS + ("asset.delete",)
+        self.fake.state.permissions = (*GRANTS, "asset.delete")
         code, _, err = self.call("on", "--person", "jo")
         self.assertEqual((code, self.now()), (1, None))
         self.assertIn("approved import permissions", err)
@@ -123,6 +123,18 @@ class OnTests(CommandCase):
         code, _, err = self.call("on", "--person", "jo")
         self.assertEqual((code, self.now()), (1, None))
         self.assertIn("nothing was changed", err)
+
+    def test_on_is_refused_when_the_key_is_replaced_while_it_is_being_checked(self):
+        self.keyed()
+
+        def replaced(*args, **kwargs):
+            self.keyed(key="another-key-canary")
+            return None
+
+        with mock.patch.object(managed_switch_command, "live_check", side_effect=replaced):
+            code, _, err = self.call("on", "--person", "jo")
+        self.assertEqual((code, self.now(), self.events()), (1, None, []))
+        self.assertIn(managed_switch_command.CHANGED, err)
 
     def test_on_again_changes_nothing_and_asks_immich_nothing(self):
         self.keyed()
@@ -135,7 +147,7 @@ class OnTests(CommandCase):
     def test_on_from_stopped_validates_and_resumes_without_waiting(self):
         self.keyed()
         self.state("stopped", intent=True)
-        code, out, _ = self.call("on", "--person", "jo")
+        code, _, _ = self.call("on", "--person", "jo")
         self.assertEqual((code, self.now()), (0, "on"))
         self.assertEqual(self.events(), [("managed_imports_set", "on")])
 
