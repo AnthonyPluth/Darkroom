@@ -256,9 +256,9 @@ def request(opened: Session, person: Person, want_on: bool, now: float) -> str |
     return None
 
 
-def old_way_exports(opened: Session, photos: Photos, person: Person, accounts: set[int]) -> tuple[int, ...]:
+def old_way_exports(opened: Session, photos: Photos, person: Person, accounts: set[int], *, given_up: bool = False) -> tuple[int, ...]:
     theirs = or_(Export.owner_person_id == person.id, and_(Export.owner_person_id.is_(None), Export.account_id.in_(accounts)))
-    found = select(Export).where(theirs, Export.status.not_in(FINISHED)).order_by(Export.id)
+    found = select(Export).where(theirs, Export.status.in_(("failed", "expired")) if given_up else Export.status.not_in(FINISHED)).order_by(Export.id)
     return tuple(export.id for export in opened.execute(found).scalars() if run.way(opened, photos, export) == "old")
 
 
