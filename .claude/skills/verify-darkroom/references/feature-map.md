@@ -141,6 +141,14 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 
 ### Flows on Review
 
+#### `review-held-photos`
+
+- **Starts at:** `review`.
+- **Widths:** phone, desktop.
+- **Touches:** `a[href='#held-photos']`, `article:has-text('IMG_1082.HEIC') button:has-text('Supply the offset')`, `article:has-text('IMG_1082.HEIC') button:has-text('Cancel')`, `article:has-text('IMG_1082.HEIC') button:has-text('Skip')`, `article:has-text('IMG_1082.HEIC') button:has-text('Undo')`.
+- **Expects to see:** `Missing UTC offset`, `Skipped. Darkroom is keeping the copy.`.
+- **Drive it:** `tools/control flow review-held-photos`; or `poetry run python tools/verify.py run --flow review-held-photos`.
+
 #### `review-item`
 
 - **Starts at:** `review`.
