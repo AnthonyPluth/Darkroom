@@ -2,7 +2,7 @@
 
 Before Darkroom may ever delete an inbox file that an Immich-managed import left behind, it needs evidence that a backup of Immich and of Darkroom covers the photos those files stand for ([docs/design/recovery-point-gate.md](../design/recovery-point-gate.md), #545). Darkroom has no code for your backup tool and never reads Immich's storage. Your backup job tells Darkroom two things through two commands in the container: `recovery-point begin` before the backup starts, and `recovery-point finish` when it ends.
 
-Managed inbox release is off by default. With `DARKROOM_MANAGED_RELEASE=1`, Darkroom can free a Takeout ZIP or held copy 14 days after import. It requires a current restore rehearsal, acceptance of the remote-deletion boundary, a healthy backup that covers the file's photos, and a fresh Immich read immediately before each removal. Managed review holds remain in the inbox. [What to record](../design/recovery-point-gate.md#6-what-the-owner-records-and-how)
+To set up managed inbox release, see the [restore rehearsal and acceptance commands](../runbook.md#recovery-points-for-managed-inbox-files). This guide covers how to report each backup.
 
 ## What the two commands do
 
