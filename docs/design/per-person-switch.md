@@ -237,5 +237,5 @@ Recorded on #542 on 2026-11-27:
 1. **The reconcile at `on`.** Yes: a catalogue-only reconcile runs at `on` (section 8, PR 6), and `request(on)` is refused while `DARKROOM_PIXEL_IMMICH_SOURCE` is off. The flip also waits (`pixel_source`) if the setting is turned off while the person is `pausing`.
 2. **Failed and expired old-way exports.** The switch does not wait for them.
 3. **Cleanup and freeing for a managed person's old-way exports.** They stay kept until cutover.
-4. **A page for the switch.** A page on the People page; the owner said no design sign-off is needed (a waiver of promise 6 for this page). It is a separate slice.
+4. **A page for the switch.** The question was "Does the per-person switch get a web page?", with the options CLI-only and "Page on People - needs signed-off design". The owner answered "Page on people, no design signoff needed" ([#542 comment](https://github.com/AnthonyPluth/Darkroom/issues/542#issuecomment-7224479542)), which waives promise 6's sign-off for this page. It is a separate slice.
 5. **`stopped` and new exports.** A fresh export of a `stopped` person waits with one alert and is never imported the old way.

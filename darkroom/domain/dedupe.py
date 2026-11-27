@@ -165,7 +165,7 @@ class PersonIndex:
         phone = opened.execute(
             select(MediaItem).join(Person, Person.id == MediaItem.person_id)
             .where(MediaItem.source == "phone", MediaItem.person_id.in_(people), known_contents(),
-                   or_(Person.managed_imports.is_not(None), ~MediaItem.path.contains(f"/{pixel_source.CATALOGUE_FOLDER}/")))
+                   or_(Person.managed_imports.is_not(None), ~MediaItem.path.startswith(Person.slug.concat(f"/{pixel_source.CATALOGUE_FOLDER}/"))))
             .order_by(MediaItem.id)
         ).scalars()
         takeout = opened.execute(

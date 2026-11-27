@@ -226,8 +226,12 @@ class Run:
             self.fail(asset, "photo", type(error).__name__)
             return
         for half, kind, linked, item, copied in stored:
+            earlier = self.row(half.id)
+            catalogued = earlier.original_item_id if earlier is not None and earlier.status == "cataloged" else None
             row = self.mark(half, kind, "stored", linked)
             row.original_item_id = item.id
+            if catalogued is not None and catalogued != item.id:
+                pixel_folder.adopt_catalogued(self.opened, catalogued, item)
             self.report.stored += 1
             self.report.copied += copied
             self.report.already_there += not copied

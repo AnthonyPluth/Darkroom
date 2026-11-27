@@ -253,9 +253,14 @@ class BackToOffTests(CatalogueCase):
     def test_a_person_turned_off_gets_every_catalogued_original_written_by_the_next_classic_run_though_the_window_moved_on(self):
         asset = self.asset()
         self.run_it()
+        before = [(c.id, c.pixel_id, c.name) for c in self.copies()]
+        self.assertEqual(len(before), 1)
         self.off_again()
-        report = self.run_it(at=NOW + 7200)
+        report = self.run_it(at=NOW + 7200, queue=reconcile.PixelFolderQueue())
         self.assertEqual((report.listed, report.stored, report.copied, self.rows()[asset.id].status), (0, 1, 1, "stored"))
+        (copy,) = self.copies()
+        (real,) = [item for item in self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("jo/originals/immich/%"))).scalars()]
+        self.assertEqual(((copy.id, copy.pixel_id, copy.name), copy.item_id, pixel_source.converted(self.world.opened, copy.id)), (before[0], real.id, False))
         (name,) = self.stored()
         self.assertEqual((self.world.root / "jo/originals/immich" / name).read_bytes(), asset.data)
         self.assertEqual(self.run_it(at=NOW + 10800).stored, 0)
