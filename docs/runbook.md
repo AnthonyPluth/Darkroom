@@ -267,3 +267,30 @@ Then add the person again. Shared-group details are in `docs/deploy/browser.md`.
 ## Immich reconcile
 
 The `immich.reconcile` job (every 15 minutes, or `python run.py reconcile-immich [--person SLUG]`) reads each person's phone uploads from Immich with that person's own API key (`POST /api/search/metadata` on `updatedAt`, the cursor being an SQL offset, so a window is re-read with a 5 minute overlap and every step is idempotent) and runs only after that person's Takeout and, when a legacy folder is set, their legacy import. A phone upload is an asset with the `mobile-app` metadata key, no library, owned by the person's Immich user; a Live Photo's hidden video is stored with its still, and a video or still whose other half has not arrived waits and is retried. Each new original is downloaded once, checked against Immich's base64 SHA-1 and written once to `<person>/originals/immich/` (the file is finished under a temporary name and linked into place, so a failed download leaves nothing), then queued for every Pixel that serves the person with `always_send`, even if a Takeout already matches. A photo whose SHA-1 is already in the person's originals is not written again. Darkroom only reads Immich through its API and never changes anything there or on a phone. Known gap: a Takeout copy already in `google-only/` stays next to the new original until #234 resolves such duplicates. A failing run is recorded as `immich_reconcile_failed` and opens one alert until a run succeeds; `immich_reconciled` events and the log line count what was listed, stored, ignored, waiting and failed.
+
+## Recovery points for managed inbox files
+
+Darkroom keeps managed inbox files by default. With `DARKROOM_MANAGED_RELEASE=1`, a Takeout ZIP or held copy can be released once its import is at least 14 days old and the recovery point, local file and fresh Immich checks all pass. Managed review holds stay in the inbox.
+
+1. Run the [restore rehearsal on a disposable copy](spikes/immich-owner-runbook.md#row-8-the-restore-test) and post the result on [#266](https://github.com/AnthonyPluth/Darkroom/issues/266). After a successful rehearsal, record that comment's URL, the date, the versions you restored and the Darkroom database type. Replace the placeholders and use `postgresql` for Darkroom on PostgreSQL.
+
+   ```sh
+   docker exec darkroom python run.py retention record-rehearsal \
+       --evidence '<restore rehearsal comment URL on #266>' \
+       --rehearsed-on '<YYYY-MM-DD>' \
+       --immich-version '<Immich version with leading v>' \
+       --darkroom-version '<Darkroom release tag>' --database sqlite
+   ```
+
+2. Read the remote-deletion boundary the installed version prints. Darkroom checks Immich just before removing an inbox file. Immich users can still change the asset between that check and removal, so the recovery point provides the fallback. If you accept the boundary, post the decision on [#266](https://github.com/AnthonyPluth/Darkroom/issues/266) and repeat the command with the acceptance comment URL and `--accept`. Darkroom records acceptance for the exact text it displayed.
+
+   ```sh
+   docker exec darkroom python run.py retention accept-boundary \
+       --evidence '<boundary decision comment URL on #266>'
+   ```
+
+3. Set up the [backup hook](deploy/backup-hook.md) in the scheduler that runs your backups. The hook reports when each backup starts, whether it succeeded, what it covers and how long the backup tool keeps it.
+
+Run `docker exec darkroom python run.py retention status` to see the active records, the latest open and finished recovery points, and why files past the 14-day retention period are waiting. `release_pending` means the recorded prerequisites passed and Darkroom still needs the on-disk proof and the fresh Immich read. If a backup failed, check the backup job and run it through the hook again. A newer failed backup blocks release even if an older backup still covers the photos.
+
+To pause release, set `DARKROOM_MANAGED_RELEASE=0` and restart Darkroom. To withdraw an attestation, use `docker exec darkroom python run.py retention withdraw rehearsal` or `docker exec darkroom python run.py retention withdraw boundary`. A withdrawn attestation stops counting immediately. If `status` reports the boundary text has changed, read the new text and record a new decision before release can resume.
