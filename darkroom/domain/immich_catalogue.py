@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from darkroom import config
 from darkroom.domain import backfill, immich_reconcile, index, media, pixel_folder, pixel_source
 from darkroom.providers import immich
-from darkroom.storage import db
+from darkroom.storage import db, paths
 from darkroom.storage.models import ImmichAsset, ManagedAssetVersion, MediaItem, Person, PixelCopy, PixelPerson
 
 FOLDER: Final = pixel_source.CATALOGUE_FOLDER
@@ -21,6 +21,10 @@ SUFFIX: Final = re.compile(r"\.[a-z0-9]{1,10}")
 SAFE_ID: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
 CATALOGED: Final = "cataloged"
 KINDS: Final = ("IMAGE", "VIDEO")
+
+
+class NotReadNow(immich_reconcile.CopyMismatch):
+    pass
 
 
 @dataclass(frozen=True)
@@ -38,20 +42,21 @@ class CatalogueRun(immich_reconcile.Run):
                  read: index.Reader) -> None:
         super().__init__(opened, settings, person, client, key, queue, now, read)
         self.settings = settings
+        paths.clear_catalogue_scratch(settings.data_dir, person.slug)
 
     def suffix_of(self, half: immich.Asset) -> str:
         suffix = PurePath(half.file_name).suffix.lower()
         return suffix if SUFFIX.fullmatch(suffix) else ""
 
     def read_original(self, half: immich.Asset) -> Original:
-        with tempfile.TemporaryDirectory(prefix="catalogue-", dir=self.settings.data_dir) as folder:
+        with tempfile.TemporaryDirectory(prefix=f"catalogue-{self.person.slug}-", dir=self.settings.data_dir) as folder:
             target = Path(folder) / f"original{self.suffix_of(half)}"
             with target.open("wb") as handle:
                 for chunk in self.client.original_chunks(self.key, half):
                     handle.write(chunk)
             tags = index.read_all(self.read, [target])
             if target in tags.deferred:
-                raise immich_reconcile.CopyMismatch("the original's metadata could not be read now")
+                raise NotReadNow("the original's metadata could not be read now")
             try:
                 found = media.fingerprint(target, index.usable(tags.found.get(target)))
             except media.UNDECODABLE:
@@ -132,7 +137,7 @@ class CatalogueRun(immich_reconcile.Run):
         unserved = exists().where(PixelPerson.person_id == self.person.id,
                                   ~exists().where(PixelCopy.pixel_id == PixelPerson.pixel_id, PixelCopy.item_id == ImmichAsset.original_item_id))
         waiting = self.opened.execute(
-            select(ImmichAsset).where(ImmichAsset.person_id == self.person.id, ImmichAsset.status == CATALOGED, ImmichAsset.original_item_id.is_not(None), unserved)
+            select(ImmichAsset).where(ImmichAsset.person_id == self.person.id, ImmichAsset.status.in_((CATALOGED, "stored")), ImmichAsset.original_item_id.is_not(None), unserved)
             .order_by(ImmichAsset.id)
         ).scalars().all()
         for row in waiting:

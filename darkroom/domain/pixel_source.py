@@ -7,14 +7,14 @@ from pathlib import PurePosixPath
 from sqlalchemy import Select, delete, select
 from sqlalchemy.orm import Session
 
-from darkroom.storage import paths
+from darkroom.storage import models, paths
 from darkroom.storage.models import (Export, GoogleAccount, ManagedAssetOrigin, ManagedAssetVersion, ManagedImportIntent, ManagedPixelSource, MediaItem, Person,
                                      Pixel, PixelCopy)
 from darkroom.storage.paths import Photos
 
 VERIFIED = "bytes_verified"
 SUFFIX = re.compile(r"\.[a-z0-9]{1,10}")
-CATALOGUE_FOLDER = "immich-catalogue"
+CATALOGUE_FOLDER = models.CATALOGUE_FOLDER
 
 
 class NotManaged(ValueError):

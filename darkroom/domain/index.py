@@ -379,7 +379,7 @@ def skipped_by_person(opened: Session) -> dict[int, int]:
 
 
 def counts_by_person(opened: Session) -> list[tuple[str, str, int]]:
-    phone = (MediaItem.person_id == Person.id) & (MediaItem.source == "phone") & models.known_contents()
+    phone = (MediaItem.person_id == Person.id) & (MediaItem.source == "phone") & models.known_contents() & models.on_unraid()
     query = (select(Person.slug, Person.name, func.count(MediaItem.id)).outerjoin(MediaItem, phone)
              .group_by(Person.id, Person.slug, Person.name).order_by(Person.id))
     return [(slug, name, int(count)) for slug, name, count in opened.execute(query).all()]

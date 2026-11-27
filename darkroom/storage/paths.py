@@ -2380,3 +2380,14 @@ def sweep_placements(photos: Photos, person: str, export: str) -> int:
             return swept
     except (FileNotFoundError, OutsideRoot):
         return 0
+
+
+def clear_catalogue_scratch(data_dir: Path, slug: str) -> None:
+    for folder in data_dir.glob(f"catalogue-{slug}-*"):
+        if folder.is_symlink() or not folder.is_dir():
+            continue
+        for entry in folder.iterdir():
+            if entry.is_file() and not entry.is_symlink():
+                entry.unlink()
+        with contextlib.suppress(OSError):
+            folder.rmdir()

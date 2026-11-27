@@ -14,7 +14,7 @@ from darkroom.domain import events, index, media, writer_locks
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.providers import exiftool
 from darkroom.storage import db
-from darkroom.storage.models import Export, ImportRun, MediaItem, Person, known_contents
+from darkroom.storage.models import Export, ImportRun, MediaItem, Person, known_contents, on_unraid
 from darkroom.storage.paths import OutsideRoot, Photos
 
 BATCH = 50
@@ -77,7 +77,7 @@ def a_video() -> ColumnElement[bool]:
 def videos(opened: Session, person_ids: list[int], after: int) -> list[Stored]:
     query = (select(MediaItem.id, MediaItem.path, MediaItem.sha1, MediaItem.bytes, MediaItem.mtime, MediaItem.captured_utc, MediaItem.captured_local,
                     MediaItem.offset_minutes, MediaItem.time_source)
-             .where(MediaItem.source == "phone", MediaItem.person_id.in_(person_ids), known_contents(), a_video(), MediaItem.id > after)
+             .where(MediaItem.source == "phone", MediaItem.person_id.in_(person_ids), known_contents(), on_unraid(), a_video(), MediaItem.id > after)
              .order_by(MediaItem.id).limit(BATCH))
     return [Stored(row.id, row.path, row.sha1, row.bytes, row.mtime, Times(row.captured_utc, row.captured_local, row.offset_minutes, row.time_source))
             for row in opened.execute(query)]

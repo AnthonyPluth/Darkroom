@@ -162,18 +162,6 @@ def queue(opened: Session, item: MediaItem, now: float, always_send: bool = Fals
     return queued
 
 
-def adopt_catalogued(opened: Session, catalogued_id: int, item: MediaItem) -> None:
-    db.write_lock(opened)
-    taken = set(opened.execute(select(PixelCopy.pixel_id).where(PixelCopy.item_id == item.id)).scalars())
-    for copy in opened.execute(select(PixelCopy).where(PixelCopy.item_id == catalogued_id).order_by(PixelCopy.id)).scalars().all():
-        if copy.pixel_id in taken or (copy.sha1, copy.bytes) != (item.sha1, item.bytes):
-            continue
-        pixel_source.retire(opened, select(PixelCopy.id).where(PixelCopy.id == copy.id))
-        copy.item_id = item.id
-        taken.add(copy.pixel_id)
-    opened.flush()
-
-
 def queue_managed(opened: Session, item: MediaItem, version_id: int, now: float, existing_only: bool = False) -> int:
     db.write_lock(opened)
     version = opened.get(ManagedAssetVersion, version_id, populate_existing=True)

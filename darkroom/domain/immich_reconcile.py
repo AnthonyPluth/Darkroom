@@ -12,7 +12,7 @@ from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, events, index, legacy, media, pixel_folder, takeout_copies
+from darkroom.domain import alerts, events, index, legacy, media, pixel_folder, pixel_source, takeout_copies
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, locks, paths, secretbox
 from darkroom.storage.models import Event, ImmichAsset, MediaItem, Person, PixelCopy, PixelPerson
@@ -162,9 +162,27 @@ class Run:
             raise CopyMismatch("a different file is already at the copy's name")
         return destination
 
+    def convert(self, assets: list[immich.Asset], fetched: list[Path | None]) -> None:
+        folder = f"{self.person.slug}/{pixel_source.CATALOGUE_FOLDER}/"
+        query = select(MediaItem.id).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.path.startswith(folder)).limit(1)
+        if not any(destination is not None for destination in fetched) or self.opened.execute(query).first() is None:
+            return
+        db.write_lock(self.opened)
+        for asset, destination in zip(assets, fetched, strict=True):
+            if destination is None:
+                continue
+            target = index.relative(self.photos, destination)
+            taken = self.opened.execute(select(MediaItem.id).where(MediaItem.person_id == self.person.id, MediaItem.path == target)).first()
+            earlier = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.sha1 == asset.sha1,
+                                                                  MediaItem.path.startswith(f"{folder}{asset.id}")).execution_options(populate_existing=True)).scalars().first()
+            if earlier is not None and taken is None:
+                earlier.path, earlier.mtime = target, None
+        self.opened.flush()
+
     def store(self, assets: list[immich.Asset]) -> list[tuple[MediaItem, bool]]:
         fetched = [self.fetch(asset) for asset in assets]
         copies = [destination for destination in fetched if destination is not None]
+        self.convert(assets, fetched)
         report = index.index_paths(self.opened, self.photos, self.person, copies, self.now, self.read) if copies else index.IndexReport()
         if report.skipped or report.set_aside:
             raise SetAside("the index set the copy in originals aside; it is tried again in a day")
@@ -226,12 +244,8 @@ class Run:
             self.fail(asset, "photo", type(error).__name__)
             return
         for half, kind, linked, item, copied in stored:
-            earlier = self.row(half.id)
-            catalogued = earlier.original_item_id if earlier is not None and earlier.status == "cataloged" else None
             row = self.mark(half, kind, "stored", linked)
             row.original_item_id = item.id
-            if catalogued is not None and catalogued != item.id:
-                pixel_folder.adopt_catalogued(self.opened, catalogued, item)
             self.report.stored += 1
             self.report.copied += copied
             self.report.already_there += not copied

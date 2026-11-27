@@ -7,11 +7,11 @@ from unittest import mock
 
 from sqlalchemy import select
 
-from darkroom.domain import dedupe, immich_catalogue, legacy, pixel_folder, pixel_source
+from darkroom.domain import backfill, dedupe, immich_catalogue, legacy, pixel_folder, pixel_source
 from darkroom.domain import immich_reconcile as reconcile
 from darkroom.domain.ingest import place
 from darkroom.providers import exiftool, immich
-from darkroom.storage.models import (Alert, DedupeDecision, DuplicateRemoval, Event, Export, ManagedAssetOrigin, ManagedAssetVersion, ManagedPixelSource, MediaItem, Pixel,
+from darkroom.storage.models import (Alert, DedupeDecision, DuplicateRemoval, Event, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedPixelSource, MediaItem, Pixel,
                                      PixelPerson)
 from tests.fakes.immich import FakeAsset
 from tests.import_world import NOW, tree
@@ -213,7 +213,44 @@ class RefusalTests(CatalogueCase):
         self.assertEqual(self.rows()[asset.id].status, "failed")
 
 
+class ScratchTests(CatalogueCase):
+    def test_a_scratch_folder_left_by_a_crash_is_removed_when_the_next_run_starts_and_another_persons_is_not(self):
+        mine, theirs = self.settings.data_dir / "catalogue-jo-old", self.settings.data_dir / "catalogue-sam-old"
+        for folder in (mine, theirs):
+            folder.mkdir(parents=True)
+            (folder / "original.jpg").write_bytes(b"x")
+        self.run_it()
+        self.assertEqual((mine.exists(), theirs.exists()), (False, True))
+
+    def test_metadata_that_cannot_be_read_now_is_its_own_reason(self):
+        self.asset()
+
+        def unreadable(paths):
+            raise exiftool.Unreadable("exiftool is not answering")
+
+        reconcile.reconcile_person(self.world.opened, self.settings, self.jo, NOW, read=unreadable)
+        self.assertEqual(self.world.opened.execute(select(Event.detail).where(Event.type == "immich_asset_failed")).scalar_one(), "NotReadNow")
+
+
 class PixelQueueTests(CatalogueCase):
+    def test_an_asset_already_stored_in_originals_reaches_a_pixel_added_later_once_it_has_a_managed_version(self):
+        asset = self.asset()
+        self.set_state(None)
+        self.run_it()
+        self.set_state("on")
+        row = self.rows()[asset.id]
+        item = self.world.opened.get(MediaItem, row.original_item_id)
+        version = backfill.version_of(self.world.opened, self.jo, asset.id, item.sha1, item.bytes, "IMAGE", None, "{}", NOW)
+        backfill.origin(self.world.opened, version, "phone", item, None, NOW)
+        self.world.opened.commit()
+        self.assertEqual(self.copies(), [])
+        other = Pixel(name="Kitchen Pixel", google_account_id=self.world.account, created=2.0)
+        self.world.opened.add(other)
+        self.world.opened.flush()
+        self.world.opened.add(PixelPerson(pixel_id=other.id, person_id=self.jo.id))
+        self.run_it(at=NOW + 3600)
+        self.assertEqual(len(self.copies()), 2)
+
     def test_with_pixel_copies_from_immich_off_the_photo_is_catalogued_and_waits_for_a_queue_until_they_are_on(self):
         self.settings = dataclasses.replace(self.settings, pixel_immich_source=False)
         asset = self.asset()
@@ -256,14 +293,52 @@ class BackToOffTests(CatalogueCase):
         before = [(c.id, c.pixel_id, c.name) for c in self.copies()]
         self.assertEqual(len(before), 1)
         self.off_again()
+        (catalogue_item,) = self.cataloged()
         report = self.run_it(at=NOW + 7200, queue=reconcile.PixelFolderQueue())
         self.assertEqual((report.listed, report.stored, report.copied, self.rows()[asset.id].status), (0, 1, 1, "stored"))
         (copy,) = self.copies()
-        (real,) = [item for item in self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("jo/originals/immich/%"))).scalars()]
-        self.assertEqual(((copy.id, copy.pixel_id, copy.name), copy.item_id, pixel_source.converted(self.world.opened, copy.id)), (before[0], real.id, False))
+        self.assertEqual(self.cataloged(), [])
+        item = self.world.opened.get(MediaItem, catalogue_item.id)
+        self.assertTrue(item.path.startswith("jo/originals/immich/"))
+        self.assertEqual(((copy.id, copy.pixel_id, copy.name), copy.item_id, pixel_source.converted(self.world.opened, copy.id)), (before[0], item.id, True))
         (name,) = self.stored()
         self.assertEqual((self.world.root / "jo/originals/immich" / name).read_bytes(), asset.data)
         self.assertEqual(self.run_it(at=NOW + 10800).stored, 0)
+
+    def test_a_first_classic_attempt_that_fails_leaves_the_catalogue_item_for_the_retry_and_each_pixel_ends_with_one_copy(self):
+        asset = self.asset()
+        good = asset.data
+        self.run_it()
+        self.off_again()
+        asset.data = b"truncated"
+        asset.checksum = base64.b64encode(bytes.fromhex(sha1(good))).decode()
+        failed = self.run_it(at=NOW + 7200, queue=reconcile.PixelFolderQueue())
+        self.assertEqual((failed.failed, self.rows()[asset.id].status, len(self.cataloged()), len(self.copies())), (1, "failed", 1, 1))
+        asset.data = good
+        retried = self.run_it(at=NOW + 10800, queue=reconcile.PixelFolderQueue())
+        self.assertEqual((retried.stored, self.rows()[asset.id].status, self.cataloged(), len(self.copies())), (1, "stored", [], 1))
+        self.assertTrue(pixel_source.converted(self.world.opened, self.copies()[0].id))
+
+    def test_switched_on_again_the_original_is_the_one_phone_item_and_the_catalogue_adds_no_second(self):
+        self.asset()
+        self.run_it()
+        self.off_again()
+        self.run_it(at=NOW + 7200, queue=reconcile.PixelFolderQueue())
+        self.set_state("on")
+        index = dedupe.PersonIndex.load(self.world.opened, self.world.account)
+        stored = [shot for shot in index.phone if shot.sha1 == sha1(self.world.fake.state.assets[-1].data)]
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(self.run_it(at=NOW + 10800).cataloged, 0)
+        self.assertEqual(len(self.copies()), 1)
+
+    def test_a_catalogue_item_whose_asset_was_stored_elsewhere_is_left_out_of_the_phone_index(self):
+        self.asset()
+        self.run_it()
+        (item,) = self.cataloged()
+        row = self.world.opened.execute(select(ImmichAsset)).scalar_one()
+        row.status = "stored"
+        self.world.opened.commit()
+        self.assertNotIn(item.id, [shot.id for shot in dedupe.PersonIndex.load(self.world.opened, self.world.account).phone])
 
     def test_a_catalogued_live_photo_gets_both_halves_written_when_the_person_is_turned_off(self):
         video_id = str(uuid.uuid4())

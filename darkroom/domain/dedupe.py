@@ -8,14 +8,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal, Protocol
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, exists, or_, select, update
 from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, events, media, pixel_folder, pixel_source
 from darkroom.domain.ingest import pairing
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.storage import db
-from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem, Person, ReviewItem, Setting, known_contents
+from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, ImmichAsset, MediaItem, Person, ReviewItem, Setting, known_contents
 from darkroom.storage.settings_keys import KEEP_EDITED_COPIES
 
 PHASH_MAX_DISTANCE = 8
@@ -162,10 +162,11 @@ class PersonIndex:
         people = accounts.served_people(opened, account_id)
         if owner_person_id is not None:
             people = people | {owner_person_id}
+        catalogued = exists().where(ImmichAsset.original_item_id == MediaItem.id, ImmichAsset.status == "cataloged")
         phone = opened.execute(
             select(MediaItem).join(Person, Person.id == MediaItem.person_id)
             .where(MediaItem.source == "phone", MediaItem.person_id.in_(people), known_contents(),
-                   or_(Person.managed_imports.is_not(None), ~MediaItem.path.startswith(Person.slug.concat(f"/{pixel_source.CATALOGUE_FOLDER}/"))))
+                   or_(~MediaItem.path.startswith(Person.slug.concat(f"/{pixel_source.CATALOGUE_FOLDER}/")), and_(Person.managed_imports.is_not(None), catalogued)))
             .order_by(MediaItem.id)
         ).scalars()
         takeout = opened.execute(

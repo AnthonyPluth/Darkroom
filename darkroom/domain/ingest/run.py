@@ -19,7 +19,7 @@ from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, locks, paths
 from darkroom.storage.models import (
-    Alert, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, TakeoutEntry, known_contents,
+    Alert, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, TakeoutEntry, known_contents, on_unraid,
 )
 from darkroom.storage.paths import Photos
 
@@ -325,7 +325,7 @@ def unmatched_count(opened: Session, person_id: int, cutoff: float) -> int:
     return int(opened.execute(
         select(func.count(MediaItem.id)).where(
             MediaItem.person_id == person_id, MediaItem.source == "phone", MediaItem.indexed_at <= cutoff, MediaItem.confirmed_in_google.is_(False),
-            known_contents())
+            known_contents(), on_unraid())
     ).scalar_one())
 
 

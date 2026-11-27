@@ -543,6 +543,13 @@ def known_contents() -> ColumnElement[bool]:
     return MediaItem.sha1 != UNKNOWN_SHA1
 
 
+CATALOGUE_FOLDER = "immich-catalogue"
+
+
+def on_unraid() -> ColumnElement[bool]:
+    return ~MediaItem.path.like(f"%/{CATALOGUE_FOLDER}/%")
+
+
 class LegacyFile(Base):
     __tablename__ = "legacy_files"
     __table_args__ = (
