@@ -549,7 +549,7 @@ class BackToOffTests(CatalogueCase):
         again = self.finish()
         self.assertEqual(again.stored, 0)
         found = self.world.opened.execute(select(Event.subject, Event.detail).where(Event.type == "pixel_copy_duplicate_kept")).all()
-        self.assertEqual(found, [(f"pixel {managed.pixel_id}", f"copies {managed.id} and {[c.id for c in self.copies() if c.id != managed.id][0]} hold the same photo")])
+        self.assertEqual(found, [(f"pixel {managed.pixel_id}", f"copies {managed.id} and {next(c.id for c in self.copies() if c.id != managed.id)} hold the same photo")])
 
     def test_switched_on_again_the_original_is_the_one_phone_item_and_the_catalogue_adds_no_second(self):
         self.asset()
