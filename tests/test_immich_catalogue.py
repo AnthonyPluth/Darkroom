@@ -5,8 +5,7 @@ import unittest
 import uuid
 from unittest import mock
 
-from sqlalchemy import select, update
-from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from darkroom.domain import retention_gate
 from darkroom.domain import backfill, dedupe, immich_catalogue, index, legacy, pixel_folder, pixel_source, status
@@ -219,7 +218,7 @@ class RefusalTests(CatalogueCase):
         self.world.fake.state.permissions = (*GRANTS, "asset.delete")
         report = self.run_it()
         self.assertEqual((report.cataloged, report.failed, self.rows()[asset.id].status, self.cataloged(), self.versions()), (0, 1, "failed", [], []))
-        self.assertEqual(self.world.opened.execute(select(Alert.kind).where(Alert.key == f"immich:reconcile:{self.jo.id}")).scalars().all(), ["failure"])
+        self.assertEqual(self.world.opened.execute(select(Event.detail).where(Event.type == "immich_asset_failed")).scalars().all(), ["ImmichFailed"])
         self.world.fake.state.permissions = GRANTS
         self.assertEqual(self.run_it(at=NOW + 3600).cataloged, 1)
 
@@ -580,9 +579,13 @@ class BackToOffTests(CatalogueCase):
         self.assertIsNotNone(self.world.opened.get(MediaItem, indexed.id))
 
     def place_from_another_session(self, copy_id):
-        with Session(self.world.engine) as other:
-            other.execute(update(PixelCopy).where(PixelCopy.id == copy_id).values(state="placed", placed_at=NOW))
-            other.commit()
+        mark = "%s" if self.world.engine.dialect.name == "postgresql" else "?"
+        raw = self.world.engine.raw_connection()
+        try:
+            raw.cursor().execute(f"UPDATE pixel_copies SET state = 'placed', placed_at = {mark} WHERE id = {mark}", (NOW, copy_id))
+            raw.commit()
+        finally:
+            raw.close()
 
     def test_a_copy_placed_after_the_decision_to_drop_it_keeps_its_row_and_references(self):
         _, indexed = self.indexed_original(self.asset())
