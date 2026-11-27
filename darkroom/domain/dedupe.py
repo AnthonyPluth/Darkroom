@@ -182,7 +182,7 @@ def shot_of(item: MediaItem) -> Shot:
         id=item.id, person_id=item.person_id, source=item.source, sha1=item.sha1, phash=item.phash,
         captured_utc=item.captured_utc, captured_local=item.captured_local, width=item.width, height=item.height,
         duration_ms=item.duration_ms, make=item.make, model=item.model, is_video=Path(item.path).suffix.lower() in media.VIDEO_SUFFIXES,
-        is_raw=Path(item.path).suffix.lower() in media.CAMERA_RAW_SUFFIXES, catalogue=Path(item.path).parts[1:2] == (pixel_source.CATALOGUE_FOLDER,),
+        is_raw=Path(item.path).suffix.lower() in media.CAMERA_RAW_SUFFIXES, catalogue=pixel_source.catalogued(item.path),
     )
 
 

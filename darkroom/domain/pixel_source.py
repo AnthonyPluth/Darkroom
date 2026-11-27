@@ -21,6 +21,10 @@ class NotManaged(ValueError):
     pass
 
 
+def catalogued(path: str) -> bool:
+    return PurePosixPath(path).parts[1:2] == (CATALOGUE_FOLDER,)
+
+
 def retire(opened: Session, copies: Select[int]) -> None:
     opened.execute(delete(ManagedPixelSource).where(ManagedPixelSource.copy_id.in_(copies)))
 

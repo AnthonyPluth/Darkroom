@@ -15,7 +15,7 @@ from sqlalchemy import Engine, Select, func, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, events, exports, immich_reconcile, managed_ingest, managed_metadata, media
+from darkroom.domain import alerts, events, exports, immich_reconcile, managed_ingest, managed_metadata, media, pixel_source
 from darkroom.domain.ingest import sidecar
 from darkroom.providers import immich
 from darkroom.storage import db
@@ -25,6 +25,7 @@ from darkroom.storage.models import (
     Export,
     ExportPart,
     ImportRun,
+    ManagedAssetOrigin,
     ManagedAssetVersion,
     ManagedBackfillItem,
     ManagedCompound,
@@ -602,6 +603,11 @@ def keeper_need(opened: Session, intent: ManagedImportIntent, decision: DedupeDe
         ManagedBackfillItem.item_id == item.id, ManagedBackfillItem.person_id == intent.person_id, ManagedBackfillItem.outcome == "mapped",
         ManagedAssetVersion.person_id == intent.person_id, ManagedAssetVersion.owner_id == intent.owner_id, ManagedAssetVersion.state == "bytes_verified",
         ManagedAssetVersion.library_id.is_(None), ManagedAssetVersion.sha1 == item.sha1, ManagedAssetVersion.bytes == item.bytes)).scalar_one_or_none()
+    if version is None and pixel_source.catalogued(item.path):
+        version = opened.execute(select(ManagedAssetVersion).join(ManagedAssetOrigin, ManagedAssetOrigin.version_id == ManagedAssetVersion.id).where(
+            ManagedAssetOrigin.kind == "phone", ManagedAssetOrigin.source_key == f"media-item:{item.id}", ManagedAssetOrigin.person_id == intent.person_id,
+            ManagedAssetVersion.person_id == intent.person_id, ManagedAssetVersion.owner_id == intent.owner_id, ManagedAssetVersion.state == "bytes_verified",
+            ManagedAssetVersion.library_id.is_(None), ManagedAssetVersion.sha1 == item.sha1, ManagedAssetVersion.bytes == item.bytes)).scalars().first()
     if version is None or version.bytes_verified_at is None:
         return Dependency(reason=KEEPER_NOT_MANAGED)
     try:

@@ -43,6 +43,7 @@ class CatalogueRun(immich_reconcile.Run):
                  read: index.Reader) -> None:
         super().__init__(opened, settings, person, client, key, queue, now, read)
         self.settings = settings
+        self.reader = immich.ManagedReader(client, key, str(person.immich_user_id), access="read_or_import")
         paths.clear_catalogue_scratch(settings.data_dir, person.slug)
 
     def suffix_of(self, half: immich.Asset) -> str:
@@ -55,7 +56,7 @@ class CatalogueRun(immich_reconcile.Run):
         with tempfile.TemporaryDirectory(prefix="run-", dir=root) as folder:
             target = Path(folder) / f"original{self.suffix_of(half)}"
             with target.open("wb") as handle:
-                for chunk in self.client.original_chunks(self.key, half):
+                for chunk in self.reader.original_chunks(half.id, half.sha1):
                     handle.write(chunk)
             tags = index.read_all(self.read, [target])
             if target in tags.deferred:

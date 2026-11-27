@@ -7,19 +7,23 @@ from unittest import mock
 
 from sqlalchemy import select
 
+from darkroom.domain import retention_gate
 from darkroom.domain import backfill, dedupe, immich_catalogue, index, legacy, pixel_folder, pixel_source, status
 from darkroom.domain import immich_reconcile as reconcile
 from darkroom.domain.ingest import place
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.providers import exiftool, immich
 from darkroom.storage import models, paths
-from darkroom.storage.models import (PixelCopy, LegacyFile, Alert, DedupeDecision, DuplicateRemoval, Event, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedPixelSource, MediaItem, Pixel,
+from darkroom.storage.models import (PixelCopy, LegacyFile, Alert, DedupeDecision, DuplicateRemoval, Event, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedImportIntent, ManagedPixelSource, MediaItem, Pixel,
                                      PixelPerson)
 from tests.fakes.immich import FakeAsset
 from tests.import_world import NOW, tree
 from tests.privacy import no_leaks
 from tests.test_immich_reconcile import SECRET, ReconcileCase, sha1
 from tests.test_legacy import LegacyWorld
+
+OWNER = "11111111-1111-4111-8111-111111111111"
+GRANTS = ("asset.download", "asset.read", "asset.upload", "server.about", "user.read")
 
 
 def immich_asset_of(world, fake):
@@ -29,6 +33,11 @@ def immich_asset_of(world, fake):
 class CatalogueCase(ReconcileCase):
     def setUp(self):
         super().setUp()
+        people = self.world.fake.state.people
+        people[:] = [dataclasses.replace(person, user_id=OWNER) if person.slug == "jo" else person for person in people]
+        self.world.fake.state.version, self.world.fake.state.permissions = "v3.4.1", GRANTS
+        self.jo.immich_user_id = OWNER
+        self.world.opened.commit()
         self.settings = dataclasses.replace(self.settings, pixel_immich_source=True)
         self.set_state("on")
 
@@ -38,6 +47,7 @@ class CatalogueCase(ReconcileCase):
 
     def asset(self, data=None, **fields):
         found = self.photo(id=str(uuid.uuid4()), **fields)
+        found.owner_id = OWNER
         if data is not None:
             found.data = data
         return found
@@ -62,7 +72,7 @@ class CataloguingTests(CatalogueCase):
         self.assertEqual((row.status, row.original_item_id, row.queued_at), ("cataloged", item.id, NOW))
         (version,) = self.versions()
         self.assertEqual((version.asset_id, version.owner_id, version.sha1, version.bytes, version.state, version.library_id),
-                         (asset.id, "u-jo", item.sha1, item.bytes, pixel_source.VERIFIED, None))
+                         (asset.id, OWNER, item.sha1, item.bytes, pixel_source.VERIFIED, None))
         (origin,) = self.world.opened.execute(select(ManagedAssetOrigin)).scalars()
         self.assertEqual((origin.kind, origin.version_id, origin.receipt_id, origin.intent_id), ("phone", version.id, None, None))
         (copy,) = [found for found in self.copies() if found.item_id == item.id]
@@ -129,7 +139,7 @@ class CataloguingTests(CatalogueCase):
 
     def test_a_live_photo_catalogues_both_halves_linked_and_queues_both(self):
         video_id = str(uuid.uuid4())
-        video = self.world.fake.add_asset(FakeAsset(id=video_id, owner_id="u-jo", data=b"\x00\x00\x00\x14ftypqt  video-bytes", name="IMG_0001.MOV", kind="VIDEO",
+        video = self.world.fake.add_asset(FakeAsset(id=video_id, owner_id=OWNER, data=b"\x00\x00\x00\x14ftypqt  video-bytes", name="IMG_0001.MOV", kind="VIDEO",
                                                   visibility="hidden", metadata=()))
         still = self.asset(live_video_id=video_id)
         report = self.run_it()
@@ -146,7 +156,7 @@ class CataloguingTests(CatalogueCase):
         still = self.asset(live_video_id=video_id)
         first = self.run_it()
         self.assertEqual((first.cataloged, first.waiting, self.rows()[still.id].status), (0, 1, "waiting"))
-        self.world.fake.add_asset(FakeAsset(id=video_id, owner_id="u-jo", data=b"\x00\x00\x00\x14ftypqt  video-bytes", name="IMG_0001.MOV", kind="VIDEO",
+        self.world.fake.add_asset(FakeAsset(id=video_id, owner_id=OWNER, data=b"\x00\x00\x00\x14ftypqt  video-bytes", name="IMG_0001.MOV", kind="VIDEO",
                                           visibility="hidden", metadata=()))
         later = self.run_it(at=NOW + 3600)
         self.assertEqual((later.cataloged, later.waiting, self.rows()[still.id].status), (2, 0, "cataloged"))
@@ -183,7 +193,7 @@ class CataloguingTests(CatalogueCase):
 
     def test_a_catalogued_photo_never_makes_a_matched_takeout_copy_lose_its_file(self):
         takeout = self.world.opened.execute(select(MediaItem).where(MediaItem.source == "takeout", MediaItem.path.like("jo/google-only/%IMG_2001%"))).scalar_one()
-        self.world.fake.add_asset(FakeAsset(id=str(uuid.uuid4()), owner_id="u-jo", data=(self.world.root / takeout.path).read_bytes(), name="IMG_9001.JPG"))
+        self.world.fake.add_asset(FakeAsset(id=str(uuid.uuid4()), owner_id=OWNER, data=(self.world.root / takeout.path).read_bytes(), name="IMG_9001.JPG"))
         before = tree(self.world.root)
         self.assertEqual(self.run_it().cataloged, 1)
         self.assertEqual((tree(self.world.root), self.world.opened.execute(select(DuplicateRemoval)).all()), (before, []))
@@ -199,9 +209,30 @@ class RefusalTests(CatalogueCase):
         return list(self.world.opened.execute(select(Event.detail).where(Event.type == "immich_asset_failed")).scalars())
 
     def test_an_id_that_is_not_safe_in_a_path_is_never_catalogued(self):
-        asset = immich.Asset("a/../b", "u-jo", None, "a" * 40, "x.jpg", "IMAGE", "timeline", None, False, False)
+        asset = immich.Asset("a/../b", OWNER, None, "a" * 40, "x.jpg", "IMAGE", "timeline", None, False, False)
         with self.assertRaises(reconcile.CopyMismatch):
             immich_catalogue.CatalogueRun.path_of(types.SimpleNamespace(person=types.SimpleNamespace(slug="jo")), asset)
+
+    def test_an_asset_is_not_catalogued_while_the_managed_reader_refuses_the_key_and_is_retried_when_it_accepts_it(self):
+        asset = self.asset()
+        self.world.fake.state.permissions = (*GRANTS, "asset.delete")
+        report = self.run_it()
+        self.assertEqual((report.cataloged, report.failed, self.rows()[asset.id].status, self.cataloged(), self.versions()), (0, 1, "failed", [], []))
+        self.world.fake.state.permissions = GRANTS
+        self.assertEqual(self.run_it(at=NOW + 3600).cataloged, 1)
+
+    def test_an_asset_the_owner_trashed_after_it_was_listed_is_not_catalogued(self):
+        asset = self.asset()
+        real = immich.Client.search_stable
+
+        def listing_then_trashing(client, *args, **kwargs):
+            found = real(client, *args, **kwargs)
+            asset.trashed = True
+            return found
+
+        with mock.patch.object(immich.Client, "search_stable", listing_then_trashing):
+            report = self.run_it()
+        self.assertEqual((report.cataloged, self.cataloged(), self.versions()), (0, [], []))
 
     def test_a_catalogue_item_holding_other_bytes_fails_the_asset_and_is_left_as_it_is(self):
         asset = self.asset()
@@ -215,8 +246,49 @@ class RefusalTests(CatalogueCase):
     def test_an_asset_that_is_neither_a_photo_nor_a_video_is_not_catalogued(self):
         asset = self.asset(kind="AUDIO")
         report = self.run_it()
-        self.assertEqual((report.cataloged, report.failed, self.failures(), self.cataloged()), (0, 1, ["CopyMismatch"], []))
+        self.assertEqual((report.cataloged, report.failed, self.failures(), self.cataloged()), (0, 1, ["NotCustody"], []))
         self.assertEqual(self.rows()[asset.id].status, "failed")
+
+
+class RetentionTests(CatalogueCase):
+    def keeper(self):
+        self.asset()
+        self.run_it()
+        (item,) = self.cataloged()
+        export = self.world.opened.execute(select(Export)).scalars().first()
+        intent = ManagedImportIntent(person_id=self.jo.id, export_id=export.id, owner_id=OWNER, resource_manifest="{}", created_at=NOW)
+        decision = DedupeDecision(export_id=export.id, account_id=self.world.account, person_id=self.jo.id, source_path="same.jpg", tier=1, reason="same bytes", decided_by="auto",
+                                  decided_at=NOW, matched_item_id=item.id)
+        self.world.opened.add_all([intent, decision])
+        self.world.opened.commit()
+        return item, intent, decision
+
+    def test_a_takeout_entry_matching_a_catalogue_item_needs_the_immich_asset_it_was_mapped_to(self):
+        item, intent, decision = self.keeper()
+        found = retention_gate.keeper_need(self.world.opened, intent, decision, None)
+        (version,) = self.versions()
+        self.assertEqual((found.reason, [(need.owner_id, need.asset_id, need.sha1) for need in found.needs]), (None, [(OWNER, version.asset_id, item.sha1)]))
+
+    def test_without_the_origin_mapping_or_with_another_owner_or_other_bytes_the_entry_stays_held(self):
+        item, intent, decision = self.keeper()
+        origin = self.world.opened.execute(select(ManagedAssetOrigin)).scalar_one()
+        version = self.versions()[0]
+        for change in (lambda: setattr(origin, "source_key", "media-item:0"), lambda: setattr(intent, "owner_id", "other-owner"), lambda: setattr(item, "bytes", item.bytes + 1),
+                       lambda: setattr(version, "state", "missing")):
+            self.world.opened.rollback()
+            change()
+            self.world.opened.flush()
+            found = retention_gate.keeper_need(self.world.opened, intent, decision, None)
+            self.assertEqual((found.reason, found.needs), (retention_gate.KEEPER_NOT_MANAGED, ()))
+        self.world.opened.rollback()
+
+    def test_a_path_that_only_looks_like_a_catalogue_item_gets_no_mapping_through_the_origin(self):
+        item, intent, decision = self.keeper()
+        item.path = "jo/originals/immich-catalogue/x.jpg"
+        self.world.opened.flush()
+        found = retention_gate.keeper_need(self.world.opened, intent, decision, None)
+        self.assertEqual(found.reason, retention_gate.KEEPER_NOT_MANAGED)
+        self.world.opened.rollback()
 
 
 class ScratchTests(CatalogueCase):
@@ -490,7 +562,7 @@ class BackToOffTests(CatalogueCase):
 
     def test_a_catalogued_live_photo_gets_both_halves_written_when_the_person_is_turned_off(self):
         video_id = str(uuid.uuid4())
-        self.world.fake.add_asset(FakeAsset(id=video_id, owner_id="u-jo", data=b"\x00\x00\x00\x14ftypqt  video-bytes", name="IMG_0001.MOV", kind="VIDEO",
+        self.world.fake.add_asset(FakeAsset(id=video_id, owner_id=OWNER, data=b"\x00\x00\x00\x14ftypqt  video-bytes", name="IMG_0001.MOV", kind="VIDEO",
                                           visibility="hidden", metadata=()))
         still = self.asset(live_video_id=video_id)
         self.run_it()
