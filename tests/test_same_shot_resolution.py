@@ -323,6 +323,26 @@ class LiveUploadTests(unittest.TestCase):
         world.opened.commit()
         self.assertEqual(resolution.act(world.opened, world.settings, None, person, hold.id, "undo", None, None, LATER + 2).status, "pending")
 
+    def test_the_video_of_a_live_photo_whose_release_was_undone_cannot_be_claimed(self):
+        world = LiveWorld(self)
+        export = world.create(live, parts=1)
+        world.ingest_all(export, (1,))
+
+        def held(opened, reader, intent, receipt_id, entry, name, now):
+            return same_shot.make_hold(opened, intent, receipt_id, entry.decision_id, same_shot.Verdict((), True, False), now)
+        with mock.patch.object(same_shot, "gate", held), mock.patch.object(managed_ingest.time, "sleep"):
+            world.finish(export)
+        (hold,) = holds(world)
+        person = world.jo()
+        resolution.act(world.opened, world.settings, None, person, hold.id, "upload", None, None, LATER)
+        other = world.opened.execute(select(ManagedImportReceipt.id).where(ManagedImportReceipt.id != hold.receipt_id)).scalar_one()
+        read = managed_upload.fresh(world.opened, other)
+        resolution.act(world.opened, world.settings, None, person, hold.id, "undo", None, None, LATER + 1)
+        with self.assertRaises(managed_upload.Moved):
+            managed_upload.claim(world.opened, read, LATER + 2)
+        resolution.act(world.opened, world.settings, None, person, hold.id, "upload", None, None, LATER + 3)
+        self.assertEqual(managed_upload.claim(world.opened, managed_upload.fresh(world.opened, other), LATER + 4), 1)
+
     def test_a_released_live_photo_is_sent_as_one_compound_from_an_imported_export_and_closes_its_alert(self):
         world = LiveWorld(self)
         export = world.create(live, parts=1)
