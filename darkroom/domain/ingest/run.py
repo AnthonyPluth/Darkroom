@@ -678,6 +678,10 @@ def failed_parts(opened: Session, export_id: int) -> int:
                                                                                  ExportPart.ingest_state == PART_FAILED)).scalar_one())
 
 
+def failed_item_total(opened: Session, export_id: int) -> int:
+    return int(opened.execute(select(func.coalesce(func.sum(ExportPart.failed_items), 0)).where(ExportPart.export_id == export_id)).scalar_one())
+
+
 def route_pending(opened: Session, settings: config.Settings, now: float) -> list[int]:
     from darkroom.domain import managed_switch
 

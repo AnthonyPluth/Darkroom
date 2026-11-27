@@ -1,0 +1,13 @@
+{
+  "name": "exports-retry-items",
+  "page": "exports",
+  "allow_console": ["409"],
+  "steps": [
+    { "expect_text": { "selector": "section[aria-label='Earlier exports for avery.photos@example.com']", "text": "3 items couldn't be imported. Retry failed items tries them again and keeps everything already imported." } },
+    { "scroll_to": "section[aria-label='Earlier exports for avery.photos@example.com']" },
+    { "screenshot": "retry-items" },
+    { "click": "section[aria-label='Earlier exports for avery.photos@example.com'] >> role=button[name='Retry failed items']" },
+    { "expect_text": { "selector": "[role='alert']", "text": "part 2 of this export is not in the inbox, so its failed items cannot be retried" } },
+    { "screenshot": "retry-items-refused" }
+  ]
+}

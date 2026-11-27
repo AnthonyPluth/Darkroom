@@ -1132,6 +1132,9 @@
               }
             ]
           },
+          "failed_items": {
+            "type": "integer"
+          },
           "held_waiting_export": {
             "type": "integer"
           },
@@ -1142,6 +1145,9 @@
             "type": "integer"
           },
           "import_retry_allowed": {
+            "type": "boolean"
+          },
+          "item_retry_allowed": {
             "type": "boolean"
           },
           "kind": {
@@ -1208,10 +1214,12 @@
           "bytes_freed",
           "created_at",
           "expires_at",
+          "failed_items",
           "held_waiting_export",
           "held_waiting_sidecar",
           "id",
           "import_retry_allowed",
+          "item_retry_allowed",
           "kind",
           "part_count",
           "parts",
@@ -1704,6 +1712,9 @@
           "export_id": {
             "type": "integer"
           },
+          "items_requeued": {
+            "type": "integer"
+          },
           "parts_requeued": {
             "type": "integer"
           },
@@ -1729,6 +1740,7 @@
         },
         "required": [
           "export_id",
+          "items_requeued",
           "parts_requeued",
           "per_part",
           "run_requeued",

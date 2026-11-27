@@ -80,15 +80,15 @@ export const noExports: Exports = { exports: [], schedules: [] };
 const part = (number: number, status: string, downloads: number): ExportPartDetail => ({ number, filename: status === "pending" ? null : `takeout-20261102-00${number}.zip`, bytes: 1000 * number, progress: status === "done" ? 100 : 0, downloads_used: downloads, attempts: downloads, status, ingest_state: "not_queued", entries: 0, entries_done: 0, held: 0, held_waiting_sidecar: 0, held_waiting_export: 0, failed_items: 0, kept_reason: null, import_failure: null, freed: false, bytes_freed: 0 });
 
 export const downloadingExport: ExportView = {
-  id: 40, account_id: 10, kind: "initial", created_at: 900_000, ready_at: 905_000, expires_at: 1_500_000, part_count: 3, status: "downloading", stage: null, parts_ingested: 0, held_waiting_sidecar: 0, held_waiting_export: 0, bytes_freed: 0, retry_allowed: false, retry_refusal: null, import_retry_allowed: false,
+  id: 40, account_id: 10, kind: "initial", created_at: 900_000, ready_at: 905_000, expires_at: 1_500_000, part_count: 3, status: "downloading", stage: null, parts_ingested: 0, held_waiting_sidecar: 0, held_waiting_export: 0, bytes_freed: 0, retry_allowed: false, retry_refusal: null, import_retry_allowed: false, failed_items: 0, item_retry_allowed: false,
   parts: [part(1, "done", 1), part(2, "downloading", 1), part(3, "pending", 0)],
 };
-export const preparingExport: ExportView = { id: 41, account_id: 10, kind: "incremental", created_at: 990_000, ready_at: null, expires_at: null, part_count: null, status: "announced", stage: null, parts: [], parts_ingested: 0, held_waiting_sidecar: 0, held_waiting_export: 0, bytes_freed: 0, retry_allowed: false, retry_refusal: null, import_retry_allowed: false };
+export const preparingExport: ExportView = { id: 41, account_id: 10, kind: "incremental", created_at: 990_000, ready_at: null, expires_at: null, part_count: null, status: "announced", stage: null, parts: [], parts_ingested: 0, held_waiting_sidecar: 0, held_waiting_export: 0, bytes_freed: 0, retry_allowed: false, retry_refusal: null, import_retry_allowed: false, failed_items: 0, item_retry_allowed: false };
 export const importedExport: ExportView = {
-  id: 38, account_id: 10, kind: "incremental", created_at: 300_000, ready_at: 301_000, expires_at: 900_000, part_count: 2, status: "imported", stage: "done", parts_ingested: 0, held_waiting_sidecar: 0, held_waiting_export: 0, bytes_freed: 0, retry_allowed: false, retry_refusal: null, import_retry_allowed: false,
+  id: 38, account_id: 10, kind: "incremental", created_at: 300_000, ready_at: 301_000, expires_at: 900_000, part_count: 2, status: "imported", stage: "done", parts_ingested: 0, held_waiting_sidecar: 0, held_waiting_export: 0, bytes_freed: 0, retry_allowed: false, retry_refusal: null, import_retry_allowed: false, failed_items: 0, item_retry_allowed: false,
   parts: [part(1, "done", 1), part(2, "done", 1)],
 };
-export const failedExport: ExportView = { ...importedExport, id: 37, created_at: 200_000, status: "failed", import_retry_allowed: true, parts: [part(1, "done", 1), part(2, "failed", 3)], retry_refusal: "This export was downloaded and its import failed; Retry import on this page tries the import again." };
+export const failedExport: ExportView = { ...importedExport, id: 37, created_at: 200_000, status: "failed", import_retry_allowed: true, failed_items: 0, item_retry_allowed: false, parts: [part(1, "done", 1), part(2, "failed", 3)], retry_refusal: "This export was downloaded and its import failed; Retry import on this page tries the import again." };
 export const failedDownload: ExportView = {
   ...downloadingExport, id: 42, status: "failed", retry_allowed: true,
   parts: [part(1, "done", 1), { ...part(2, "failed", 3), filename: null }, part(3, "pending", 0)],
@@ -96,9 +96,13 @@ export const failedDownload: ExportView = {
 export const olderFailedDownload: ExportView = { ...failedDownload, id: 44, created_at: 200_000 };
 export const SPENT = "Part 2 has used all 5 of Google's downloads, so Takeout won't let Darkroom download it again. Ask Takeout for a new export of Google Photos instead.";
 export const spentDownload: ExportView = { ...failedDownload, id: 43, created_at: 250_000, retry_allowed: false, retry_refusal: SPENT };
-export const expiredExport: ExportView = { id: 36, account_id: 10, kind: "incremental", created_at: 100_000, ready_at: null, expires_at: 150_000, part_count: 4, status: "expired", stage: null, parts: [], parts_ingested: 0, held_waiting_sidecar: 0, held_waiting_export: 0, bytes_freed: 0, retry_allowed: false, retry_refusal: null, import_retry_allowed: false };
+export const expiredExport: ExportView = { id: 36, account_id: 10, kind: "incremental", created_at: 100_000, ready_at: null, expires_at: 150_000, part_count: 4, status: "expired", stage: null, parts: [], parts_ingested: 0, held_waiting_sidecar: 0, held_waiting_export: 0, bytes_freed: 0, retry_allowed: false, retry_refusal: null, import_retry_allowed: false, failed_items: 0, item_retry_allowed: false };
 
 const ingested = (number: number, ingest: Partial<ExportPartDetail>): ExportPartDetail => ({ ...part(number, "done", 1), ...ingest });
+export const failedItemsExport: ExportView = {
+  ...importedExport, id: 47, created_at: 250_000, failed_items: 3, item_retry_allowed: true,
+  parts: [ingested(1, { ingest_state: "ingested", entries: 900, entries_done: 900 }), ingested(2, { ingest_state: "ingested", entries: 900, entries_done: 900, failed_items: 3, kept_reason: "failed_item" })],
+};
 export const perPartExport: ExportView = {
   ...downloadingExport, id: 45, part_count: 6, parts_ingested: 2, held_waiting_sidecar: 21, held_waiting_export: 2,
   parts: [
