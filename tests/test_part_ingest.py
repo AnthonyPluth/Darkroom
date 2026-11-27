@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import get_args
 from unittest import mock
 
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select
 from sqlalchemy.exc import OperationalError
 
 from darkroom.domain import dedupe, exports, media
@@ -803,6 +803,78 @@ class ReversalTests(unittest.TestCase):
             world.ingest(export, 3)
         self.assertEqual(len(done), 1)
         self.assertEqual([path for path in world.files() if "/review/" in f"/{path}"], [])
+
+
+class IdentityMapTests(unittest.TestCase):
+    def locked_sizes(self, photos, batch):
+        world = PartWorld(self)
+
+        def build(builder):
+            for number in range(photos):
+                builder.photo(f"IMG_9{number:03d}.JPG", part=0, gps=(45.0 + number / 100, 12.0))
+
+        export = world.create(build, parts=1)
+        sizes, real_lock = [], part_ingest.Ingest.lock
+
+        def lock(ingest):
+            real_lock(ingest)
+            sizes.append(len(ingest.opened.identity_map))
+
+        with mock.patch.object(part_reader, "BATCH_FILES", batch), mock.patch.object(part_ingest.Ingest, "lock", lock):
+            world.ingest(export, 1)
+        self.assertEqual(sum(1 for outcome in world.outcomes().values() if outcome == "placed"), photos)
+        return sizes
+
+    def test_what_the_write_lock_expires_does_not_grow_with_the_photos_in_the_part(self):
+        few, many = self.locked_sizes(6, 3), self.locked_sizes(24, 3)
+        self.assertGreaterEqual(len(many), 24)
+        self.assertLessEqual(max(many), max(few))
+        self.assertLessEqual(max(many), 3 * 3 + 12)
+
+
+class FreshAfterLockTests(unittest.TestCase):
+    def ingested(self, around):
+        world = PartWorld(self)
+        export = world.create(world.scenario)
+        real_lock = part_ingest.Ingest.lock
+
+        def lock(ingest):
+            around(world, ingest, real_lock)
+
+        with mock.patch.object(part_ingest.Ingest, "lock", lock):
+            world.ingest(export, 1)
+        return world
+
+    def test_every_object_the_session_holds_is_expired_once_the_write_lock_is_taken(self):
+        loaded, held = [], []
+
+        def around(world, ingest, real_lock):
+            held.append(len(ingest.opened.identity_map))
+            real_lock(ingest)
+            loaded.append([name for found in list(ingest.opened.identity_map.values()) for name in inspect(found).dict if not name.startswith("_")])
+
+        self.ingested(around)
+        self.assertGreater(len(loaded), 5)
+        self.assertGreater(max(held), 3)
+        self.assertEqual([names for names in loaded if names], [])
+
+    def test_a_row_changed_on_another_connection_after_it_was_read_is_read_again_once_the_lock_is_taken(self):
+        seen = []
+
+        def around(world, ingest, real_lock):
+            if not seen:
+                found = ingest.opened.execute(select(TakeoutEntry).where(TakeoutEntry.part_number == 1, TakeoutEntry.kind == "media")).scalars().first()
+                before = found.listed_at
+                with db.session(world.engine, writing=True) as other:
+                    other.get(TakeoutEntry, found.id).listed_at = 12345.5
+                self.assertEqual(found.listed_at, before)
+                real_lock(ingest)
+                seen.append(found.listed_at)
+                return
+            real_lock(ingest)
+
+        self.ingested(around)
+        self.assertEqual(seen, [12345.5])
 
 
 class WriteLockTests(unittest.TestCase):

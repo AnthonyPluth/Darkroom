@@ -195,6 +195,19 @@ class CollisionTests(Household):
         self.assertEqual((report.placed, report.already_there), (1, 1))
         self.assertEqual(len(list(self.opened.execute(select(MediaItem)).scalars())), 1)
 
+    def test_a_retry_adopts_a_file_left_at_its_name_with_identical_bytes_and_records_it_once(self):
+        staged = self.staged("IMG_0001.JPG")
+        self.folder().mkdir(parents=True)
+        (self.folder() / "IMG_0001.JPG").write_bytes(staged.read_bytes())
+        entry = self.entry(staged)
+        report = self.place(entry)
+        self.assertEqual((report.placed, report.already_there), (0, 1))
+        self.assertEqual(sorted(p.name for p in self.folder().iterdir() if p.suffix != ".xmp"), ["IMG_0001.JPG"])
+        rows = list(self.opened.execute(select(MediaItem)).scalars())
+        self.assertEqual([row.path for row in rows], ["jo/google-only/2019/07/IMG_0001.JPG"])
+        self.assertEqual(entry.decision.takeout_item_id, rows[0].id)
+        self.assertEqual(sha1_of(self.folder() / "IMG_0001.JPG"), sha1_of(staged))
+
     def test_a_hash_named_copy_already_there_is_skipped(self):
         first, second = self.staged("a.jpg"), self.staged("a(1).jpg", colour=(10, 200, 10))
         self.place(self.entry(first), self.entry(second))

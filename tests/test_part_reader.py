@@ -232,7 +232,7 @@ class ListingTests(unittest.TestCase):
         self.assertEqual(reached, {
             "darkroom/domain/ingest/part_free.py": {"PartRefused", "entry_chunks", "entry_listing", "recorded", "scratch_name", "zip_of"},
             "darkroom/domain/ingest/part_ingest.py": {"BATCH_BYTES", "BATCH_FILES", "PartRefused", "READ_ERRORS", "Streamed", "batches_of", "grouped_batches_of",
-                                                      "entry_chunks", "entry_listing", "read_part", "stream_one", "sweep_part_scratch", "zip_of"},
+                                                      "entries_by_id", "entry_chunks", "entry_listing", "read_part", "stream_one", "sweep_part_scratch", "zip_of"},
         })
 
     def test_the_boundary_check_sees_every_way_a_module_can_reach_the_reader(self):
