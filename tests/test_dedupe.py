@@ -392,7 +392,16 @@ class CatalogueShotTests(unittest.TestCase):
         self.assertEqual(self.decide(self.shot(1, False), self.shot(2, False)).tier, 4)
         found = self.decide(self.shot(1, True), self.shot(2, False))
         self.assertEqual((found.tier, found.matched_item_id), (4, 2))
-        self.assertNotEqual(self.decide(self.shot(1, True), self.shot(2, True)).tier, 4)
+        both = self.decide(self.shot(1, True), self.shot(2, True))
+        self.assertEqual((both.tier, both.matched_item_id, both.matched_source), (5, None, None))
+
+    def test_a_catalogue_item_with_a_takeout_rival_is_neither_tier_2_nor_tier_4_and_confirms_nothing(self):
+        world = World(self)
+        rival = world.candidate(source_path="rival.jpg", sha1="d" * 40)
+        index = dedupe.PersonIndex(account_id=1, default_person_id=1, person_ids=frozenset({1}), phone=(self.shot(1, True),), takeout=(), peers=(rival,))
+        found = dedupe.decide(index, world.candidate(sha1="c" * 40), OFF)
+        self.assertEqual((found.tier, found.matched_item_id, found.matched_source), (5, None, None))
+        self.assertNotIn(found.tier, dedupe.CONFIRMING_TIERS)
 
     def test_a_single_catalogue_item_still_matches_by_the_capture_second(self):
         self.assertEqual(self.decide(self.shot(1, True)).tier, 2)

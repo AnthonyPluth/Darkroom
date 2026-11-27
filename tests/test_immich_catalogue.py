@@ -1,17 +1,19 @@
 import base64
 import dataclasses
-import unittest
 import types
+import unittest
 import uuid
 from unittest import mock
 
 from sqlalchemy import select
 
-from darkroom.domain import backfill, dedupe, immich_catalogue, legacy, pixel_folder, pixel_source
+from darkroom.domain import backfill, dedupe, immich_catalogue, index, legacy, pixel_folder, pixel_source, status
 from darkroom.domain import immich_reconcile as reconcile
 from darkroom.domain.ingest import place
+from darkroom.domain.ingest import run as ingest_run
 from darkroom.providers import exiftool, immich
-from darkroom.storage.models import (Alert, DedupeDecision, DuplicateRemoval, Event, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedPixelSource, MediaItem, Pixel,
+from darkroom.storage import models, paths
+from darkroom.storage.models import (PixelCopy, LegacyFile, Alert, DedupeDecision, DuplicateRemoval, Event, Export, ImmichAsset, ManagedAssetOrigin, ManagedAssetVersion, ManagedPixelSource, MediaItem, Pixel,
                                      PixelPerson)
 from tests.fakes.immich import FakeAsset
 from tests.import_world import NOW, tree
@@ -227,6 +229,65 @@ class ScratchTests(CatalogueCase):
         self.run_it()
         self.assertEqual((mine.exists(), theirs.exists(), (theirs / "original.jpg").exists()), (False, True, True))
 
+    def test_a_linked_catalogue_folder_slug_folder_run_folder_or_entry_is_never_followed_and_a_bad_slug_is_refused(self):
+        outside = self.settings.data_dir.parent / "outside-share"
+        outside.mkdir()
+        (outside / "photo.jpg").write_bytes(b"x")
+        base = self.settings.data_dir / "catalogue"
+        base.symlink_to(outside, target_is_directory=True)
+        paths.clear_catalogue_scratch(self.settings.data_dir, "jo")
+        self.assertTrue((outside / "photo.jpg").exists())
+        base.unlink()
+        (outside / "jo").mkdir()
+        (outside / "jo" / "run-x").mkdir()
+        (outside / "jo" / "run-x" / "photo.jpg").write_bytes(b"x")
+        base.mkdir()
+        (base / "jo").symlink_to(outside / "jo", target_is_directory=True)
+        paths.clear_catalogue_scratch(self.settings.data_dir, "jo")
+        self.assertTrue((outside / "jo" / "run-x" / "photo.jpg").exists())
+        (base / "jo").unlink()
+        (base / "jo").mkdir()
+        (base / "jo" / "run-link").symlink_to(outside / "jo" / "run-x", target_is_directory=True)
+        (base / "jo" / "run-real").mkdir()
+        (base / "jo" / "run-real" / "kept-link").symlink_to(outside / "jo" / "run-x" / "photo.jpg")
+        paths.clear_catalogue_scratch(self.settings.data_dir, "jo")
+        self.assertTrue((outside / "jo" / "run-x" / "photo.jpg").exists())
+        self.assertTrue((base / "jo" / "run-real" / "kept-link").is_symlink())
+        for bad in ("../outside-share", "jo/../x", "", "Jo", "a" * 80):
+            with self.assertRaises(paths.OutsideRoot):
+                paths.clear_catalogue_scratch(self.settings.data_dir, bad)
+
+    def test_a_failed_download_is_not_fetched_again_by_a_run_a_quarter_hour_later_but_is_an_hour_later(self):
+        asset = self.asset()
+        good = asset.data
+        asset.data = b"truncated"
+        asset.checksum = base64.b64encode(bytes.fromhex(sha1(good))).decode()
+
+        def downloads():
+            return len([request for request in self.world.fake.requests() if request[1].endswith("/original") or "/original?" in request[1]])
+
+        self.run_it()
+        first = downloads()
+        self.assertGreater(first, 0)
+        self.run_it(at=NOW + 900)
+        self.assertEqual(downloads(), first)
+        self.run_it(at=NOW + 3600)
+        self.assertGreater(downloads(), first)
+
+    def test_a_catalogue_item_is_counted_by_no_originals_count_and_an_original_in_a_folder_of_that_name_is(self):
+        self.asset()
+        self.run_it()
+        jo = self.jo.id
+        shown = lambda: (status.photo_counts(self.world.opened).get(jo, (0,))[0], dict((slug, count) for slug, _, count in index.counts_by_person(self.world.opened))["jo"],
+                         ingest_run.unmatched_count(self.world.opened, jo, NOW + 10 ** 6))
+        before = shown()
+        self.world.opened.add(MediaItem(person_id=jo, source="phone", path="jo/originals/x/immich-catalogue/real.jpg", sha1="e" * 40, bytes=5, indexed_at=NOW))
+        self.world.opened.commit()
+        after = shown()
+        self.assertEqual(tuple(b + 1 for b in before), after)
+        (item,) = self.cataloged()
+        self.assertEqual(self.world.opened.execute(select(MediaItem.id).where(MediaItem.id == item.id, models.on_unraid())).first(), None)
+
     def test_metadata_that_cannot_be_read_now_is_its_own_reason(self):
         self.asset()
 
@@ -352,6 +413,59 @@ class BackToOffTests(CatalogueCase):
         (kept,) = self.cataloged()
         self.assertEqual((kept.id, kept.sha1, len(self.copies())), (catalogue_item.id, sha1(asset.data), 1))
         self.assertTrue(pixel_source.converted(self.world.opened, self.copies()[0].id))
+
+    def indexed_original(self, asset):
+        self.run_it()
+        (catalogue_item,) = self.cataloged()
+        self.off_again()
+        target = self.world.root / "jo" / "originals" / "immich" / reconcile.copy_name(immich_asset_of(self.world, asset))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(asset.data)
+        self.world.index_all()
+        (indexed,) = self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("jo/originals/immich/%"))).scalars().all()
+        return catalogue_item, indexed
+
+    def finish(self):
+        return self.run_it(at=NOW + 7200, queue=reconcile.PixelFolderQueue())
+
+    def test_an_indexed_original_a_decision_refers_to_is_kept_and_takes_the_catalogue_copies(self):
+        catalogue_item, indexed = self.indexed_original(self.asset())
+        export = self.world.opened.execute(select(Export)).scalars().first()
+        decision = DedupeDecision(export_id=export.id, account_id=self.world.account, source_path="refers.jpg", tier=1, reason="same bytes", decided_by="auto", decided_at=NOW,
+                                  matched_item_id=indexed.id)
+        self.world.opened.add(decision)
+        self.world.opened.commit()
+        self.finish()
+        self.world.opened.expire_all()
+        self.assertIsNotNone(self.world.opened.get(MediaItem, indexed.id))
+        self.assertIsNotNone(self.world.opened.get(MediaItem, catalogue_item.id))
+        self.assertEqual(self.world.opened.get(DedupeDecision, decision.id).matched_item_id, indexed.id)
+        (copy,) = self.copies()
+        self.assertEqual((copy.item_id, pixel_source.converted(self.world.opened, copy.id)), (indexed.id, True))
+        (source,) = self.world.opened.execute(select(ManagedPixelSource)).scalars()
+        self.assertEqual((source.copy_id, source.item_id), (copy.id, indexed.id))
+
+    def test_an_indexed_original_a_legacy_file_refers_to_is_kept_and_takes_the_catalogue_copies(self):
+        _, indexed = self.indexed_original(self.asset())
+        self.world.opened.add(LegacyFile(person_id=self.jo.id, path="old.jpg", bytes=indexed.bytes, mtime=1.0, sha1=indexed.sha1, status="matched", tier=1, seen_at=NOW,
+                                         original_item_id=indexed.id))
+        self.world.opened.commit()
+        self.finish()
+        self.world.opened.expire_all()
+        self.assertEqual(self.world.opened.execute(select(LegacyFile.original_item_id)).scalar_one(), indexed.id)
+        (copy,) = self.copies()
+        self.assertEqual((copy.item_id, pixel_source.converted(self.world.opened, copy.id)), (indexed.id, True))
+
+    def test_an_indexed_original_that_already_has_a_copy_on_the_pixel_is_kept_and_nothing_is_deleted(self):
+        catalogue_item, indexed = self.indexed_original(self.asset())
+        (managed,) = self.copies()
+        self.world.opened.add(PixelCopy(pixel_id=managed.pixel_id, item_id=indexed.id, person_id=self.jo.id, state="queued", bytes=indexed.bytes, sha1=indexed.sha1, queued_at=NOW))
+        self.world.opened.commit()
+        self.finish()
+        self.world.opened.expire_all()
+        self.assertEqual(sorted(copy.item_id for copy in self.copies()), sorted([catalogue_item.id, indexed.id]))
+        self.assertTrue(pixel_source.converted(self.world.opened, managed.id))
+        self.assertIsNotNone(self.world.opened.get(MediaItem, indexed.id))
 
     def test_switched_on_again_the_original_is_the_one_phone_item_and_the_catalogue_adds_no_second(self):
         self.asset()

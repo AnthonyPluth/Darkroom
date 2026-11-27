@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePath
 from typing import Protocol
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import delete, exists, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
@@ -16,7 +16,7 @@ from darkroom.domain import alerts, events, index, legacy, media, pixel_folder, 
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, locks, paths, secretbox
 from darkroom.storage.schema import metadata
-from darkroom.storage.models import Event, ImmichAsset, MediaItem, Person, PixelCopy, PixelPerson
+from darkroom.storage.models import Event, ImmichAsset, ManagedPixelSource, MediaItem, Person, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 
 IMMICH_FOLDER = takeout_copies.IMMICH_FOLDER
@@ -175,12 +175,30 @@ class Run:
                         return True
         return False
 
+    def carry(self, earlier: MediaItem, item: MediaItem) -> None:
+        taken = set(self.opened.execute(select(PixelCopy.pixel_id).where(PixelCopy.item_id == item.id)).scalars())
+        for copy in self.opened.execute(select(PixelCopy).where(PixelCopy.item_id == earlier.id).order_by(PixelCopy.id)).scalars().all():
+            if copy.pixel_id in taken or (copy.sha1, copy.bytes) != (item.sha1, item.bytes):
+                continue
+            kept = [{column.name: getattr(source, column.name) for column in ManagedPixelSource.__table__.columns if column.name != "id"}
+                    for source in self.opened.execute(select(ManagedPixelSource).where(ManagedPixelSource.copy_id == copy.id)).scalars().all()]
+            self.opened.execute(delete(ManagedPixelSource).where(ManagedPixelSource.copy_id == copy.id))
+            copy.item_id = item.id
+            self.opened.flush()
+            for values in kept:
+                self.opened.add(ManagedPixelSource(**{**values, "item_id": item.id}))
+            taken.add(copy.pixel_id)
+        self.opened.flush()
+
     def merged(self, asset: immich.Asset, item: MediaItem) -> MediaItem:
         folder = f"{self.person.slug}/{pixel_source.CATALOGUE_FOLDER}/"
         query = select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.sha1 == asset.sha1,
                                         MediaItem.path.startswith(f"{folder}{asset.id}")).execution_options(populate_existing=True)
         earlier = self.opened.execute(query).scalars().first()
-        if earlier is None or earlier.id == item.id or self.referenced(item):
+        if earlier is None or earlier.id == item.id:
+            return item
+        if self.referenced(item):
+            self.carry(earlier, item)
             return item
         target = item.path
         self.opened.delete(item)

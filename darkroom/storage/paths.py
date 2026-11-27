@@ -2409,7 +2409,12 @@ def catalogue_scratch(data_dir: Path, slug: str) -> Path:
 
 
 def clear_catalogue_scratch(data_dir: Path, slug: str) -> None:
-    root = catalogue_scratch(data_dir, slug)
+    if not SLUG.fullmatch(slug):
+        raise OutsideRoot("not a person's folder name")
+    base = data_dir / "catalogue"
+    if base.is_symlink() or not base.is_dir():
+        return
+    root = base / slug
     if root.is_symlink() or not root.is_dir():
         return
     for folder in root.iterdir():

@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from darkroom.domain import dedupe, exports, media, xmp
+from darkroom.domain import dedupe, exports, media, pixel_source, xmp
 from darkroom.domain.ingest import pairing, unpack
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.providers import exiftool
@@ -273,10 +273,9 @@ def matched_original(opened: Session, photos: Photos, decision: DedupeDecision) 
     person = None if matched is None else opened.get(Person, matched.person_id)
     if matched is None or person is None or matched.source != "phone" or not can_fill_folder(opened, photos, person):
         return None
-    try:
-        original = photos.original(person.slug, matched.path)
-    except paths.OutsideRoot:
+    if Path(matched.path).parts[1:2] == (pixel_source.CATALOGUE_FOLDER,):
         return None
+    original = photos.original(person.slug, matched.path)
     return original if original.is_file() and not original.is_symlink() else None
 
 
