@@ -642,7 +642,9 @@
       "route": "GET /api/holds",
       "auth": "session",
       "handler": "darkroom.server.api.holds.list_holds",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/components/HeldPhotos.svelte"
+      ],
       "tests": [
         "tests/test_every_route.py",
         "tests/test_managed_hold_resolutions.py",
@@ -653,7 +655,9 @@
       "route": "POST /api/holds/{id}/resolve",
       "auth": "session",
       "handler": "darkroom.server.api.holds.resolve_hold",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/components/HeldPhoto.svelte"
+      ],
       "tests": [
         "tests/test_managed_hold_resolutions.py"
       ]
@@ -662,7 +666,9 @@
       "route": "POST /api/holds/{id}/undo",
       "auth": "session",
       "handler": "darkroom.server.api.holds.undo_hold",
-      "frontend": [],
+      "frontend": [
+        "frontend/src/components/HeldPhoto.svelte"
+      ],
       "tests": [
         "tests/test_managed_hold_resolutions.py"
       ]

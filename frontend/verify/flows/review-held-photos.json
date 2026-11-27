@@ -1,0 +1,16 @@
+{
+  "name": "review-held-photos",
+  "page": "review",
+  "steps": [
+    { "click": "a[href='#held-photos']" },
+    { "expect_text": { "selector": "#held-photos", "text": "Missing UTC offset" } },
+    { "click": "article:has-text('IMG_1082.HEIC') button:has-text('Supply the offset')" },
+    { "wait_for": "article:has-text('IMG_1082.HEIC') input[type=number]" },
+    { "screenshot": "offset" },
+    { "click": "article:has-text('IMG_1082.HEIC') button:has-text('Cancel')" },
+    { "click": "article:has-text('IMG_1082.HEIC') button:has-text('Skip')" },
+    { "expect_text": { "selector": "article:has-text('IMG_1082.HEIC')", "text": "Skipped. Darkroom is keeping the copy." } },
+    { "click": "article:has-text('IMG_1082.HEIC') button:has-text('Undo')" },
+    { "wait_for": "article:has-text('IMG_1082.HEIC') button:has-text('Supply the offset')" }
+  ]
+}
