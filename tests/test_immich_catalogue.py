@@ -360,6 +360,14 @@ class ScratchTests(CatalogueCase):
         (item,) = self.cataloged()
         self.assertEqual(self.world.opened.execute(select(MediaItem.id).where(MediaItem.id == item.id, models.on_unraid())).first(), None)
 
+    def test_a_linked_scratch_folder_is_never_written_through_and_the_asset_waits(self):
+        outside = self.settings.data_dir.parent / "outside-share"
+        outside.mkdir()
+        (self.settings.data_dir / "catalogue").symlink_to(outside, target_is_directory=True)
+        asset = self.asset()
+        report = self.run_it()
+        self.assertEqual((report.cataloged, report.failed, self.rows()[asset.id].status, list(outside.iterdir())), (0, 1, "failed", []))
+
     def test_metadata_that_cannot_be_read_now_is_its_own_reason(self):
         self.asset()
 
@@ -538,6 +546,10 @@ class BackToOffTests(CatalogueCase):
         self.assertEqual(sorted(copy.item_id for copy in self.copies()), sorted([catalogue_item.id, indexed.id]))
         self.assertTrue(pixel_source.converted(self.world.opened, managed.id))
         self.assertIsNotNone(self.world.opened.get(MediaItem, indexed.id))
+        again = self.finish()
+        self.assertEqual(again.stored, 0)
+        found = self.world.opened.execute(select(Event.subject, Event.detail).where(Event.type == "pixel_copy_duplicate_kept")).all()
+        self.assertEqual(found, [(f"pixel {managed.pixel_id}", f"copies {managed.id} and {[c.id for c in self.copies() if c.id != managed.id][0]} hold the same photo")])
 
     def test_switched_on_again_the_original_is_the_one_phone_item_and_the_catalogue_adds_no_second(self):
         self.asset()

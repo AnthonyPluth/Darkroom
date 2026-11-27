@@ -21,6 +21,17 @@ class NotManaged(ValueError):
     pass
 
 
+def move_to_item(opened: Session, copy: PixelCopy, item: MediaItem) -> None:
+    kept = [{column.name: getattr(source, column.name) for column in ManagedPixelSource.__table__.columns if column.name != "id"}
+            for source in opened.execute(select(ManagedPixelSource).where(ManagedPixelSource.copy_id == copy.id)).scalars().all()]
+    opened.execute(delete(ManagedPixelSource).where(ManagedPixelSource.copy_id == copy.id))
+    copy.item_id = item.id
+    opened.flush()
+    for values in kept:
+        opened.add(ManagedPixelSource(**{**values, "item_id": item.id}))
+    opened.flush()
+
+
 def catalogued(path: str) -> bool:
     return PurePosixPath(path).parts[1:2] == (CATALOGUE_FOLDER,)
 
