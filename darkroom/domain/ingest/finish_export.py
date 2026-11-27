@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
 from darkroom.domain import alerts, dedupe, events, exports, holds, managed_compound, managed_ingest, same_shot
-from darkroom.domain.ingest import hold_apply, pairing, part_ingest, part_pairing, run
+from darkroom.domain.ingest import hold_apply, pairing, part_ingest, part_pairing, run, same_shot_apply
 from darkroom.providers import immich
 from darkroom.storage import db, paths
 from darkroom.storage.models import Alert, DedupeDecision, Export, ExportPart, ImportRun, ManagedImportReceipt, Person, TakeoutEntry, TakeoutSidecar
@@ -545,4 +545,6 @@ def finish_ready(opened: Session, settings: config.Settings, now: float, tools: 
     managed_ingest.send_kept(opened, settings, photos, now, chosen.immich)
     hold_apply.apply(opened, settings, photos, now, chosen,
                      lambda stack, receipt, export, person: source_for_resolution(opened, settings, photos, stack, receipt, export, person))
+    same_shot_apply.send_released(opened, settings, photos, now, chosen,
+                                  lambda stack, receipt, export, person: source_for_resolution(opened, settings, photos, stack, receipt, export, person))
     return done

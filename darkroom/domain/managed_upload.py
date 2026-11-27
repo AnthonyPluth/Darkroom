@@ -5,8 +5,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from sqlalchemy import ColumnElement, or_, update
-from sqlalchemy.orm import Session
+from sqlalchemy import ColumnElement, exists, or_, update
+from sqlalchemy.orm import Session, aliased
 
 from darkroom.providers import immich
 from darkroom.storage import db
@@ -70,9 +70,14 @@ def kind_of(error: immich.ImmichFailed) -> str:
     return error.kind if isinstance(error, immich.NotCustody) else "not_visible"
 
 
+def compound_held(row: ManagedImportReceipt) -> ColumnElement[bool]:
+    mate = aliased(ManagedImportReceipt)
+    return ~exists().where(mate.intent_id == row.intent_id, mate.compound_key == row.compound_key, mate.metadata_hold == SAME_SHOT_HOLD)
+
+
 def claim(opened: Session, row: ManagedImportReceipt, now: float) -> int:
     attempt, lease = row.send_attempts + 1, ManagedImportReceipt.send_lease_until
-    if not move(opened, row, (row.state,), now, ManagedImportReceipt.send_attempts == row.send_attempts, or_(lease.is_(None), lease <= now),
+    if not move(opened, row, (row.state,), now, ManagedImportReceipt.send_attempts == row.send_attempts, or_(lease.is_(None), lease <= now), compound_held(row),
                 ManagedImportReceipt.metadata_hold == row.metadata_hold, ManagedImportReceipt.expected_metadata == row.expected_metadata,
                 state="outcome_unknown", send_attempts=attempt, send_lease_until=now + LEASE_SECONDS):
         raise Moved

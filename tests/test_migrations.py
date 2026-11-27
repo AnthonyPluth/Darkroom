@@ -782,7 +782,7 @@ class MigrationTests(unittest.TestCase):
             command.downgrade(config, "0062")
             raise RuntimeError("abort downgrade")
         with self.engine.begin() as connection:
-            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0064")
+            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0065")
             for table, _, point, _ in columns:
                 self.assertIsNone(connection.exec_driver_sql(f"SELECT {point} FROM {table}").scalar_one())
             config.attributes["connection"] = connection
@@ -830,7 +830,7 @@ class MigrationTests(unittest.TestCase):
             command.downgrade(config, "0063")
             raise RuntimeError("abort downgrade")
         with self.engine.begin() as connection:
-            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0064")
+            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0065")
             config.attributes["connection"] = connection
             command.downgrade(config, "0063")
             self.assertEqual(connection.exec_driver_sql("SELECT status, hold_path FROM review_items").one(), ("pending", "_inbox/jo/review/export-1/a.jpg"))
@@ -880,6 +880,57 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("retention_attestations", inspect(self.engine).get_table_names())
         with self.engine.connect() as connection:
             self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+        db.migrate(self.engine)
+
+    def test_0065_same_shot_origins_allow_an_owner_decided_takeout_origin_without_a_receipt_and_can_be_undone(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0064")
+            seed_pixel_source_parents(connection)
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO managed_import_intents (id, person_id, owner_id, export_id, resource_manifest, created_at) VALUES (1, 1, 'owner-a', 1, ' { } ', 1.0)")
+            connection.execute(text("INSERT INTO managed_import_receipts (id, intent_id, resource_key, compound_key, source_sha1, expected_bytes, expected_metadata, state, "
+                                    "asset_id, upload_outcome, verified_sha1, verified_bytes, bytes_verified_at, metadata_evidence, metadata_verified_at, committed_at, updated_at) "
+                                    "VALUES (1, 1, 'takeout-entry:1', 'takeout-entry:1', :sha1, 5, ' { } ', 'committed', 'asset-a', 'created', :sha1, 5, 1.0, "
+                                    "' { } ', 1.0, 1.0, 1.0)"), {"sha1": "a" * 40})
+            connection.execute(text("INSERT INTO managed_asset_origins (version_id, person_id, owner_id, asset_id, sha1, kind, source_key, intent_id, receipt_id, receipt_state, "
+                                    "evidence_snapshot, recorded_at) VALUES (1, 1, 'owner-a', 'asset-a', :sha1, 'takeout', 'generated-takeout', 1, 1, 'committed', ' { } ', 1.0)"),
+                               {"sha1": "a" * 40})
+            before = snapshot(connection, ("managed_asset_versions", "managed_import_receipts", "managed_asset_origins"), " ORDER BY id")
+        db.migrate(self.engine)
+        insert = ("INSERT INTO managed_asset_origins (version_id, person_id, owner_id, asset_id, sha1, kind, source_key, intent_id, receipt_id, receipt_state, evidence_snapshot, recorded_at) "
+                  "VALUES (3, 1, 'owner-a', 'asset-a', '{sha1}', '{kind}', '{key}', {intent}, NULL, NULL, ' {{ }} ', 2.0)")
+        sha = "c" * 40
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+            connection.exec_driver_sql(insert.format(sha1=sha, kind="takeout", key="same-shot:7", intent=1))
+        refused = (insert.format(sha1=sha, kind="takeout", key="same-shot:8", intent="NULL"),
+                   insert.format(sha1=sha, kind="takeout", key="other:8", intent=1),
+                   insert.format(sha1=sha, kind="takeout", key="same-shot:8", intent=99),
+                   insert.format(sha1=sha, kind="phone", key="same-shot:8", intent=1),
+                   insert.format(sha1=sha, kind="other", key="same-shot:8", intent=1),
+                   insert.format(sha1=sha, kind="legacy", key="same-shot:8", intent=1),
+                   insert.format(sha1=sha, kind="takeout", key="same-shot:7", intent=1),
+                   insert.format(sha1=sha, kind="other", key="x", intent=1))
+        for statement in refused:
+            with self.subTest(statement=statement), self.assertRaises(IntegrityError), self.engine.begin() as connection:
+                connection.exec_driver_sql(statement)
+        with self.assertRaises(IntegrityError), self.engine.begin() as connection:
+            connection.exec_driver_sql("INSERT INTO managed_asset_origins (version_id, person_id, owner_id, asset_id, sha1, kind, source_key, intent_id, receipt_id, receipt_state, "
+                                       "evidence_snapshot, recorded_at) VALUES (3, 1, 'owner-a', 'asset-a', '" + sha + "', 'takeout', 'x', 1, 1, 'prepared', ' { } ', 2.0)")
+        with self.assertRaises(RuntimeError), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0064")
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM managed_asset_origins WHERE source_key = 'same-shot:7'")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0064")
+        with self.engine.connect() as connection:
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+        with self.assertRaises(IntegrityError), self.engine.begin() as connection:
+            connection.exec_driver_sql(insert.format(sha1=sha, kind="takeout", key="same-shot:7", intent=1))
         db.migrate(self.engine)
 
     def test_0058_same_shot_holds_keep_one_hold_per_receipt_in_their_shape_and_are_kept_on_undo(self):
