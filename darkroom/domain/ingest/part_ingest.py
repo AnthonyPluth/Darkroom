@@ -230,6 +230,13 @@ def load_index(opened: Session, export: Export, person: Person) -> dedupe.Person
     return replace(index, takeout=tuple(shot for shot in index.takeout if shot.id not in own))
 
 
+@dataclass(frozen=True)
+class Plan:
+    sourced: tuple[int, ...]
+    chunks: tuple[tuple[int, ...], ...]
+    due: tuple[int, ...]
+
+
 class Ingest:
     def __init__(self, opened: Session, settings: config.Settings, photos: Photos, export: Export, part: ExportPart, person: Person, now: float,
                  tools: run.Tools, stack: contextlib.ExitStack, beat: heartbeat.Heartbeat | None = None) -> None:
@@ -464,8 +471,7 @@ class Ingest:
         parts = self.opened.execute(select(ExportPart).where(ExportPart.export_id == self.export.id)).scalars()
         return {part.number: part.ingest_state for part in parts}
 
-    def process(self, sources: dict[int, Path]) -> None:
-        self.scratch, self.measured, self.used = dict(sources), {}, {}
+    def pair(self, sources: dict[int, Path]) -> Plan:
         rows = {row.id: row for row in self.media_rows()}
         sidecars = self.sidecar_rows()
         chosen = part_pairing.sidecar_choices(rows.values(), sidecars)
@@ -476,10 +482,18 @@ class Ingest:
         self.commit()
         states = self.states()
         ready = [entry for entry in result.ready if states.get(entry.part_number) in (INGESTING, INGESTED)]
-        for entry in [entry for entry in ready if entry.id in sources]:
+        chunks = part_reader.batches_of([entry for entry in ready if entry.id not in sources], part_reader.BATCH_FILES, part_reader.BATCH_BYTES)
+        return Plan(sourced=tuple(entry.id for entry in ready if entry.id in sources), chunks=tuple(tuple(entry.id for entry in chunk) for chunk in chunks),
+                    due=tuple(entry.id for entry in result.metadata_due if states.get(entry.part_number) in (INGESTING, INGESTED)))
+
+    def process(self, sources: dict[int, Path]) -> None:
+        self.scratch, self.measured, self.used = dict(sources), {}, {}
+        plan = self.pair(sources)
+        for entry in part_reader.entries_by_id(self.opened, plan.sourced):
             self.decide(entry)
-        for chunk in part_reader.batches_of([entry for entry in ready if entry.id not in sources], part_reader.BATCH_FILES, part_reader.BATCH_BYTES):
+        for ids in plan.chunks:
             self.release_scratch()
+            chunk = part_reader.entries_by_id(self.opened, ids)
             wanted = [Target(entry, entry.sidecar_entry_id) for entry in chunk if self.needs_fields(entry)]
             if wanted:
                 self.measure(wanted)
@@ -488,9 +502,10 @@ class Ingest:
                 if entry.outcome != FAILED:
                     self.decide(entry)
         self.close_archive()
-        for entry in result.metadata_due:
-            if states.get(entry.part_number) in (INGESTING, INGESTED):
-                self.fill(entry)
+        for entry_id in plan.due:
+            due = self.opened.get(TakeoutEntry, entry_id)
+            if due is not None:
+                self.fill(due)
         self.tally()
         self.commit()
 
