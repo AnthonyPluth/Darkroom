@@ -249,6 +249,12 @@ class ManagedAssetVersion(Base):
     bytes_verified_at: Mapped[float | None] = mapped_column(Float)
 
 
+ORIGIN_OWNER_DECISION = "substr(source_key, 1, 10) = 'same-shot:'"
+ORIGIN_LINK = ("(receipt_id IS NULL AND receipt_state IS NULL AND (intent_id IS NULL OR (kind = 'takeout' AND " + ORIGIN_OWNER_DECISION + "))) OR "
+               "(receipt_id IS NOT NULL AND intent_id IS NOT NULL AND receipt_state IS NOT NULL AND receipt_state = 'committed')")
+ORIGIN_TAKEOUT = "kind != 'takeout' OR receipt_id IS NOT NULL OR (intent_id IS NOT NULL AND " + ORIGIN_OWNER_DECISION + ")"
+
+
 class ManagedAssetOrigin(Base):
     __tablename__ = "managed_asset_origins"
     __table_args__ = (
@@ -264,10 +270,8 @@ class ManagedAssetOrigin(Base):
                               "managed_import_receipts.source_sha1", "managed_import_receipts.state"], ondelete="RESTRICT", name="fk_managed_asset_origins_receipt"),
         one_of("kind", ("phone", "takeout", "legacy", "other"), "ck_managed_asset_origins_kind"),
         CheckConstraint("length(source_key) > 0", name="ck_managed_asset_origins_source"),
-        CheckConstraint("(receipt_id IS NULL AND intent_id IS NULL AND receipt_state IS NULL) OR "
-                        "(receipt_id IS NOT NULL AND intent_id IS NOT NULL AND receipt_state IS NOT NULL AND receipt_state = 'committed')",
-                        name="ck_managed_asset_origins_receipt"),
-        CheckConstraint("kind != 'takeout' OR receipt_id IS NOT NULL", name="ck_managed_asset_origins_takeout"),
+        CheckConstraint(ORIGIN_LINK, name="ck_managed_asset_origins_receipt"),
+        CheckConstraint(ORIGIN_TAKEOUT, name="ck_managed_asset_origins_takeout"),
         CheckConstraint("kind != 'phone' OR receipt_id IS NULL", name="ck_managed_asset_origins_phone"),
         Index("ix_managed_asset_origins_receipt", "receipt_id", "intent_id"),
         Index("ix_managed_asset_origins_intent", "intent_id", "person_id", "owner_id"),
