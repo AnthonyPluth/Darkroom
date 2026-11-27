@@ -16,13 +16,13 @@ from sqlalchemy.orm import Session
 from darkroom import config, monitoring, oidc
 from darkroom.providers import exiftool, immich, resend
 from darkroom.dates import local_today, utc_now
-from darkroom.domain import demo, immich_reconcile, index, legacy, managed_switch, managed_switch_command, retention_gate, share_bind, share_check, video_times
+from darkroom.domain import demo, immich_reconcile, index, legacy, managed_switch, managed_switch_command, retention_gate, same_shot_resolution, share_bind, share_check, video_times
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs, wizard
 from darkroom.storage import browser_copy, db, secret_key, secretbox, share, stored_settings
 from darkroom.storage.settings_keys import SHARE_SENTINEL
-from darkroom.storage.models import Export, Person, RecoveryPoint, RetentionAttestation
+from darkroom.storage.models import Export, ManagedSameShotHold, Person, RecoveryPoint, RetentionAttestation
 from darkroom.storage.paths import PIXELS, NotInTheInbox, Photos
 
 DEMO_SESSION_FILE = "demo-session.json"
@@ -652,6 +652,55 @@ def retention(argv: list[str]) -> int:
     return 0
 
 
+SAME_SHOT_NOT_MIGRATED = "same-shot: the database has no same-shot holds table yet; run `python run.py migrate` (or start the service once), then run this again"
+
+
+def same_shot_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="run.py same-shot")
+    actions = parser.add_subparsers(dest="action", required=True)
+    actions.add_parser("list").add_argument("--person", required=True)
+    resolving = actions.add_parser("resolve")
+    resolving.add_argument("--person", required=True)
+    resolving.add_argument("--hold", type=int, required=True)
+    resolving.add_argument("--action", required=True, choices=same_shot_resolution.ACTIONS)
+    resolving.add_argument("--asset")
+    return parser
+
+
+def same_shot(argv: list[str]) -> int:
+    args = same_shot_parser().parse_args(argv)
+    from_environment = config.load()
+    engine = db.make_engine(db.database_url(from_environment))
+    try:
+        if not inspect(engine).has_table(ManagedSameShotHold.__tablename__):
+            print(SAME_SHOT_NOT_MIGRATED, file=sys.stderr)
+            return 1
+        settings = with_stored(from_environment, engine)
+        if settings is None:
+            return 1
+        with db.session(engine) as opened:
+            person = opened.query(Person).filter(Person.slug == args.person).one_or_none()
+            if person is None:
+                print(f"no person called {args.person}", file=sys.stderr)
+                return 1
+            if args.action == "list":
+                print("\n".join(same_shot_resolution.lines(same_shot_resolution.listing(opened, person), settings.immich_url)))
+                return 0
+            try:
+                done = same_shot_resolution.act(opened, settings, None, person, args.hold, args.action, args.asset, None, utc_now().timestamp())
+            except same_shot_resolution.NoSuchHold:
+                print(f"same-shot: person {person.slug} has no hold {args.hold}; nothing changed", file=sys.stderr)
+                return 1
+            except (same_shot_resolution.Refused, same_shot_resolution.Conflict, same_shot_resolution.Unavailable) as refused:
+                monitoring.log("same-shot command refused", action=args.action)
+                print(f"same-shot {args.action}: {refused}; nothing changed", file=sys.stderr)
+                return 1
+            print(f"hold {done.id}: {done.status}")
+            return 0
+    finally:
+        engine.dispose()
+
+
 def demo_settings(folder: str) -> config.Settings:
     root = Path(folder)
     return dataclasses.replace(config.load(), data_dir=root / "data", photos_root=root / "photos", database_url="", demo=True)
@@ -790,7 +839,7 @@ def serve() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
-    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "reread-video-times", "legacy-report", "revoke-sessions", "demo", "seal-secret", "bind-share", "reopen-setup", "retention", "recovery-point",
+    parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "reread-video-times", "legacy-report", "revoke-sessions", "demo", "seal-secret", "bind-share", "reopen-setup", "retention", "recovery-point", "same-shot",
                                             "copy-browser-state", "managed-imports"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
@@ -807,6 +856,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--apply", action="store_true")
     if argv[:1] == ["retention"]:
         return retention(argv[1:])
+    if argv[:1] == ["same-shot"]:
+        return same_shot(argv[1:])
     if argv[:1] == ["recovery-point"]:
         return recovery_point(argv[1:])
     args = parser.parse_args(argv)

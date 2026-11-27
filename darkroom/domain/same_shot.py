@@ -24,6 +24,7 @@ SCHEMA: Final = 1
 ALERT_KIND: Final = "same_shot"
 VERIFIED_VERSION: Final = "bytes_verified"
 OWN_ORIGINS: Final = ("phone", "other")
+DECISION_PREFIX: Final = "same-shot:"
 WAITS_FOR_REVERSAL: Final = "this photo looks like one already in Immich and waits for the owner's decision, so its decision stays as it is"
 WAITS_FOR_REASSIGNMENT: Final = "this photo looks like one already in Immich and waits for the owner's decision, so it stays with its person"
 
@@ -133,7 +134,7 @@ def takeout_only(opened: Session, person_id: int, owner_id: str, asset_ids: Coll
     mine = (ManagedAssetVersion.person_id == person_id, ManagedAssetVersion.owner_id == owner_id, wanted)
     verified = select(ManagedAssetVersion.id).where(*mine, ManagedAssetVersion.state == VERIFIED_VERSION)
     from_takeout = set(opened.execute(select(ManagedAssetVersion.asset_id).where(ManagedAssetVersion.id.in_(verified), exists().where(
-        ManagedAssetOrigin.version_id == ManagedAssetVersion.id, ManagedAssetOrigin.kind == "takeout"))).scalars())
+        ManagedAssetOrigin.version_id == ManagedAssetVersion.id, ManagedAssetOrigin.kind == "takeout", ~ManagedAssetOrigin.source_key.startswith(DECISION_PREFIX)))).scalars())
     uploaded = (select(ManagedImportReceipt.asset_id).join(ManagedImportIntent, ManagedImportIntent.id == ManagedImportReceipt.intent_id)
                 .where(ManagedImportIntent.person_id == person_id, ManagedImportIntent.owner_id == owner_id, ManagedImportReceipt.asset_id.in_(asset_ids),
                        ManagedImportReceipt.upload_outcome == "created", ManagedImportReceipt.state.in_(managed_upload.VERIFIED)))
