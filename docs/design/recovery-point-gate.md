@@ -1,6 +1,6 @@
 # Recovery-point gate for managed cleanup
 
-Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. The owner accepted its proposed defaults, including the boundary text digest. Slices A through C implement the owner records, the backup hook, alerts and refusal reporting. Slice D adds verified ZIP and held-copy release with an opt-in that defaults to off. Slice E covers review holds. [Owner decision](https://github.com/AnthonyPluth/Darkroom/issues/545#issuecomment-7131017264) · [Managed storage design](immich-managed-storage.md) · [Backup hook](../deploy/backup-hook.md)
+Design for [#545](https://github.com/AnthonyPluth/Darkroom/issues/545) (part of the epic [#530](https://github.com/AnthonyPluth/Darkroom/issues/530)), prepared 2026-11-24. The owner accepted its proposed defaults, including the boundary text digest. Slices A through C implement the owner records, the backup hook, alerts and refusal reporting. Slice D adds verified ZIP and held-copy release with an opt-in that defaults to off. Slice E releases managed review holds (section 9). [Owner decision](https://github.com/AnthonyPluth/Darkroom/issues/545#issuecomment-7131017264) · [Managed storage design](immich-managed-storage.md) · [Backup hook](../deploy/backup-hook.md)
 
 ## 1. Where things stand
 
@@ -208,6 +208,8 @@ Each its own pull request under 1,000 added lines including tests, landing in or
 | C | `retention_gate.refusal(opened, unit, now)` with G1 to G10 and the per-condition negatives; `cleanup.py` records the specific reason instead of `KEPT_ONLY`; `retention status` counts per condition. Still keeps everything | 700 lines |
 | D | Managed zip and held-copy release in `part_free.py`: the managed "placed" clause, the locked re-check, G12 with the deadline, `release_point_id` in the journal; the setting `DARKROOM_MANAGED_RELEASE` (off by default, in `config.py` and `.env.example`); the AGENTS.md promise 2 amendment and Semgrep examples; crash and swap tests. Labelled `safety-critical` | 950 lines |
 | E | Managed review holds: `paths.remove_review_hold` with its claim, the hold journal, release in `part_free.py`, the Semgrep rules, tests; the runbook section on what the owner records | 800 lines |
+
+Slice E as built: a review hold is a release unit of the same gate (`retention_gate.release_check` already read its dependency set) and `part_free.release_review_hold` follows the held-copy path. Migration 0064 adds `review_items.hold_free_state` and `hold_release_point_id`; `hold_path` is cleared when `freed` is recorded, as the old cleanup does. Two refusals belong to holds only: `zip_needs_hold`, because a zip's proof needs its review entry's hold present, so a hold goes only after every zip of the export that has one of its entries (or a copy of one) has gone, and a zip is never stranded by a missing hold; and `hold_shared`, when another review item names the same hold file, which stays until a later change can prove both. A pending review is never a candidate, and undoing a resolution is already refused once 14 days have passed. The runbook section for the owner is in `docs/runbook.md`.
 
 If a slice goes over the budget it splits again, D first (held copies can move to E).
 

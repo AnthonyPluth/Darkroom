@@ -31,6 +31,7 @@ SKIPPING_TIERS: Final = (1, 2, 3)
 COPY: Final = "copy"
 KEPT: Final = "export_part_kept"
 HELD_KEPT: Final = "export_held_kept"
+HOLD_KEPT: Final = "export_hold_kept"
 WORTH_AN_EVENT: Final = frozenset({"unknown_entry", "listing_differs", "unreadable", "placed_differs", "review_differs", "held_differs",
                                    "hash_differs", "changed", "zip_changed"})
 HASH_DIFFERS: Final = "hash_differs"
@@ -69,6 +70,7 @@ class Proof:
 class FreeReport:
     parts: int = 0
     held: int = 0
+    holds: int = 0
     kept: int = 0
     failed: int = 0
     bytes: int = 0
@@ -505,13 +507,13 @@ def put_back_part(photos: Photos, person: Person, export: Export, part: ExportPa
         return
 
 
-def lock_release(opened: Session, person: Person, export: Export, unit: ExportPart | TakeoutEntry) -> None:
+def lock_release(opened: Session, person: Person, export: Export, unit: ExportPart | TakeoutEntry | ReviewItem) -> None:
     managed_switch.claim(opened, person)
     opened.refresh(export)
     opened.refresh(unit)
 
 
-def release_for(opened: Session, settings: config.Settings, person: Person, unit: ExportPart | TakeoutEntry, now: float) -> retention_gate.Release:
+def release_for(opened: Session, settings: config.Settings, person: Person, unit: ExportPart | TakeoutEntry | ReviewItem, now: float) -> retention_gate.Release:
     checked = retention_gate.release_check(opened, unit, now, settings.managed_release, confirm_metadata_live=True)
     if isinstance(checked, str):
         raise Refused(checked)
@@ -520,7 +522,7 @@ def release_for(opened: Session, settings: config.Settings, person: Person, unit
     return checked
 
 
-def recheck_release(opened: Session, settings: config.Settings, person: Person, unit: ExportPart | TakeoutEntry, now: float,
+def recheck_release(opened: Session, settings: config.Settings, person: Person, unit: ExportPart | TakeoutEntry | ReviewItem, now: float,
                     first: retention_gate.Release) -> None:
     if release_for(opened, settings, person, unit, now) != first:
         raise Refused("changed")
@@ -925,11 +927,148 @@ def release_held(opened: Session, photos: Photos, person: Person, export: Export
     return False
 
 
+def hold_location(photos: Photos, person: Person, export: Export, review: ReviewItem) -> Path:
+    try:
+        path = paths.review_hold_at(photos, review.hold_path or "", export_name(export))
+    except (paths.NotAReviewHold, paths.OutsideRoot) as error:
+        raise Refused("hold_differs") from error
+    if (review.hold_path or "").split("/")[1] != person.slug:
+        raise Refused("hold_differs")
+    return path
+
+
+def hold_shared(opened: Session, review: ReviewItem) -> bool:
+    return opened.execute(select(ReviewItem.id).where(ReviewItem.hold_path == review.hold_path, ReviewItem.id != review.id).limit(1)).first() is not None
+
+
+def zips_need_hold(opened: Session, export: Export, review: ReviewItem) -> bool:
+    roots = select(TakeoutEntry.id).where(TakeoutEntry.export_id == export.id, TakeoutEntry.kind == "media", TakeoutEntry.decision_id == review.decision_id)
+    numbers = select(TakeoutEntry.part_number).where(TakeoutEntry.export_id == export.id, TakeoutEntry.id.in_(roots) | TakeoutEntry.copy_of_id.in_(roots))
+    return opened.execute(select(ExportPart.id).where(
+        ExportPart.export_id == export.id, ExportPart.number.in_(numbers), ExportPart.filename.is_not(None) | (ExportPart.free_state == FREEING),
+        ExportPart.free_state.is_distinct_from(FREED)).limit(1)).first() is not None
+
+
+def recorded_hold(opened: Session, export: Export, review: ReviewItem) -> bool:
+    return review.hold_sha1 is not None and opened.execute(select(TakeoutEntry.id).where(
+        TakeoutEntry.export_id == export.id, TakeoutEntry.kind == "media", TakeoutEntry.copy_of_id.is_(None), TakeoutEntry.decision_id == review.decision_id,
+        TakeoutEntry.sha1 == review.hold_sha1).limit(1)).first() is not None
+
+
+def proved_hold(opened: Session, photos: Photos, export: Export, review: ReviewItem, path: Path, *, hashing: bool) -> Proof:
+    if export.status != IMPORTED:
+        raise Refused("export_busy")
+    shared_checks(opened, export, True)
+    try:
+        claimed = paths.claims_left_in(photos, path.parent)
+    except (OSError, paths.OutsideRoot):
+        claimed = True
+    if owner_action(photos) or claimed:
+        raise Refused("owner_action")
+    if not recorded_hold(opened, export, review):
+        raise Refused("review_differs")
+    if hold_shared(opened, review):
+        raise Refused("hold_shared")
+    if zips_need_hold(opened, export, review):
+        raise Refused("zip_needs_hold")
+    try:
+        identity = paths.inbox_identity(photos, path)
+    except (OSError, paths.OutsideRoot) as error:
+        raise Refused("hold_differs") from error
+    if identity is None:
+        raise Refused("file_missing")
+    found = Checked(path, review.hold_sha1 or "", identity, in_the_inbox=True)
+    if hashing:
+        hashed(photos, found)
+    return Proof(files={path: found})
+
+
+def remove_hold(photos: Photos, person: Person, export: Export, path: Path, proof: Proof) -> None:
+    found = proof.files.get(path)
+    if found is None:
+        raise Refused("hold_differs")
+    try:
+        paths.remove_review_hold(photos, person.slug, export_name(export), path.name, found.identity)
+    except paths.NotAReviewHold as error:
+        raise Refused("changed") from error
+
+
+def release_review_hold(opened: Session, photos: Photos, person: Person, export: Export, review: ReviewItem, settings: config.Settings,
+                        now: float, report: FreeReport) -> bool:
+    started = time.monotonic()
+    lock_release(opened, person, export, review)
+    try:
+        path = hold_location(photos, person, export, review)
+        recover_claim(photos, path, export)
+        recovering = review.hold_free_state == FREEING and review.hold_release_point_id is not None and paths.inbox_entry_absent(photos, path)
+        if not recovering:
+            opened.commit()
+            release = release_for(opened, settings, person, review, now)
+            first = proved_hold(opened, photos, export, review, path, hashing=True)
+            opened.commit()
+            lock_release(opened, person, export, review)
+            if review.hold_free_state not in (None, FREEING):
+                raise Refused("changed")
+            review.hold_free_state, review.hold_release_point_id = FREEING, release.point_id
+            opened.commit()
+            lock_release(opened, person, export, review)
+            if review.hold_free_state != FREEING or review.hold_release_point_id != release.point_id:
+                raise Refused("changed")
+            recheck_release(opened, settings, person, review, now + (time.monotonic() - started), release)
+            second = proved_hold(opened, photos, export, review, path, hashing=False)
+            if not same_files(first, second):
+                raise Refused("changed")
+            confirm_release(settings, person, release, photos, second, now + (time.monotonic() - started))
+            remove_hold(photos, person, export, path, first)
+            if not paths.inbox_entry_absent(photos, path):
+                raise Refused("changed")
+            release_availability(opened, settings, person, now, waiting=False)
+    except (OSError, paths.OutsideRoot) as error:
+        opened.rollback()
+        report.failed += 1
+        monitoring.log("review hold freeing failed", export=export.id, review=review.id, error=type(error).__name__)
+        return False
+    except Refused as refused:
+        opened.rollback()
+        lock_release(opened, person, export, review)
+        if review.hold_free_state == FREEING:
+            review.hold_free_state, review.hold_release_point_id = None, None
+        if refused.reason != retention_gate.RETENTION_CLOCK:
+            kept(opened, export, f"review {review.id}", HOLD_KEPT, refused.reason, now)
+            report.kept += 1
+        note_release_refusal(opened, settings, person, export, refused, now)
+        opened.commit()
+        return refused.stop
+    review.hold_free_state, review.hold_path = FREED, None
+    events.record(opened, now, "export_hold_freed", f"export {export.id}", f"review {review.id}")
+    report.holds += 1
+    opened.commit()
+    monitoring.log("review hold freed", export=export.id, review=review.id)
+    return False
+
+
+def release_holds(opened: Session, export: Export) -> list[ReviewItem]:
+    return list(opened.execute(select(ReviewItem).join(DedupeDecision, DedupeDecision.id == ReviewItem.decision_id).where(
+        DedupeDecision.export_id == export.id, ReviewItem.hold_path.is_not(None), ReviewItem.status != "pending",
+        ReviewItem.hold_free_state.is_(None) | (ReviewItem.hold_free_state == FREEING)).order_by(ReviewItem.id)).scalars())
+
+
+def recover_hold_claims(photos: Photos, person: Person, export: Export, reviews: list[ReviewItem]) -> None:
+    for review in reviews:
+        try:
+            recover_claim(photos, hold_location(photos, person, export, review), export)
+        except (Refused, OSError, paths.OutsideRoot):
+            continue
+
+
 def candidates(opened: Session) -> list[int]:
     parts = select(ExportPart.export_id).where(ExportPart.ingest_state == part_ingest.INGESTED,
                                                ExportPart.free_state.is_(None) | (ExportPart.free_state == FREEING))
     held = select(TakeoutEntry.export_id).where(TakeoutEntry.held_path.is_not(None), TakeoutEntry.held_state.is_(None) | (TakeoutEntry.held_state == FREEING))
-    found = set(opened.execute(parts).scalars()) | set(opened.execute(held).scalars())
+    holds = select(DedupeDecision.export_id).join(ReviewItem, ReviewItem.decision_id == DedupeDecision.id).join(
+        ManagedImportIntent, (ManagedImportIntent.export_id == DedupeDecision.export_id) & (ManagedImportIntent.kind == "import")).where(
+        ReviewItem.hold_path.is_not(None), ReviewItem.status != "pending", ReviewItem.hold_free_state.is_(None) | (ReviewItem.hold_free_state == FREEING))
+    found = set(opened.execute(parts).scalars()) | set(opened.execute(held).scalars()) | set(opened.execute(holds).scalars())
     return sorted(found)
 
 
@@ -950,6 +1089,11 @@ def free_export(opened: Session, photos: Photos, person: Person, export: Export,
         else:
             for row in held_rows(opened, export):
                 if release_held(opened, photos, person, export, row, managed_settings, now + (time.monotonic() - started), report):
+                    return True
+            reviews = release_holds(opened, export)
+            recover_hold_claims(photos, person, export, reviews)
+            for review in reviews:
+                if release_review_hold(opened, photos, person, export, review, managed_settings, now + (time.monotonic() - started), report):
                     return True
     return False
 

@@ -712,6 +712,8 @@ class ReviewItem(Base):
     sidecar_json: Mapped[str | None] = mapped_column(Text)
     hold_sha1: Mapped[str | None] = mapped_column(String)
     sidecar_from_still: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    hold_free_state: Mapped[str | None] = mapped_column(String)
+    hold_release_point_id: Mapped[int | None] = mapped_column(ForeignKey("recovery_points.id"))
 
 
 class ImportRun(Base):

@@ -174,6 +174,12 @@ The alert says how many of a person's originals still have no match in Google a 
 
 If the folder is on and the count stays, the items may differ from Google's copy (an edit, or a format Google converts); they stay in the library, and nothing is lost: the permanent copy is in the person's `originals/`.
 
+### Managed review holds (#545)
+
+With `DARKROOM_MANAGED_RELEASE=1` and the owner's records in place (the restore rehearsal, the accepted boundary and the backup hook; the recovery-point section of this runbook says how to record them), Darkroom also releases a managed export's resolved review hold. It is released 14 days after the review was resolved, once every zip of that export that needs the hold has been released, and only after the same checks as for a zip: a covering recovery point, the file proof, and a fresh read of the photo in Immich right before the delete. A review that is still pending is never released. Release is off by default; with it off, or while any check fails, the hold stays in `_inbox/<person>/review/export-<id>/` and the status page's `cleanup_kept` events (and `retention status`) say which check kept it.
+
+The kept reasons specific to holds, in the events `export_hold_kept` (`review <id>: <reason>`): `zip_needs_hold` (a zip of the export still needs it; it goes after the zip), `hold_shared` (another review item names the same file; it stays), `hold_differs`, `review_differs` and `hash_differs` (the file is not the one Darkroom recorded; nothing is deleted, look at the file), and `owner_action` (a review undo or move is in progress, or a claim from an interrupted release is being put back). A hold never goes while Immich cannot confirm the photo: `immich_unconfirmed` is retried on a later tick, and a day of it opens the existing "Immich verification waiting" alert. To keep a hold for good, withdraw an attestation or turn the setting off; Darkroom removes nothing else.
+
 ### Where alerts arrive
 
 Every alert in this runbook is recorded as an event and shown on the status page. When Resend is set up ([docs/deploy/alerts-email.md](deploy/alerts-email.md)) each one is also emailed to the owner's address, with only its title and a link back to Darkroom; without it, nothing is sent and the status page is the only place. Either way, look at the status page after a scheduled export is due, a sign-in session expires or a schedule nears its end. `python run.py check-config` says which of the two is in force.
