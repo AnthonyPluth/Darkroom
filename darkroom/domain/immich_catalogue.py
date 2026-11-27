@@ -11,7 +11,7 @@ from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from darkroom import config
-from darkroom.domain import backfill, immich_reconcile, index, media, pixel_folder, pixel_source
+from darkroom.domain import alerts, backfill, immich_reconcile, index, media, pixel_folder, pixel_source
 from darkroom.providers import immich
 from darkroom.storage import db, paths
 from darkroom.storage.models import ImmichAsset, ManagedAssetVersion, MediaItem, Person, PixelCopy, PixelPerson
@@ -116,6 +116,9 @@ class CatalogueRun(immich_reconcile.Run):
                 raise
             self.opened.rollback()
             self.fail(asset, "photo", type(error).__name__)
+            if isinstance(error, immich.ImmichFailed) and not isinstance(error, immich.NotCustody | immich.NotVisible | immich.ChecksumMismatch):
+                alerts.open_alert_committed(self.opened, self.settings, f"immich:reconcile:{self.person.id}", "failure", self.person.slug,
+                                            alerts.failure(f"The Immich reconcile of {self.person.name}'s phone uploads"), None, self.now, about=alerts.person(self.person.id))
             return
         self.opened.commit()
 

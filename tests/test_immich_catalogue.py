@@ -6,6 +6,7 @@ import uuid
 from unittest import mock
 
 from sqlalchemy import select, update
+from sqlalchemy.orm import Session
 
 from darkroom.domain import retention_gate
 from darkroom.domain import backfill, dedupe, immich_catalogue, index, legacy, pixel_folder, pixel_source, status
@@ -218,6 +219,7 @@ class RefusalTests(CatalogueCase):
         self.world.fake.state.permissions = (*GRANTS, "asset.delete")
         report = self.run_it()
         self.assertEqual((report.cataloged, report.failed, self.rows()[asset.id].status, self.cataloged(), self.versions()), (0, 1, "failed", [], []))
+        self.assertEqual(self.world.opened.execute(select(Alert.kind).where(Alert.key == f"immich:reconcile:{self.jo.id}")).scalars().all(), ["failure"])
         self.world.fake.state.permissions = GRANTS
         self.assertEqual(self.run_it(at=NOW + 3600).cataloged, 1)
 
@@ -577,17 +579,18 @@ class BackToOffTests(CatalogueCase):
         self.assertEqual(found, [(f"pixel {managed.pixel_id}", f"copies {managed.id} and {own.id} hold the same photo")])
         self.assertIsNotNone(self.world.opened.get(MediaItem, indexed.id))
 
-    def place_behind_its_back(self, copy):
-        self.world.opened.execute(update(PixelCopy).where(PixelCopy.id == copy.id).values(state="placed", placed_at=NOW))
+    def place_from_another_session(self, copy_id):
+        with Session(self.world.engine) as other:
+            other.execute(update(PixelCopy).where(PixelCopy.id == copy_id).values(state="placed", placed_at=NOW))
+            other.commit()
 
     def test_a_copy_placed_after_the_decision_to_drop_it_keeps_its_row_and_references(self):
         _, indexed = self.indexed_original(self.asset())
         managed, _ = self.own_copy(indexed)
         self.world.opened.commit()
-        self.world.opened.expire_all()
         stale = self.world.opened.get(PixelCopy, managed.id)
-        self.assertIsNone(stale.placed_at)
-        self.world.opened.execute(update(PixelCopy).where(PixelCopy.id == managed.id).values(state="placed", placed_at=NOW))
+        self.place_from_another_session(managed.id)
+        self.assertEqual((stale.state, stale.placed_at), ("queued", None))
         with self.assertRaises(pixel_source.NotManaged):
             pixel_source.drop_unsent(self.world.opened, stale)
         self.world.opened.commit()
@@ -599,14 +602,17 @@ class BackToOffTests(CatalogueCase):
         _, indexed = self.indexed_original(self.asset())
         managed, own = self.own_copy(indexed)
         real = pixel_source.drop_unsent
+        seen = []
 
         def late(opened, copy):
             if copy.id == managed.id:
-                self.place_behind_its_back(managed)
+                self.place_from_another_session(managed.id)
+                seen.append((copy.state, copy.placed_at))
             return real(opened, copy)
 
         with mock.patch.object(pixel_source, "drop_unsent", late):
             self.finish()
+        self.assertEqual(seen, [("queued", None)])
         self.world.opened.expire_all()
         self.assertEqual(sorted(copy.id for copy in self.copies()), sorted([managed.id, own.id]))
         self.assertEqual(len(self.world.opened.execute(select(ManagedPixelSource)).all()), 1)
