@@ -10,7 +10,7 @@ from sqlalchemy import select
 from darkroom.domain import dedupe, immich_catalogue, legacy, pixel_folder, pixel_source
 from darkroom.domain import immich_reconcile as reconcile
 from darkroom.domain.ingest import place
-from darkroom.providers import immich
+from darkroom.providers import exiftool, immich
 from darkroom.storage.models import (Alert, DedupeDecision, DuplicateRemoval, Event, Export, ManagedAssetOrigin, ManagedAssetVersion, ManagedPixelSource, MediaItem, Pixel,
                                      PixelPerson)
 from tests.fakes.immich import FakeAsset
@@ -30,8 +30,11 @@ class CatalogueCase(ReconcileCase):
         self.jo.managed_imports, self.jo.managed_imports_since = state, NOW
         self.world.opened.commit()
 
-    def asset(self, **fields):
-        return self.photo(id=str(uuid.uuid4()), **fields)
+    def asset(self, data=None, **fields):
+        found = self.photo(id=str(uuid.uuid4()), **fields)
+        if data is not None:
+            found.data = data
+        return found
 
     def cataloged(self):
         return list(self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("jo/immich-catalogue/%")).order_by(MediaItem.id)).scalars())
@@ -62,6 +65,32 @@ class CataloguingTests(CatalogueCase):
         (source,) = self.world.opened.execute(select(ManagedPixelSource)).scalars()
         self.assertEqual((source.asset_id, source.version_id, source.item_id), (asset.id, version.id, item.id))
         self.assertEqual(pixel_source.copy_name(self.world.photos, "jo", item.path, asset.id), f"immich/{asset.id}.jpg")
+
+    def test_the_catalogue_item_carries_the_fingerprints_a_re_encoded_takeout_copy_is_matched_by_and_no_scratch_file_is_left(self):
+        self.asset()
+        self.run_it()
+        (item,) = self.cataloged()
+        self.assertTrue(all(value is not None for value in (item.captured_utc, item.captured_local, item.offset_minutes, item.width, item.height, item.phash, item.dhash)))
+        self.assertEqual((item.time_source, item.mtime), ("exif_offset", None))
+        self.assertIn(item.id, [shot.id for shot in dedupe.PersonIndex.load(self.world.opened, self.world.account).phone])
+        self.assertEqual(list(self.settings.data_dir.glob("catalogue-*")), [])
+
+    def test_a_file_exiftool_cannot_use_is_catalogued_by_its_bytes_alone(self):
+        asset = self.asset(data=b"not a photo at all")
+        report = self.run_it()
+        (item,) = self.cataloged()
+        self.assertEqual((report.cataloged, item.sha1, item.bytes, item.captured_utc, item.phash), (1, sha1(asset.data), len(asset.data), None, None))
+
+    def test_an_original_whose_metadata_cannot_be_read_now_is_not_catalogued_and_is_retried(self):
+        asset = self.asset()
+
+        def unreadable(paths):
+            raise exiftool.Unreadable("exiftool is not answering")
+
+        report = reconcile.reconcile_person(self.world.opened, self.settings, self.jo, NOW, read=unreadable)
+        self.assertEqual((report.cataloged, report.failed, self.cataloged(), self.rows()[asset.id].status), (0, 1, [], "failed"))
+        self.assertEqual(list(self.settings.data_dir.glob("catalogue-*")), [])
+        self.assertEqual(self.run_it(at=NOW + 3600).cataloged, 1)
 
     def test_the_stored_window_and_the_event_are_kept_and_the_event_says_what_was_catalogued(self):
         self.asset()

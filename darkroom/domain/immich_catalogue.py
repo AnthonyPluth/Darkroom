@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import PurePath
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path, PurePath
 from typing import Final
 
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from darkroom import config
-from darkroom.domain import backfill, immich_reconcile, index, pixel_folder, pixel_source
+from darkroom.domain import backfill, immich_reconcile, index, media, pixel_folder, pixel_source
 from darkroom.providers import immich
 from darkroom.storage import db
 from darkroom.storage.models import ImmichAsset, ManagedAssetVersion, MediaItem, Person, PixelCopy, PixelPerson
@@ -21,6 +23,13 @@ CATALOGED: Final = "cataloged"
 KINDS: Final = ("IMAGE", "VIDEO")
 
 
+@dataclass(frozen=True)
+class Original:
+    sha1: str
+    size: int
+    print_: media.Fingerprint | None
+
+
 class CatalogueRun(immich_reconcile.Run):
     done = ("stored", CATALOGED)
     retried = ("waiting", "failed")
@@ -30,24 +39,43 @@ class CatalogueRun(immich_reconcile.Run):
         super().__init__(opened, settings, person, client, key, queue, now, read)
         self.settings = settings
 
-    def sized(self, half: immich.Asset) -> int:
-        return sum(len(chunk) for chunk in self.client.original_chunks(self.key, half))
+    def suffix_of(self, half: immich.Asset) -> str:
+        suffix = PurePath(half.file_name).suffix.lower()
+        return suffix if SUFFIX.fullmatch(suffix) else ""
+
+    def read_original(self, half: immich.Asset) -> Original:
+        with tempfile.TemporaryDirectory(prefix="catalogue-", dir=self.settings.data_dir) as folder:
+            target = Path(folder) / f"original{self.suffix_of(half)}"
+            with target.open("wb") as handle:
+                for chunk in self.client.original_chunks(self.key, half):
+                    handle.write(chunk)
+            tags = index.read_all(self.read, [target])
+            if target in tags.deferred:
+                raise immich_reconcile.CopyMismatch("the original's metadata could not be read now")
+            try:
+                found = media.fingerprint(target, index.usable(tags.found.get(target)))
+            except media.UNDECODABLE:
+                digest, size = media.sha1_of(target)
+                return Original(digest, size, None)
+            return Original(found.sha1, found.bytes, found)
 
     def path_of(self, half: immich.Asset) -> str:
         if not SAFE_ID.fullmatch(half.id):
             raise immich_reconcile.CopyMismatch("the Immich asset has no id Darkroom can record")
-        suffix = PurePath(half.file_name).suffix.lower()
-        return f"{self.person.slug}/{FOLDER}/{half.id}{suffix if SUFFIX.fullmatch(suffix) else ''}"
+        return f"{self.person.slug}/{FOLDER}/{half.id}{self.suffix_of(half)}"
 
-    def item_of(self, half: immich.Asset, size: int) -> MediaItem:
+    def item_of(self, half: immich.Asset, original: Original) -> MediaItem:
         path = self.path_of(half)
         query = select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.path == path).execution_options(populate_existing=True)
         found = self.opened.execute(query).scalar_one_or_none()
         if found is None:
-            found = MediaItem(person_id=self.person.id, source="phone", path=path, sha1=half.sha1, bytes=size, indexed_at=self.now)
+            found = MediaItem(person_id=self.person.id, source="phone", path=path, sha1=half.sha1, bytes=original.size, indexed_at=self.now)
+            if original.print_ is not None:
+                index.apply(found, original.print_, 0.0, self.now)
+                found.mtime = None
             self.opened.add(found)
             self.opened.flush()
-        elif (found.sha1, found.bytes) != (half.sha1, size):
+        elif (found.sha1, found.bytes) != (half.sha1, original.size):
             raise immich_reconcile.CopyMismatch("the catalogued item holds other bytes than the Immich asset")
         return found
 
@@ -57,9 +85,9 @@ class CatalogueRun(immich_reconcile.Run):
     def keep(self, asset: immich.Asset, halves: list[tuple[immich.Asset, str, str | None]]) -> None:
         snapshot = self.snapshot(asset)
         try:
-            sizes = [None if self.present(half.sha1) is not None else self.sized(half) for half, _, _ in halves]
+            originals = [None if self.present(half.sha1) is not None else self.read_original(half) for half, _, _ in halves]
             db.write_lock(self.opened)
-            for (half, kind, linked), size in zip(halves, sizes, strict=True):
+            for (half, kind, linked), original in zip(halves, originals, strict=True):
                 real = self.present(half.sha1, fresh=True)
                 if real is not None:
                     self.mark(half, kind, "stored", linked).original_item_id = real.id
@@ -68,10 +96,10 @@ class CatalogueRun(immich_reconcile.Run):
                     continue
                 if half.kind not in KINDS:
                     raise immich_reconcile.CopyMismatch("the Immich asset is neither a photo nor a video")
-                if size is None:
+                if original is None:
                     raise immich_reconcile.CopyMismatch("the original this asset matched is gone")
-                item = self.item_of(half, size)
-                version = backfill.version_of(self.opened, self.person, half.id, half.sha1, size, half.kind, half.live_video_id, snapshot, self.now)
+                item = self.item_of(half, original)
+                version = backfill.version_of(self.opened, self.person, half.id, half.sha1, original.size, half.kind, half.live_video_id, snapshot, self.now)
                 backfill.origin(self.opened, version, "phone", item, None, self.now)
                 self.mark(half, kind, CATALOGED, linked).original_item_id = item.id
                 self.report.cataloged += 1
