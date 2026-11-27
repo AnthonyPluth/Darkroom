@@ -297,7 +297,13 @@ export function retryImportNote(item: ExportView): string | null {
   return "Retry import imports the parts whose import failed again and keeps the parts already imported.";
 }
 
+export function retryItemsNote(item: ExportView): string | null {
+  if (!item.item_retry_allowed) return null;
+  return `${items(item.failed_items)} couldn't be imported. Retry failed items tries them again and keeps everything already imported.`;
+}
+
 export function retryImportSentence(reply: ImportQueued, email: string): string {
+  if (reply.items_requeued > 0) return `${items(reply.items_requeued)} of ${email}'s export queued to import again.`;
   if (!reply.per_part) return `Import queued again for ${email}.`;
   if (reply.parts_requeued === 0) return reply.run_requeued ? `Finishing the import of ${email}'s export queued again.` : "Nothing in this export was waiting for a retry.";
   return `${reply.parts_requeued === 1 ? "1 part" : `${whole.format(reply.parts_requeued)} parts`} of ${email}'s export queued to import again.`;

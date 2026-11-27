@@ -333,7 +333,7 @@ class ExportsApiIngestFieldTests(ApiCase):
     extra_env = {"browser_token": TOKEN}
     PART_DEFAULTS = {"ingest_state": "not_queued", "entries": 0, "entries_done": 0, "held": 0, "held_waiting_sidecar": 0, "held_waiting_export": 0,
                      "failed_items": 0, "kept_reason": None, "import_failure": None, "freed": False, "bytes_freed": 0}
-    EXPORT_DEFAULTS = {"parts_ingested": 0, "held_waiting_sidecar": 0, "held_waiting_export": 0, "bytes_freed": 0, "import_retry_allowed": False}
+    EXPORT_DEFAULTS = {"parts_ingested": 0, "held_waiting_sidecar": 0, "held_waiting_export": 0, "bytes_freed": 0, "import_retry_allowed": False, "failed_items": 0, "item_retry_allowed": False}
 
     def setUp(self):
         super().setUp()
@@ -388,7 +388,7 @@ class ExportsApiIngestFieldTests(ApiCase):
         self.entries(other, 1, waiting_sidecar=7)
         export = self.listed(export_id)
         self.assertEqual({key: export[key] for key in self.EXPORT_DEFAULTS}, {"parts_ingested": 2, "held_waiting_sidecar": 2, "held_waiting_export": 2, "bytes_freed": 0,
-                                                                                 "import_retry_allowed": False})
+                                                                                 "import_retry_allowed": False, "failed_items": 2, "item_retry_allowed": False})
         self.assertEqual([(part["ingest_state"], part["entries"], part["entries_done"], part["held"], part["held_waiting_sidecar"], part["held_waiting_export"],
                            part["failed_items"], part["kept_reason"]) for part in export["parts"]], [
             ("ingested", 5, 5, 3, 2, 1, 0, None),

@@ -232,6 +232,8 @@ export interface ExportView {
   retry_allowed: boolean;
   retry_refusal: string | null;
   import_retry_allowed: boolean;
+  failed_items: number;
+  item_retry_allowed: boolean;
 }
 
 export interface Exports {
@@ -324,6 +326,7 @@ export interface ImportQueued {
   stage: string | null;
   per_part: boolean;
   parts_requeued: number;
+  items_requeued: number;
   run_requeued: boolean;
 }
 

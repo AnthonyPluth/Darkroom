@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from darkroom import dates
 from darkroom.domain import browser_jobs, events
-from darkroom.storage.models import BrowserJob, Export, ExportPart, GoogleAccount, Person, TakeoutEntry
+from darkroom.storage.models import BrowserJob, Export, ExportPart, GoogleAccount, ImportRun, Person, TakeoutEntry
 
 State = Literal["in_progress", "ready", "expired"]
 STATES: tuple[State, ...] = ("in_progress", "ready", "expired")
@@ -42,6 +42,8 @@ PREPARING_WORDS = "Google is still preparing this export, so there is nothing to
 INGESTED = "ingested"
 REFUSED = "refused"
 FAILED_PART = "failed"
+WHOLE_ROUTE = "whole"
+NOT_QUEUED = "not_queued"
 IMPORT_RETRY_STATUSES = ("downloading", "downloaded", "unpacking", "importing")
 WAITING_SIDECAR = "waiting_sidecar"
 WAITING_EXPORT = "waiting_export"
@@ -422,6 +424,17 @@ def import_retry_allowed(export: Export, parts: Sequence[ExportPart]) -> bool:
     return export.status in IMPORT_RETRY_STATUSES and any(part.status == "done" and part.ingest_state == FAILED_PART for part in parts)
 
 
+def failed_items(parts: Sequence[ExportPart]) -> int:
+    return sum(part.failed_items for part in parts if part.status == "done")
+
+
+def item_retry_allowed(opened: Session, export: Export, parts: Sequence[ExportPart]) -> bool:
+    if export.status != "imported" or export.ingest_route == WHOLE_ROUTE or failed_items(parts) == 0 or all(part.ingest_state == NOT_QUEUED for part in parts):
+        return False
+    last = opened.execute(select(ImportRun).where(ImportRun.export_id == export.id).order_by(ImportRun.id.desc()).limit(1)).scalar_one_or_none()
+    return last is not None and last.status == "done" and last.failed > 0
+
+
 def part_dict(part: ExportPart, held: tuple[int, int] = (0, 0)) -> dict[str, object]:
     return {
         "number": part.number, "filename": part.filename, "bytes": part.bytes, "progress": part_progress(part),
@@ -473,6 +486,7 @@ def as_dict(opened: Session, export: Export, now: float) -> dict[str, object]:
         "held_waiting_sidecar": sum(sidecar for sidecar, _ in held.values()), "held_waiting_export": sum(export for _, export in held.values()),
         "bytes_freed": sum(part.bytes_freed or 0 for part in parts if part.free_state == FREED), "retry_allowed": export.status == "failed" and refusal is None, "retry_refusal": refusal,
         "import_retry_allowed": import_retry_allowed(export, parts),
+        "failed_items": failed_items(parts), "item_retry_allowed": item_retry_allowed(opened, export, parts),
     }
 
 

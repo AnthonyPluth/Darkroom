@@ -116,6 +116,15 @@ What a person can do in the web app, by page: how to reach it, how to drive it w
 - **Expects to see:** `Darkroom could not confirm the renewal`, `Ended`, `you found none there`.
 - **Drive it:** `tools/control flow exports-renewal`; or `poetry run python tools/verify.py run --flow exports-renewal`.
 
+#### `exports-retry-items`
+
+- **Starts at:** `exports`.
+- **Widths:** phone, desktop.
+- **Touches:** `section[aria-label='Earlier exports for avery.photos@example.com'] >> role=button[name='Retry failed items']`.
+- **Expects to see:** `3 items couldn't be imported. Retry failed items tries them again and keeps everything already imported.`, `part 2 of this export is not in the inbox, so its failed items cannot be retried`.
+- **Console errors it expects:** `409`.
+- **Drive it:** `tools/control flow exports-retry-items`; or `poetry run python tools/verify.py run --flow exports-retry-items`.
+
 #### `exports`
 
 - **Starts at:** `exports`.

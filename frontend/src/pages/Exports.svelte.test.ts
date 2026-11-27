@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onDay, onDayAt } from "$lib/format";
 import { router } from "$lib/nav.svelte";
-import { downloadingExport, keptPartsExport, perPartExport, expiredExport, failedDownload, failedExport, olderFailedDownload, SPENT, spentDownload, failedSchedule, familyAccount, importedExport, joAccount, noExports, preparingExport, queuedConnect, reply, serve, waitingConnect } from "../test/server";
+import { downloadingExport, keptPartsExport, perPartExport, expiredExport, failedDownload, failedExport, failedItemsExport, olderFailedDownload, SPENT, spentDownload, failedSchedule, familyAccount, importedExport, joAccount, noExports, preparingExport, queuedConnect, reply, serve, waitingConnect } from "../test/server";
 import Exports from "./Exports.svelte";
 
 beforeEach(() => {
@@ -702,7 +702,7 @@ describe("the Exports page", () => {
         "GET /api/exports": () => ({ exports: [current], schedules: [] }),
         "POST /api/exports/46/import": () => {
           current = requeued;
-          return reply(202, { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 1, run_requeued: false });
+          return reply(202, { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 1, items_requeued: 0, run_requeued: false });
         },
       });
       const section = await screen.findByRole("region", { name: /Current export parts/ });
@@ -735,7 +735,7 @@ describe("the Exports page", () => {
         "GET /api/accounts": { accounts: [joAccount] },
         "GET /api/browser/jobs": { jobs: [] },
         "GET /api/exports": { exports: [failedExport], schedules: [] },
-        "POST /api/exports/37/import": () => reply(202, { export_id: 37, status: "downloaded", stage: "queued", per_part: false, parts_requeued: 0, run_requeued: false }),
+        "POST /api/exports/37/import": () => reply(202, { export_id: 37, status: "downloaded", stage: "queued", per_part: false, parts_requeued: 0, items_requeued: 0, run_requeued: false }),
       });
       const earlier = await screen.findByRole("region", { name: /Earlier exports/ });
       await userEvent.click(within(earlier).getByRole("button", { name: "Retry import" }));
@@ -749,7 +749,7 @@ describe("the Exports page", () => {
         "GET /api/accounts": { accounts: [joAccount] },
         "GET /api/browser/jobs": { jobs: [] },
         "GET /api/exports": { exports: [finishing], schedules: [] },
-        "POST /api/exports/46/import": () => reply(202, { export_id: 46, status: "failed", stage: null, per_part: true, parts_requeued: 0, run_requeued: true }),
+        "POST /api/exports/46/import": () => reply(202, { export_id: 46, status: "failed", stage: null, per_part: true, parts_requeued: 0, items_requeued: 0, run_requeued: true }),
       });
       const earlier = await screen.findByRole("region", { name: /Earlier exports/ });
       await userEvent.click(within(earlier).getByRole("button", { name: "Retry import" }));
@@ -762,7 +762,7 @@ describe("the Exports page", () => {
         "GET /api/accounts": { accounts: [joAccount] },
         "GET /api/browser/jobs": { jobs: [] },
         "GET /api/exports": { exports: [keptPartsExport], schedules: [] },
-        "POST /api/exports/46/import": () => reply(202, { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 0, run_requeued: false }),
+        "POST /api/exports/46/import": () => reply(202, { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 0, items_requeued: 0, run_requeued: false }),
       });
       await userEvent.click(await screen.findByRole("button", { name: "Retry import" }));
       expect(await screen.findByRole("status")).toHaveTextContent("Nothing in this export was waiting for a retry.");
@@ -773,6 +773,49 @@ describe("the Exports page", () => {
       await screen.findByRole("region", { name: /Current export parts/ });
       expect(screen.queryByRole("button", { name: "Retry import" })).not.toBeInTheDocument();
       expect(screen.queryByText(PER_PART_NOTE)).not.toBeInTheDocument();
+    });
+  });
+  describe("Retry failed items", () => {
+    const NOTE = "3 items couldn't be imported. Retry failed items tries them again and keeps everything already imported.";
+
+    it("queues the failed items of an imported export again and says how many", async () => {
+      let current = failedItemsExport;
+      const server = show({
+        "GET /api/accounts": { accounts: [joAccount] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "GET /api/exports": () => ({ exports: [current], schedules: [] }),
+        "POST /api/exports/47/import": () => {
+          current = { ...failedItemsExport, status: "importing", failed_items: 0, item_retry_allowed: false };
+          return reply(202, { export_id: 47, status: "importing", stage: "unpacked", per_part: true, parts_requeued: 0, items_requeued: 3, run_requeued: true });
+        },
+      });
+      const earlier = await screen.findByRole("region", { name: /Earlier exports/ });
+      const button = within(earlier).getByRole("button", { name: "Retry failed items" });
+      expect(button).toHaveAccessibleDescription(NOTE);
+      await userEvent.click(button);
+      expect(server.sent("POST /api/exports/47/import")).toHaveLength(1);
+      expect(await screen.findByRole("status")).toHaveTextContent("3 items of jo.photos@example.com's export queued to import again.");
+      expect(screen.queryByRole("button", { name: "Retry failed items" })).not.toBeInTheDocument();
+    });
+
+    it("shows the server's refusal as it is and keeps the button", async () => {
+      const refusal = "part 2 of this export was deleted to free space, so its failed items cannot be retried from it";
+      show({
+        "GET /api/accounts": { accounts: [joAccount] },
+        "GET /api/browser/jobs": { jobs: [] },
+        "GET /api/exports": { exports: [failedItemsExport], schedules: [] },
+        "POST /api/exports/47/import": () => reply(409, { error: refusal }),
+      });
+      await userEvent.click(await screen.findByRole("button", { name: "Retry failed items" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(refusal);
+      expect(screen.getByRole("button", { name: "Retry failed items" })).toBeEnabled();
+    });
+
+    it("is not offered where the API would refuse", async () => {
+      show({ "GET /api/accounts": { accounts: [joAccount] }, "GET /api/browser/jobs": { jobs: [] }, "GET /api/exports": { exports: [{ ...failedItemsExport, item_retry_allowed: false }, importedExport], schedules: [] } });
+      await screen.findByRole("region", { name: /Earlier exports/ });
+      expect(screen.queryByRole("button", { name: "Retry failed items" })).not.toBeInTheDocument();
+      expect(screen.queryByText(NOTE)).not.toBeInTheDocument();
     });
   });
   describe("Retry download", () => {
