@@ -7,7 +7,7 @@ from unittest import mock
 from sqlalchemy import select
 
 import run
-from darkroom.domain import pixel_source, same_shot, same_shot_resolution as resolution
+from darkroom.domain import managed_ingest, managed_upload, pixel_source, same_shot, same_shot_resolution as resolution
 from darkroom.domain.ingest import finish_export
 from darkroom.providers import immich
 from darkroom.storage import db
@@ -16,6 +16,7 @@ from darkroom.storage.models import (Event, ManagedAssetOrigin, ManagedAssetVers
 from tests.import_world import DAY, NOW
 from tests.privacy import no_leaks
 from tests.shared import own_database_url
+from tests.test_managed_live_photo import LiveWorld, live
 from tests.test_managed_ingest import KEY, OWNER, SECRET, ManagedWorld, single
 from tests.test_same_shot import NAME, holds, with_neighbour
 
@@ -124,6 +125,7 @@ class UploadTests(Held, unittest.TestCase):
         self.assertIn("could not complete the upload", world.alert(f"managed:same-shot-upload:{hold.id}").message)
         finish_export.finish_ready(world.opened, world.settings, LATER + DAY + 20, world.tools)
         self.assertEqual(world.receipts(), {"IMG_5001.JPG": ("committed", "created", None)})
+        self.assertIsNotNone(world.alert(f"managed:same-shot-upload:{hold.id}").closed)
 
 
 def with_asset(world):
@@ -256,6 +258,31 @@ def same_shot_sha(found):
     import hashlib
 
     return hashlib.sha1(found.data, usedforsecurity=False).hexdigest()
+
+
+class LiveUploadTests(unittest.TestCase):
+    def test_a_released_live_photo_is_sent_as_one_compound_from_an_imported_export_and_closes_its_alert(self):
+        world = LiveWorld(self)
+        export = world.create(live, parts=1)
+        world.ingest_all(export, (1,))
+
+        def held(opened, reader, intent, receipt_id, entry, name, now):
+            return same_shot.make_hold(opened, intent, receipt_id, entry.decision_id, same_shot.Verdict((), True, False), now)
+        with mock.patch.object(same_shot, "gate", held), mock.patch.object(managed_ingest.time, "sleep"):
+            world.finish(export)
+        (hold,) = holds(world)
+        self.assertEqual((world.uploads(), world.status(export)), (0, ("imported", "done")))
+        resolution.act(world.opened, world.settings, world.tools.immich, world.jo(), hold.id, "upload", None, None, LATER)
+        self.assertIsNone(world.compound().committed_at)
+        with mock.patch.object(managed_ingest.time, "sleep"), mock.patch.object(immich.ManagedReader, "upload", side_effect=immich.ImmichFailed("down")):
+            finish_export.finish_ready(world.opened, world.settings, LATER + DAY + 5, world.tools)
+        self.assertIsNone(world.compound().committed_at)
+        self.assertIn("could not complete the upload", world.alert(f"managed:same-shot-upload:{hold.id}").message)
+        with mock.patch.object(managed_ingest.time, "sleep"):
+            finish_export.finish_ready(world.opened, world.settings, LATER + DAY + 6 + managed_upload.LEASE_SECONDS, world.tools)
+        self.assertEqual((world.uploads() >= 2, world.compound().committed_at is not None), (True, True))
+        self.assertEqual(sorted(asset.name for asset in world.fake.state.assets), ["IMG_3001.HEIC", "IMG_3001.MOV"])
+        self.assertIsNotNone(world.alert(f"managed:same-shot-upload:{hold.id}").closed)
 
 
 class ListingTests(Held, unittest.TestCase):
