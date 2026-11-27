@@ -124,17 +124,49 @@ class OnTests(CommandCase):
         self.assertEqual((code, self.now()), (1, None))
         self.assertIn("nothing was changed", err)
 
-    def test_on_is_refused_when_the_key_is_replaced_while_it_is_being_checked(self):
+    def test_a_key_replaced_while_it_is_checked_is_checked_again(self):
         self.keyed()
+        real = managed_switch_command.live_check
+        replaced = []
 
-        def replaced(*args, **kwargs):
-            self.keyed(key="another-key-canary")
-            return None
+        def check(settings, person, client=None):
+            found = real(settings, person, client)
+            if not replaced:
+                replaced.append(1)
+                self.keyed(key="another-key-canary")
+            return found
 
-        with mock.patch.object(managed_switch_command, "live_check", side_effect=replaced):
+        with mock.patch.object(managed_switch_command, "live_check", side_effect=check):
+            code, _, err = self.call("on", "--person", "jo")
+        self.assertEqual((code, self.now(), self.events()), (1, None, []))
+        self.assertIn("Immich refused the person key", err)
+
+    def test_a_key_that_keeps_changing_is_refused_without_a_change(self):
+        self.keyed()
+        count = []
+
+        def check(settings, person, client=None):
+            count.append(1)
+            self.keyed(key=f"another-key-canary-{len(count)}")
+
+        with mock.patch.object(managed_switch_command, "live_check", side_effect=check):
             code, _, err = self.call("on", "--person", "jo")
         self.assertEqual((code, self.now(), self.events()), (1, None, []))
         self.assertIn(managed_switch_command.CHANGED, err)
+
+    def test_imports_turned_off_by_another_command_are_checked_before_they_are_turned_on(self):
+        self.keyed()
+        self.state("on", intent=True)
+        self.fake.state.permissions = (*GRANTS, "asset.delete")
+        with db.session(self.engine) as opened:
+            person = opened.query(Person).one()
+            self.assertEqual(person.managed_imports, "on")
+            with db.session(self.engine, writing=True) as other:
+                other.query(Person).one().managed_imports = None
+            result = managed_switch_command.turn_on(opened, config.load(), person, 5.0)
+        self.assertFalse(result.ok)
+        self.assertIn("approved import permissions", result.lines[0])
+        self.assertEqual((self.now(), self.events()), (None, []))
 
     def test_on_again_changes_nothing_and_asks_immich_nothing(self):
         self.keyed()

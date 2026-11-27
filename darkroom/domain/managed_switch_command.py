@@ -25,6 +25,7 @@ PAUSED: Final[dict[managed_switch.State, str]] = {
     "on": "Paused: Immich reconcile, legacy imports, old-folder writes of imports and reviews, cleanup and freeing for this person's old-way exports. New Takeout exports go to Immich.",
     "stopped": ("Paused: as for on, and new Takeout exports wait until the imports are on again. Exports that already have an import intent finish."),
 }
+CHECK_TRIES: Final = 3
 UNKNOWN_WAITING: Final = "waiting for a reason this version of Darkroom does not know"
 
 
@@ -81,18 +82,27 @@ def status_lines(opened: Session, settings: config.Settings, person: Person, now
     return lines
 
 
+def locked_credentials(opened: Session, person: Person) -> tuple[managed_switch.State | None, tuple[str | None, str | None]]:
+    db.write_lock(opened)
+    opened.refresh(person)
+    return managed_switch.state_of(person), (person.immich_user_id, person.immich_api_key_sealed)
+
+
 def turn_on(opened: Session, settings: config.Settings, person: Person, now: float, client: immich.Client | None = None) -> Result:
-    checked: tuple[str | None, str | None] | None = None
-    if managed_switch.state_of(person) in ("off", "stopped"):
-        refused = live_check(settings, person, client)
+    validated: tuple[str | None, str | None] | None = None
+    for _ in range(CHECK_TRIES):
+        state, credentials = locked_credentials(opened, person)
+        if state not in ("off", "stopped") or validated == credentials:
+            break
+        opened.rollback()
+        probe = Person(slug=person.slug, immich_user_id=credentials[0], immich_api_key_sealed=credentials[1])
+        refused = live_check(settings, probe, client)
         if refused is not None:
             return Result(False, (f"{person.slug}: {refused}",))
-        checked = (person.immich_user_id, person.immich_api_key_sealed)
-        db.write_lock(opened)
-        opened.refresh(person)
-        if (person.immich_user_id, person.immich_api_key_sealed) != checked:
-            opened.rollback()
-            return Result(False, (f"{person.slug}: {CHANGED}",))
+        validated = credentials
+    else:
+        opened.rollback()
+        return Result(False, (f"{person.slug}: {CHANGED}",))
     refused = managed_switch.request(opened, person, True, now)
     if refused is not None:
         return Result(False, (f"{person.slug}: {refused}",))
