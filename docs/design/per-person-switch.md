@@ -1,6 +1,6 @@
 # Per-person switch to Immich-managed imports
 
-Design for [#542](https://github.com/AnthonyPluth/Darkroom/issues/542), part of [#530](https://github.com/AnthonyPluth/Darkroom/issues/530), prepared 2026-11-24. **Draft, waiting on the owner's design review. No code follows until it is signed off.** It fills in step 5 of [the managed-storage design](immich-managed-storage.md), section 9: "Switch a controlled import to native uploads/catalogue dedupe only after pausing that owner's legacy writers, reconcile and cleanup and waiting for active leases". Enabling still waits on the owner's gates in #266 (that design's section 2, "Before imports can be enabled").
+Design for [#542](https://github.com/AnthonyPluth/Darkroom/issues/542), part of [#530](https://github.com/AnthonyPluth/Darkroom/issues/530), prepared 2026-11-24. **The owner answered its open questions on 2026-11-27 (section 14).** It fills in step 5 of [the managed-storage design](immich-managed-storage.md), section 9: "Switch a controlled import to native uploads/catalogue dedupe only after pausing that owner's legacy writers, reconcile and cleanup and waiting for active leases". Enabling still waits on the owner's gates in #266 (that design's section 2, "Before imports can be enabled").
 
 PR #541 had a switch (329424f to ff52466) that was taken out after repeated race findings: the switch could flip to `on` while a legacy import was still copying (Codex P1), cleanup could remove a hold after the pause took effect (Codex P1), a stopped person's exports stalled with nothing saying why, an old-way retry after the switch stayed `importing` for good, and two functions disagreed about what "started" means (Second review). This design settles each of those before any code is written. The refusals at every entry point are [#543](https://github.com/AnthonyPluth/Darkroom/issues/543), the command is [#544](https://github.com/AnthonyPluth/Darkroom/issues/544) and the recovery-point gate for managed cleanup is [#545](https://github.com/AnthonyPluth/Darkroom/issues/545). This document defines the states, the lock order, the guard those issues use and what each writer does in each state.
 
@@ -12,7 +12,7 @@ PR #541 had a switch (329424f to ff52466) that was taken out after repeated race
   - `import-account-<account id>.lock`, plus an in-process `threading.Lock` (`ingest.run.account_lock`). Taken by part ingest, whole-export import, finish and part freeing.
   - `legacy-import-<slug>.lock` (`legacy.person_lock`). Taken by `legacy.import_person`.
   - `immich-reconcile-<slug>.lock` (`immich_reconcile.person_lock`). Taken by `reconcile_person`, which also runs the losing-copy removal (`takeout_copies.resolve_person`).
-  - The database write lock (`db.write_lock`). On PostgreSQL this is a blocking transaction advisory lock with `lock_timeout`. On SQLite it does nothing: writes serialise through WAL's single writer, and a deferred transaction that read an old snapshot fails with busy when it tries to write.
+  - The database write lock (`db.write_lock`). On PostgreSQL this is a blocking transaction advisory lock with `lock_timeout`. On SQLite it does nothing: writes serialise through WAL's single writer. With the default pysqlite driver a plain `SELECT` opens no snapshot, so a session that only read takes the write lock at its first write and then reads the latest state; a deferred transaction fails with busy only when it began earlier (an explicit `BEGIN`, or an earlier write) and its snapshot is stale by the time it writes.
 - `video_times.hold_locks` already takes several of these at once, in this order: account locks (ascending), then for each person the legacy lock and then the reconcile lock. ff52466's switch used the reverse order.
 - Cleanup (`cleanup.clean`) takes no file lock. `clean_holds` takes no write lock, and `clean_export` for a whole export takes none either. Its sweeps (`paths.sweep_dropping`, `paths.sweep_placing`) finish or undo interrupted losing-copy removals and moves inside `google-only/`, so they write into an old folder.
 - "Started" has three definitions: `managed_ingest.started` (any `stage`, which counts a whole export that is only `queued`), `ingest.run.started_whole` (a stage past `queued`, `unpacking`/`importing`, or a staging tree), and ff52466's version (stage past `queued`).
@@ -84,7 +84,7 @@ The order matters even though no file lock blocks. Two callers that want overlap
 `managed_switch.hold(opened, person, writer, export=None) -> None` is the single check. It raises `Paused` (a subclass of the caller's existing "not now" error, `run.NotReady`, so job loops skip it without failing) or `Refused` (#543's `place.LEGACY_REFUSED`):
 
 1. `db.write_lock(opened)`.
-2. The claim write: `UPDATE people SET managed_imports = managed_imports WHERE id = :person`, issued with SQLAlchemy Core so it is always sent. On SQLite this makes the transaction a writer: if a transition committed after this transaction's snapshot was taken, the statement fails with busy and the caller rolls back without touching a file. On PostgreSQL the advisory lock already orders it, and the update also locks the person's row.
+2. The claim write: `UPDATE people SET managed_imports = managed_imports WHERE id = :person`, issued with SQLAlchemy Core so it is always sent. On SQLite this makes the transaction a writer. With default pysqlite a session that has only read has no snapshot yet, so the claim takes the write lock and the refresh that follows reads the latest committed state; the statement fails with busy only when the transaction began earlier and a transition committed after its snapshot, and then the caller rolls back without touching a file. Either way a transition and a batch are ordered, and the tests cover both. On PostgreSQL the advisory lock already orders it, and the update also locks the person's row.
 3. `opened.expire_all()`, then refresh the person and, when given, the export.
 4. Look up `writer` and the state in the per-writer table (section 6), with `ingest.run.way(export)` when the row depends on it.
 
@@ -95,7 +95,7 @@ What a caller must do:
 - **Request writers** (`review.resolve`'s Keep both, `review.undo`, `review.reassign` and the import route) already run in `db.session(engine, writing=True)`. #543 adds `hold` as their first call, for both people in a reassignment, by ascending id, so a reassignment never moves a file into or out of a managed person's `google-only/`.
 - **The route decision** (`managed_ingest.begin`) calls `hold(..., writer="route")` under the export's account lock, so a fresh export is routed from the state as it is now, not from the person row the part ingest loaded earlier.
 
-The claim write is new because `db.write_lock` alone does not order a read before a file deletion on SQLite. ff52466's `clean_holds` read the setting and deleted the file with no database write in between, so nothing could make it fail.
+`hold` rolls its transaction back before it raises `Paused` or `Refused`, so a refused writer never leaves the claim transaction open (`tests/test_managed_switch_hold.py`). The claim write is new because `db.write_lock` alone does not order a read before a file deletion on SQLite. ff52466's `clean_holds` read the setting and deleted the file with no database write in between, so nothing could make it fail.
 
 ## 5. One definition of "started"
 
@@ -118,7 +118,7 @@ The claim write is new because `db.write_lock` alone does not order a read befor
 
 | Writer (module) | Writes | off | `pausing` | `on` | `stopped` |
 | --- | --- | --- | --- | --- | --- |
-| Immich reconcile (`immich_reconcile.reconcile_person`) | `originals/immich/`, losing-copy removal in `google-only/` and `originals/immich/`, Pixel queue from originals | Runs | One running at the request finishes. A later run only finishes the person's `pending` `duplicate_removals` (`takeout_copies.finish_pending`, split out of `resolve_person`): no listing, no new pair, no Pixel queue. Event `immich_reconcile_paused` once per state change. No failure alert | Open question 1. Until it is settled: as `pausing`, without the recovery step, since nothing can be pending | As `on` |
+| Immich reconcile (`immich_reconcile.reconcile_person`) | `originals/immich/`, losing-copy removal in `google-only/` and `originals/immich/`, Pixel queue from originals | Runs | One running at the request finishes. A later run only finishes the person's `pending` `duplicate_removals` (`takeout_copies.finish_pending`, split out of `resolve_person`): no listing, no new pair, no Pixel queue. Event `immich_reconcile_paused` once per state change. No failure alert | Catalogue-only (section 8): lists the person's phone assets, writes nothing on disk, records each as a verified managed version and queues its managed Pixel copy. No losing-copy removal | As `on` |
 | Legacy import (`legacy.import_person`, `run.py import-legacy`) | `originals/legacy/` | Runs | One running finishes. A new one is refused under its lock | Refused | Refused |
 | Per-part ingest and finish, `fresh` export (`part_ingest.ingest_part`, `finish_export.finish`) | `google-only/`, sidecars beside originals | Old way | Waits | Gets an intent, then managed | Waits, alert `managed:stopped:<export id>` once |
 | Per-part ingest and finish, `old` export | as above | Runs | Runs to the end. `advance` waits for it | Refused (#543): only a retry of a failed or expired export can get here | Refused |
@@ -139,7 +139,7 @@ The claim write is new because `db.write_lock` alone does not order a read befor
 
 The command is #544's (CLI first). This design fixes what it shows and where the same facts already appear:
 
-- `run.py managed-imports status --person <slug>` prints the state, the time since `managed_imports_since`, the last `managed_switch_waiting` reason as a sentence, the paused writers for that state, and, while `pausing` or `on` with open question 1 unsettled, the side effect: "New iPhone photos are not copied to originals/immich or queued for the Pixels until the switch is on." For `waiting` on `old_way_export` it lists the export ids, not names. Failed or expired old-way exports are listed with "will not be retried after the switch" (open question 2).
+- `run.py managed-imports status --person <slug>` prints the state, the time since `managed_imports_since`, the last `managed_switch_waiting` reason as a sentence, the paused writers for that state, and, while `pausing`, the side effect: "New iPhone photos are not copied to originals/immich or queued for the Pixels until the switch is on." For `waiting` on `old_way_export` it lists the export ids, not names. Failed or expired old-way exports are listed with "will not be retried after the switch" (open question 2).
 - Events (the Events page, `GET /api/events`): `managed_imports_set` (requested state), `managed_imports_on` (flipped), `immich_reconcile_paused`, `cleanup_kept` and the part-freeing keep, each with a fixed text.
 - Alerts (the existing alert list and push): `managed:pausing:<person id>` opens once the person has been `pausing` for a day, with the waiting reason as a fixed text, and closes when they flip or go off. `managed:stopped:<export id>` opens once per fresh export that waits because the person is `stopped`.
 - Logs use `monitoring.log` with fixed texts and counts: the person's slug, export ids and the reason code, never a file name or a path.
@@ -150,7 +150,7 @@ A page in the web app needs a design the owner signs off first (promise 6). It i
 
 The owner's decision of 2026-11-24, recorded on #542: **while a person's Immich reconcile is paused, new iPhone photos stop reaching `originals/immich` and the Pixels; this is accepted, and the pause lasts until that person's managed imports are on.**
 
-So, from the commit of `pausing` until the flip to `on`, the person's new Immich assets are not stored in `originals/immich/` and not queued for any Pixel serving them. They are still in Immich (Immich's own app uploads them), and the next reconcile run after the pause picks them up from its stored watermark (`immich_reconciled_until`, with its overlap), so nothing is lost, only delayed. The `pausing` alert after a day is how the owner learns that the delay is growing. Section 6's reconcile row for `on` depends on open question 1.
+So, from the commit of `pausing` until the flip to `on`, the person's new Immich assets are not stored in `originals/immich/` and not queued for any Pixel serving them. They are still in Immich (Immich's own app uploads them), and the next reconcile run after the pause picks them up from its stored watermark (`immich_reconciled_until`, with its overlap), so nothing is lost, only delayed. The `pausing` alert after a day is how the owner learns that the delay is growing. From the flip to `on` the reconcile runs again as a catalogue-only run: it lists the person's phone assets from the stored watermark, streams each original once to verify its SHA-1 and size without keeping it, records a `ManagedAssetVersion` and a phone `ManagedAssetOrigin`, gives the asset a catalogue `MediaItem` (source `phone`, path `<slug>/immich-catalogue/<asset id><suffix>`, outside `originals/`) and queues the managed Pixel copies through `pixel_folder.queue_managed`. The `immich_assets` row gets status `cataloged` (migration 0064). Nothing is written under `originals/`, `google-only/` or anywhere else on disk; an asset whose bytes are already in `originals/` is marked `stored` as before and not catalogued. The classic reconcile ignores catalogue items when it looks for a stored original, so a person who goes back to off (possible only with no import intent) gets the original written the first time it sees the asset. A downgrade past 0064 is refused while an asset is `cataloged`.
 
 ## 9. Failure paths
 
@@ -172,7 +172,7 @@ So, from the commit of `pausing` until the flip to `on`, the person's new Immich
 One new Alembic migration, numbered after main's newest when it is written (0052 today), with its `test_<revision>_…` in `tests/test_migrations.py`, on SQLite and PostgreSQL:
 
 - `people.managed_imports_since` `Float`, nullable: when the state was last set. It drives the day-old alert and the status line.
-- `people.managed_switch_waiting` `String`, nullable: the last `advance` reason code (`reconcile`, `legacy`, `account`, `accounts_changed`, `old_way_export`, `recovery`, `no_key`), cleared on the flip.
+- `people.managed_switch_waiting` `String`, nullable: the last `advance` reason code (`reconcile`, `legacy`, `account`, `accounts_changed`, `old_way_export`, `recovery`, `no_key`, `pixel_source`), cleared on the flip.
 - A check constraint `ck_people_managed_imports` with `models.one_of("managed_imports", ("pausing", "on", "stopped"), "ck_people_managed_imports")` (a `NULL` passes it), through `batch_alter_table` so SQLite rebuilds the table. The migration first refuses (raises) if any row holds another value, rather than rewriting it.
 - `downgrade` drops the two columns and the constraint only when they are there, as 0049 does.
 
@@ -218,7 +218,7 @@ Each is one pull request under 1,000 added lines with its tests, in this order. 
 | 3 | The migration, `managed_switch.request` and `advance`, the import tick's call, `managed_switch_waiting`, the pausing alert and events; the transition, lock, account, old-way and recovery tests | 850 lines |
 | 4 | The long writers: reconcile pause with `takeout_copies.finish_pending`, legacy refusal under its lock, `begin` under `hold` with the fresh-export wait, the stopped alert, the CLI commands' exit; their tests | 800 lines |
 | 5 | The batches: cleanup in write-locked batches with the account lock, holds, sweeps' person filter, part freeing's `managed_switch` keep; the race tests | 700 lines |
-| 6 | Open question 1's answer, if the reconcile is to run again at `on` (a catalogue-only reconcile that queues managed Pixel copies through `pixel_folder.queue_managed` and writes nothing on disk) | 900 lines; split if larger |
+| 6 | The catalogue-only reconcile at `on` and `stopped` (`immich_catalogue.py`, migration 0064's `cataloged` status), and `request(on)` and the flip refused while `DARKROOM_PIXEL_IMMICH_SOURCE` is off | 900 lines; split if larger |
 
 After these come #543 (refusals at every entry point and its structural check, using `managed_switch.hold`) and #544 (the command and status, which make the switch reachable). Neither is part of this slicing.
 
@@ -230,10 +230,12 @@ Downloads are recorded even if ingest is refused. The worker can finish the down
 
 Old-way Keep both, Undo and Reassign answer 409 while the person whose folder would be changed is `on` or `stopped`. Reassign checks both people. Undo checks the current owner and the recorded place it could restore. A shared-account import can still match another person's files, while a match in a managed person's old folder never writes a sidecar there. `tests/test_old_folder_writers.py` pins the old-folder writer call sites and their entry guards.
 
-## 14. Open questions for the owner
+## 14. The owner's answers
 
-1. **The reconcile at `on`.** The decision says the pause "lasts until that person's managed imports are on". This design reads it as: the reconcile runs again once the person is `on`, in a form that writes nothing under `originals/` (it records the new phone assets and queues their Pixel copies from Immich through `pixel_folder.queue_managed`, PR 6), so new iPhone photos reach the Pixels again and never reach `originals/immich/`. The other reading keeps the reconcile paused for as long as the person is `on`, so new iPhone photos would not reach the Pixels at all until cutover. Which one? With the first, should `request(on)` also be refused while `DARKROOM_PIXEL_IMMICH_SOURCE` is off, since otherwise those copies are queued but held?
-2. **Failed and expired old-way exports.** The switch does not wait for them, and after it their retry is refused (#543). Their photos then arrive through the next Takeout of that account, the managed way. Should the switch instead wait until the owner retries or dismisses each one?
-3. **When cleanup and freeing resume for a managed person's old-way exports.** This design keeps their staging, zips and holds from `pausing` on, as the managed-storage design's step 5 says. Should they resume at `on`, once that person's backfill has no pending item, or only at cutover? Until this is answered they stay kept, which costs disk only.
-4. **A page for the switch.** The CLI's status line, events and alerts are what this design gives. A page in the web app (on the People page, say) needs a design and the owner's sign-off.
-5. **What `stopped` does to new exports.** This design makes them wait with an alert and never imports them the old way, since the old folders would then miss what is already only in Immich. #541's PR body listed this for the owner. Please confirm, or say whether `stopped` exports should go the old way.
+Recorded on #542 on 2026-11-27:
+
+1. **The reconcile at `on`.** Yes: a catalogue-only reconcile runs at `on` (section 8, PR 6), and `request(on)` is refused while `DARKROOM_PIXEL_IMMICH_SOURCE` is off. The flip also waits (`pixel_source`) if the setting is turned off while the person is `pausing`.
+2. **Failed and expired old-way exports.** The switch does not wait for them.
+3. **Cleanup and freeing for a managed person's old-way exports.** They stay kept until cutover.
+4. **A page for the switch.** A page on the People page; the owner said no design sign-off is needed (a waiver of promise 6 for this page). It is a separate slice.
+5. **`stopped` and new exports.** A fresh export of a `stopped` person waits with one alert and is never imported the old way.

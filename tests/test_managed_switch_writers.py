@@ -28,6 +28,7 @@ from tests.test_managed_ingest import KEY, SECRET, ManagedWorld
 from tests.test_managed_switch import photo_in
 
 PAUSED = ("pausing", "on", "stopped")
+SWITCHING = ("pausing",)
 
 
 def flip_elsewhere(engine, person_id, state, since=NOW):
@@ -55,7 +56,7 @@ class ReconcilePausedTests(ReconcileWorld):
     def test_a_run_after_the_switch_began_lists_nothing_writes_nothing_and_queues_nothing(self):
         self.photo()
         alerts = self.alerts()
-        for number, state in enumerate(PAUSED):
+        for number, state in enumerate(SWITCHING):
             with self.subTest(state=state):
                 self.set_state(state, NOW + number)
                 before, requests = tree(self.world.root), len(self.world.fake.requests())
@@ -64,6 +65,14 @@ class ReconcilePausedTests(ReconcileWorld):
                 self.assertEqual((tree(self.world.root), len(self.world.fake.requests())), (before, requests))
                 self.assertEqual((self.rows(), self.copies(), self.alerts(), self.jo.immich_reconciled_until), ({}, [], alerts, None))
                 self.assertEqual(self.world.opened.execute(select(Event).where(Event.type.in_(("immich_reconciled", "immich_reconcile_failed")))).all(), [])
+
+    def test_a_run_for_an_on_or_stopped_person_is_not_paused_but_catalogue_only(self):
+        self.photo()
+        for state in ("on", "stopped"):
+            with self.subTest(state=state):
+                self.set_state(state)
+                self.assertFalse(self.run_it().paused)
+                self.assertEqual(self.originals(), [name for name in self.originals() if "/originals/immich/" not in name])
 
     def test_a_run_with_the_switch_off_still_runs(self):
         self.photo()
@@ -76,7 +85,7 @@ class ReconcilePausedTests(ReconcileWorld):
         for later in range(3):
             self.run_it(at=NOW + 1 + later)
         self.assertEqual(self.paused_events(), [managed_switch.RECONCILE_PAUSED])
-        self.set_state("on", NOW + 60)
+        self.set_state("pausing", NOW + 60)
         self.run_it(at=NOW + 120)
         self.run_it(at=NOW + 180)
         self.assertEqual(len(self.paused_events()), 2)
@@ -177,7 +186,7 @@ class LegacyRefusedTests(unittest.TestCase):
                 before, source = tree(self.world.root), listing(self.home.source)
                 with self.assertRaises(managed_switch.Refused) as refused:
                     self.home.run(queue=legacy.PixelFolderQueue())
-                self.assertEqual(str(refused.exception), managed_switch.REFUSED)
+                self.assertEqual(str(refused.exception), managed_switch.PAUSING_REFUSED if state == "pausing" else managed_switch.REFUSED)
                 self.assertEqual((tree(self.world.root), listing(self.home.source), self.home.rows(), self.legacy_events()), (before, source, {}, []))
                 self.assertFalse((self.world.root / "jo" / "originals" / "legacy").exists())
                 self.assertEqual(self.world.opened.execute(select(PixelCopy)).all(), [])
@@ -375,18 +384,18 @@ class CliTests(unittest.TestCase):
                     opened.execute(update(Person).where(Person.id == self.person_id).values(legacy_path=str(self.base / "old")))
                 before = tree(self.base / "photos")
                 code, out, err = self.call("import-legacy", "--person", "canaryslugperson")
-                self.assertEqual((code, out, err), (1, "", f"import-legacy: {managed_switch.REFUSED}\n"))
+                self.assertEqual((code, out, err), (1, "", f"import-legacy: {managed_switch.PAUSING_REFUSED if state == 'pausing' else managed_switch.REFUSED}\n"))
                 self.assertEqual(tree(self.base / "photos"), before)
 
     def test_a_refused_import_legacy_does_not_save_the_folder(self):
         self.set_state("pausing")
         code, _, err = self.call("import-legacy", "--person", "canaryslugperson", "--dir", str(self.base / "old"))
-        self.assertEqual((code, err), (1, f"import-legacy: {managed_switch.REFUSED}\n"))
+        self.assertEqual((code, err), (1, f"import-legacy: {managed_switch.PAUSING_REFUSED}\n"))
         with db.session(self.engine) as opened:
             self.assertIsNone(opened.get(Person, self.person_id).legacy_path)
 
     def test_reconcile_immich_exits_one_with_the_fixed_reason_and_writes_nothing(self):
-        for state in PAUSED:
+        for state in SWITCHING:
             with self.subTest(state=state):
                 self.set_state(state)
                 before = tree(self.base / "photos")

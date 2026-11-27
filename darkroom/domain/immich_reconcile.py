@@ -76,6 +76,7 @@ class Report:
     duplicates_removed: int = 0
     duplicates_refused: int = 0
     duplicates_failed: int = 0
+    cataloged: int = 0
     paused: bool = False
 
 
@@ -122,6 +123,8 @@ def person_lock(settings: config.Settings, person: Person) -> Iterator[None]:
 
 
 class Run:
+    done: tuple[str, ...] = ("stored",)
+
     def __init__(self, opened: Session, settings: config.Settings, person: Person, client: immich.Client, key: str, queue: PixelQueue, now: float,
                  read: index.Reader) -> None:
         self.opened, self.person, self.client, self.key, self.queue, self.now, self.read = opened, person, client, key, queue, now, read
@@ -144,7 +147,8 @@ class Run:
         return row
 
     def present(self, sha1: str, fresh: bool = False) -> MediaItem | None:
-        query = select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.sha1 == sha1).order_by(MediaItem.id).limit(1)
+        query = (select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.sha1 == sha1,
+                                         MediaItem.path.startswith(f"{self.person.slug}/originals/")).order_by(MediaItem.id).limit(1))
         return self.opened.execute(query.execution_options(populate_existing=fresh)).scalar_one_or_none()
 
     def fetch(self, asset: immich.Asset) -> Path | None:
@@ -182,7 +186,7 @@ class Run:
             row.queued_at = self.now
             self.report.queued += 1
 
-    def photo(self, asset: immich.Asset) -> None:
+    def halves(self, asset: immich.Asset) -> list[tuple[immich.Asset, str, str | None]] | None:
         self.handled.add(asset.id)
         halves = [(asset, "photo", asset.live_video_id)]
         if asset.live_video_id:
@@ -193,12 +197,20 @@ class Run:
                     raise
                 self.mark(asset, "photo", "waiting", asset.live_video_id)
                 self.opened.commit()
-                return
+                return None
             if video.owner_id != asset.owner_id:
                 self.fail(asset, "photo", "LiveVideoOwner")
-                return
+                return None
             halves.append((video, "live_video", asset.id))
             self.handled.add(video.id)
+        return halves
+
+    def photo(self, asset: immich.Asset) -> None:
+        halves = self.halves(asset)
+        if halves is not None:
+            self.keep(asset, halves)
+
+    def keep(self, asset: immich.Asset, halves: list[tuple[immich.Asset, str, str | None]]) -> None:
         try:
             results = self.store([half for half, _, _ in halves])
             stored = [(half, kind, linked, item, copied) for (half, kind, linked), (item, copied) in zip(halves, results, strict=True)]
@@ -228,7 +240,7 @@ class Run:
 
     def listed(self, asset: immich.Asset) -> None:
         row = self.row(asset.id)
-        if row is not None and row.status == "stored":
+        if row is not None and row.status in self.done:
             self.report.already_seen += 1
         elif asset.owner_id != self.person.immich_user_id:
             return
@@ -258,6 +270,11 @@ class Run:
                 if error.status in (401, 403):
                     raise
 
+    def summary(self) -> str:
+        report = self.report
+        return (f"{report.listed} listed, {report.stored} stored, {report.ignored} ignored, {report.waiting} waiting, {report.failed} failed, "
+                f"{report.duplicates_removed} duplicates removed, {report.duplicates_refused} refused, {report.duplicates_failed} failed to remove")
+
     def settle(self) -> None:
         resolved = takeout_copies.resolve_person(self.opened, self.photos, self.person, self.now, takeout_copies.Tools(read=self.read))
         self.report.duplicates_removed, self.report.duplicates_refused, self.report.duplicates_failed = resolved.removed, resolved.refused, resolved.failed
@@ -286,16 +303,18 @@ def reconcile_person(opened: Session, settings: config.Settings, person: Person,
                      queue: PixelQueue | None = None, read: index.Reader = exiftool.read) -> Report:
     key = person_key(settings, person)
     require_earlier_imports(opened, person)
-    run = Run(opened, settings, person, client or immich.Client.at(settings), key, queue or NoQueue(), now, read)
     until = now - MARGIN_SECONDS
     since = None if person.immich_reconciled_until is None else person.immich_reconciled_until - OVERLAP_SECONDS
     with person_lock(settings, person):
-        from darkroom.domain import managed_switch
+        from darkroom.domain import immich_catalogue, managed_switch
 
         opened.commit()
-        if managed_switch.reconcile_paused(opened, person):
+        mode = managed_switch.reconcile_mode(opened, person)
+        if mode == "paused":
             return paused_run(opened, settings, person, now, read)
         opened.commit()
+        kind = immich_catalogue.CatalogueRun if mode == "catalogue" else Run
+        run = kind(opened, settings, person, client or immich.Client.at(settings), key, queue or NoQueue(), now, read)
         if run.client.user_id(key) != person.immich_user_id:
             raise immich.ImmichFailed("the Immich key belongs to a different user than the person's")
         listing = run.client.search_stable(key, None if since is None else stamp(since), stamp(until))
@@ -312,12 +331,11 @@ def reconcile_person(opened: Session, settings: config.Settings, person: Person,
         run.report.waiting = opened.query(ImmichAsset).filter(ImmichAsset.person_id == person.id, ImmichAsset.status == "waiting").count()
         person.immich_reconciled_until = max(until, person.immich_reconciled_until or 0.0)
         report = run.report
-        events.record(opened, now, "immich_reconciled", person.slug,
-                      f"{report.listed} listed, {report.stored} stored, {report.ignored} ignored, {report.waiting} waiting, {report.failed} failed, "
-                      f"{report.duplicates_removed} duplicates removed, {report.duplicates_refused} refused, {report.duplicates_failed} failed to remove")
+        events.record(opened, now, "immich_reconciled", person.slug, run.summary())
         opened.commit()
-    monitoring.log("immich reconciled", person=person.slug, listed=report.listed, stored=report.stored, ignored=report.ignored, waiting=report.waiting, failed=report.failed,
-                   duplicates_removed=report.duplicates_removed, duplicates_refused=report.duplicates_refused, duplicates_failed=report.duplicates_failed)
+    monitoring.log("immich reconciled", person=person.slug, listed=report.listed, stored=report.stored, cataloged=report.cataloged, ignored=report.ignored,
+                   waiting=report.waiting, failed=report.failed, duplicates_removed=report.duplicates_removed, duplicates_refused=report.duplicates_refused,
+                   duplicates_failed=report.duplicates_failed)
     return report
 
 

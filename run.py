@@ -326,7 +326,8 @@ def run_reconcile_immich(slug: str | None) -> int:
                     code = 1
                     continue
                 print(f"{person.slug}: {done.listed} listed, {done.stored} stored ({done.copied} copied to originals, {done.already_there} already there), "
-                      f"{done.queued} queued for the Pixel folder, {done.ignored} not phone uploads, {done.waiting} waiting, {done.failed} failed")
+                      f"{done.queued} queued for the Pixel folder, {done.ignored} not phone uploads, {done.waiting} waiting, {done.failed} failed"
+                      + (f", {done.cataloged} catalogued without a copy" if done.cataloged else ""))
                 code = 1 if done.failed else code
     engine.dispose()
     return code

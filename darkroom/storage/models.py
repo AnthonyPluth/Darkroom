@@ -580,7 +580,7 @@ class ImmichAsset(Base):
     __tablename__ = "immich_assets"
     __table_args__ = (
         UniqueConstraint("person_id", "asset_id", name="uq_immich_assets_person_asset"),
-        one_of("status", ("stored", "waiting", "ignored", "failed"), "ck_immich_assets_status"),
+        one_of("status", ("stored", "waiting", "ignored", "failed", "cataloged"), "ck_immich_assets_status"),
         one_of("kind", ("photo", "live_video"), "ck_immich_assets_kind"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

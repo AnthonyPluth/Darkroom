@@ -20,7 +20,7 @@ CALLERS = {
 
 GUARDS = {
     "darkroom/domain/downloads.py": {"finish": "run.admit_import"},
-    "darkroom/domain/immich_reconcile.py": {"reconcile_person": "managed_switch.reconcile_paused"},
+    "darkroom/domain/immich_reconcile.py": {"reconcile_person": "managed_switch.reconcile_mode"},
     "darkroom/domain/ingest/cleanup.py": {"switch_allows": "managed_switch.hold"},
     "darkroom/domain/ingest/finish_export.py": {"finish": "managed_switch.check"},
     "darkroom/domain/ingest/part_free.py": {"switch_guard": "managed_switch.hold"},

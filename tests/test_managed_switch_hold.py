@@ -85,6 +85,30 @@ class TableTests(unittest.TestCase):
                     export = None if way is None else self.world.made(way)
                     self.assertEqual(self.world.result(writer, export), want)
 
+    def test_a_refusal_while_pausing_says_the_switch_is_being_made_and_any_other_says_the_imports_go_to_immich(self):
+        for state in STATES[1:]:
+            for (writer, way), expected in EXPECTED.items():
+                if expected[STATES.index(state)] != REFUSE:
+                    continue
+                with self.subTest(state=state, writer=writer, way=way):
+                    self.world.set_state(state)
+                    export = None if way is None else self.world.made(way)
+                    with self.assertRaises(managed_switch.Refused) as refused:
+                        self.world.hold(writer, export)
+                    self.assertEqual(str(refused.exception), managed_switch.PAUSING_REFUSED if state == "pausing" else managed_switch.REFUSED)
+
+    def test_a_hold_that_waits_or_refuses_leaves_no_transaction_open(self):
+        for state in STATES:
+            for (writer, way), expected in EXPECTED.items():
+                if expected[STATES.index(state)] == RUN:
+                    continue
+                with self.subTest(state=state, writer=writer, way=way):
+                    self.world.set_state(state)
+                    export = None if way is None else self.world.made(way)
+                    with self.assertRaises((managed_switch.Paused, managed_switch.Refused)):
+                        self.world.hold(writer, export)
+                    self.assertFalse(self.world.opened.in_transaction())
+
     def test_the_table_has_a_row_for_every_writer_and_way(self):
         self.assertEqual(set(EXPECTED), set(managed_switch.TABLE))
 
