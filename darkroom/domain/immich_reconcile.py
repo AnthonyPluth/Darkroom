@@ -23,7 +23,7 @@ OVERLAP_SECONDS = 300.0
 MARGIN_SECONDS = 60.0
 STEM_LIMIT = 100
 SHA_PREFIX = 8
-RETRIED = ("waiting", "failed")
+RETRIED = ("waiting", "failed", "cataloged")
 
 
 class NotReady(RuntimeError):
@@ -124,6 +124,7 @@ def person_lock(settings: config.Settings, person: Person) -> Iterator[None]:
 
 class Run:
     done: tuple[str, ...] = ("stored",)
+    retried: tuple[str, ...] = RETRIED
 
     def __init__(self, opened: Session, settings: config.Settings, person: Person, client: immich.Client, key: str, queue: PixelQueue, now: float,
                  read: index.Reader) -> None:
@@ -259,7 +260,7 @@ class Run:
 
     def retry(self) -> None:
         waiting = self.opened.execute(
-            select(ImmichAsset.asset_id).where(ImmichAsset.person_id == self.person.id, ImmichAsset.kind == "photo", ImmichAsset.status.in_(RETRIED)).order_by(ImmichAsset.id)
+            select(ImmichAsset.asset_id).where(ImmichAsset.person_id == self.person.id, ImmichAsset.kind == "photo", ImmichAsset.status.in_(self.retried)).order_by(ImmichAsset.id)
         ).scalars().all()
         for asset_id in waiting:
             if asset_id in self.handled:

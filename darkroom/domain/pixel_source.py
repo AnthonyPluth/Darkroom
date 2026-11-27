@@ -14,6 +14,7 @@ from darkroom.storage.paths import Photos
 
 VERIFIED = "bytes_verified"
 SUFFIX = re.compile(r"\.[a-z0-9]{1,10}")
+CATALOGUE_FOLDER = "immich-catalogue"
 
 
 class NotManaged(ValueError):

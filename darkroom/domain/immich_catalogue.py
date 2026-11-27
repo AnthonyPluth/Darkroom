@@ -14,7 +14,7 @@ from darkroom.providers import immich
 from darkroom.storage import db
 from darkroom.storage.models import ImmichAsset, ManagedAssetVersion, MediaItem, Person, PixelCopy, PixelPerson
 
-FOLDER: Final = "immich-catalogue"
+FOLDER: Final = pixel_source.CATALOGUE_FOLDER
 SUFFIX: Final = re.compile(r"\.[a-z0-9]{1,10}")
 SAFE_ID: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
 CATALOGED: Final = "cataloged"
@@ -23,6 +23,7 @@ KINDS: Final = ("IMAGE", "VIDEO")
 
 class CatalogueRun(immich_reconcile.Run):
     done = ("stored", CATALOGED)
+    retried = ("waiting", "failed")
 
     def __init__(self, opened: Session, settings: config.Settings, person: Person, client: immich.Client, key: str, queue: immich_reconcile.PixelQueue, now: float,
                  read: index.Reader) -> None:

@@ -273,7 +273,10 @@ def matched_original(opened: Session, photos: Photos, decision: DedupeDecision) 
     person = None if matched is None else opened.get(Person, matched.person_id)
     if matched is None or person is None or matched.source != "phone" or not can_fill_folder(opened, photos, person):
         return None
-    original = photos.original(person.slug, matched.path)
+    try:
+        original = photos.original(person.slug, matched.path)
+    except paths.OutsideRoot:
+        return None
     return original if original.is_file() and not original.is_symlink() else None
 
 

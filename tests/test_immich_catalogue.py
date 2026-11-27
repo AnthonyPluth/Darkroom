@@ -1,19 +1,23 @@
 import base64
 import dataclasses
+import unittest
 import types
 import uuid
 from unittest import mock
 
 from sqlalchemy import select
 
-from darkroom.domain import immich_catalogue, immich_reconcile as reconcile, pixel_folder, pixel_source
+from darkroom.domain import dedupe, immich_catalogue, legacy, pixel_folder, pixel_source
+from darkroom.domain import immich_reconcile as reconcile
+from darkroom.domain.ingest import place
 from darkroom.providers import immich
-from darkroom.storage.models import (Alert, DuplicateRemoval, Event, ManagedAssetOrigin, ManagedAssetVersion, ManagedPixelSource, MediaItem, Pixel,
+from darkroom.storage.models import (Alert, DedupeDecision, DuplicateRemoval, Event, Export, ManagedAssetOrigin, ManagedAssetVersion, ManagedPixelSource, MediaItem, Pixel,
                                      PixelPerson)
 from tests.fakes.immich import FakeAsset
 from tests.import_world import NOW, tree
 from tests.privacy import no_leaks
 from tests.test_immich_reconcile import SECRET, ReconcileCase, sha1
+from tests.test_legacy import LegacyWorld
 
 
 class CatalogueCase(ReconcileCase):
@@ -214,15 +218,68 @@ class PixelQueueTests(CatalogueCase):
 
 
 class BackToOffTests(CatalogueCase):
-    def test_a_person_turned_off_gets_the_original_written_the_first_time_the_classic_reconcile_sees_the_asset(self):
+    def off_again(self):
+        self.set_state(None)
+
+    def test_a_person_turned_off_gets_every_catalogued_original_written_by_the_next_classic_run_though_the_window_moved_on(self):
         asset = self.asset()
         self.run_it()
-        self.set_state(None)
-        self.jo.immich_reconciled_until = None
-        report = self.run_it(at=NOW + 3600)
-        self.assertEqual((report.stored, report.copied, self.rows()[asset.id].status), (1, 1, "stored"))
+        self.off_again()
+        report = self.run_it(at=NOW + 7200)
+        self.assertEqual((report.listed, report.stored, report.copied, self.rows()[asset.id].status), (0, 1, 1, "stored"))
         (name,) = self.stored()
         self.assertEqual((self.world.root / "jo/originals/immich" / name).read_bytes(), asset.data)
+        self.assertEqual(self.run_it(at=NOW + 10800).stored, 0)
+
+    def test_a_catalogued_live_photo_gets_both_halves_written_when_the_person_is_turned_off(self):
+        video_id = str(uuid.uuid4())
+        self.world.fake.add_asset(FakeAsset(id=video_id, owner_id="u-jo", data=b"\x00\x00\x00\x14ftypqt  video-bytes", name="IMG_0001.MOV", kind="VIDEO",
+                                          visibility="hidden", metadata=()))
+        still = self.asset(live_video_id=video_id)
+        self.run_it()
+        self.off_again()
+        report = self.run_it(at=NOW + 7200)
+        self.assertEqual((report.stored, report.copied, len(self.stored())), (2, 2, 2))
+        self.assertEqual({row.status for row in self.rows().values()}, {"stored"})
+        self.assertIn(still.id, self.rows())
+
+    def test_a_catalogue_item_is_not_a_phone_original_for_an_old_way_takeout_of_an_off_person(self):
+        self.asset()
+        self.run_it()
+        (item,) = self.cataloged()
+        account = self.world.account
+        self.assertIn(item.id, dedupe.PersonIndex.load(self.world.opened, account).by_id)
+        self.off_again()
+        self.assertNotIn(item.id, dedupe.PersonIndex.load(self.world.opened, account).by_id)
+
+    def test_an_original_for_a_matched_catalogue_item_is_never_looked_for_in_the_folder(self):
+        self.asset()
+        self.run_it()
+        (item,) = self.cataloged()
+        export = self.world.opened.execute(select(Export)).scalars().first()
+        decision = DedupeDecision(export_id=export.id, account_id=self.world.account, source_path="catalogue-match.jpg", tier=1, reason="same bytes", decided_by="auto",
+                                  decided_at=NOW, matched_item_id=item.id)
+        self.world.opened.add(decision)
+        self.world.opened.commit()
+        self.set_state("pausing")
+        self.assertIsNone(place.matched_original(self.world.opened, self.world.photos, decision))
+        self.set_state(None)
+        self.assertIsNone(place.matched_original(self.world.opened, self.world.photos, decision))
+
+
+class LegacyCatalogueTests(unittest.TestCase):
+    def test_a_legacy_file_is_copied_into_originals_though_a_catalogue_item_has_its_bytes(self):
+        home = LegacyWorld(self)
+        world = home.world
+        home.imported()
+        fresh = world.scratch_jpeg("fresh.jpg", taken="2015:01:01 10:00:00", offset="+00:00", colour=(1, 2, 3))
+        home.put("fresh.jpg", fresh)
+        home.configure()
+        world.opened.add(MediaItem(person_id=home.jo.id, source="phone", path="jo/immich-catalogue/catalogued.jpg", sha1=sha1(fresh), bytes=len(fresh), indexed_at=NOW))
+        world.opened.commit()
+        home.run()
+        copies = list((world.root / "jo" / "originals" / legacy.LEGACY_FOLDER).iterdir())
+        self.assertEqual([path.read_bytes() for path in copies], [fresh])
 
 
 class ModeTests(CatalogueCase):
