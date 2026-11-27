@@ -35,10 +35,10 @@ class HoldReleaseFixture(ReleaseFixture):
     def hold_file(self):
         return self.world.root / self.item().hold_path
 
-    def resolve(self):
-        review.resolve(self.world.opened, self.world.photos, self.review_id, "keep_both", NOW + 5, review.FileEffects())
+    def resolve(self, at=NOW + 5):
+        review.resolve(self.world.opened, self.world.photos, self.review_id, "keep_both", at, review.FileEffects())
         self.world.opened.commit()
-        finish_export.finish_ready(self.world.opened, self.world.settings, NOW + 10, self.world.tools)
+        finish_export.finish_ready(self.world.opened, self.world.settings, at + 5, self.world.tools)
         self.assertEqual(self.item().status, "kept_both")
 
     def free_the_zip(self):
@@ -83,6 +83,20 @@ class ReviewHoldReleaseTests(HoldReleaseFixture):
         self.assertEqual(self.tick().holds, 1)
         self.assertFalse(hold.exists())
 
+    def test_the_hold_waits_for_a_held_copy_that_still_depends_on_it(self):
+        self.resolve()
+        hold = self.hold_file()
+        self.authorize()
+        self.free_the_zip()
+        self.entry.held_path = "_inbox/jo/held/export-1/99.jpg"
+        self.world.opened.commit()
+        self.assertEqual(self.tick().holds, 0)
+        self.assertTrue(hold.is_file())
+        self.assertIn(f"review {self.review_id}: zip_needs_hold", self.hold_reasons())
+        self.entry.held_path = None
+        self.world.opened.commit()
+        self.assertEqual(self.tick().holds, 1)
+
     def test_a_pending_hold_is_never_a_candidate(self):
         hold = self.hold_file()
         self.authorize()
@@ -91,14 +105,18 @@ class ReviewHoldReleaseTests(HoldReleaseFixture):
         self.assertEqual(self.item().status, "pending")
         self.assertEqual(self.hold_reasons(), [])
 
-    def test_a_hold_resolved_less_than_14_days_ago_is_not_a_candidate(self):
-        self.resolve()
+    def test_a_hold_resolved_less_than_14_days_ago_is_not_a_candidate_even_when_the_export_and_a_point_pass(self):
+        self.resolve(at=NOW + 2 * DAY)
         hold = self.hold_file()
         self.authorize()
-        kept = self.tick(at=NOW + 5 + 14 * DAY - 10)
+        kept = self.tick(at=RELEASE_AT)
         self.assertEqual((kept.holds, kept.kept), (0, 0))
         self.assertTrue(hold.is_file())
         self.assertEqual(self.hold_reasons(), [])
+        self.assertEqual(self.journal()[:2], (None, None))
+        self.backup(ahead=2 * DAY)
+        self.assertEqual(self.tick(at=RELEASE_AT + 2 * DAY).holds, 1)
+        self.assertFalse(hold.exists())
 
     def test_the_setting_off_keeps_the_hold_and_makes_no_immich_request(self):
         self.resolve()
@@ -254,6 +272,8 @@ class ReviewHoldReleaseTests(HoldReleaseFixture):
         with mock.patch.object(paths, "inbox_entry_absent", side_effect=FileNotFoundError):
             unread = self.tick(enabled=False)
         self.assertEqual((unread.holds, unread.failed), (0, 1))
+        self.assertEqual(self.world.opened.scalars(select(Event.detail).where(Event.type == "export_hold_free_failed")).all(),
+                         [f"review {self.review_id}: FileNotFoundError"])
         self.assertEqual(self.journal()[:2], ("freeing", recovery))
         self.assertIsNotNone(self.journal()[2])
         self.assertEqual(self.tick(enabled=False).holds, 1)

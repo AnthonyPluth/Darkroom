@@ -944,9 +944,13 @@ def hold_shared(opened: Session, review: ReviewItem) -> bool:
 def zips_need_hold(opened: Session, export: Export, review: ReviewItem) -> bool:
     roots = select(TakeoutEntry.id).where(TakeoutEntry.export_id == export.id, TakeoutEntry.kind == "media", TakeoutEntry.decision_id == review.decision_id)
     numbers = select(TakeoutEntry.part_number).where(TakeoutEntry.export_id == export.id, TakeoutEntry.id.in_(roots) | TakeoutEntry.copy_of_id.in_(roots))
-    return opened.execute(select(ExportPart.id).where(
+    zip_left = opened.execute(select(ExportPart.id).where(
         ExportPart.export_id == export.id, ExportPart.number.in_(numbers), ExportPart.filename.is_not(None) | (ExportPart.free_state == FREEING),
         ExportPart.free_state.is_distinct_from(FREED)).limit(1)).first() is not None
+    held_left = opened.execute(select(TakeoutEntry.id).where(
+        TakeoutEntry.export_id == export.id, TakeoutEntry.held_path.is_not(None), TakeoutEntry.held_state.is_distinct_from(FREED),
+        TakeoutEntry.id.in_(roots) | TakeoutEntry.copy_of_id.in_(roots)).limit(1)).first() is not None
+    return zip_left or held_left
 
 
 def recorded_hold(opened: Session, export: Export, review: ReviewItem) -> bool:
@@ -1027,6 +1031,8 @@ def release_review_hold(opened: Session, photos: Photos, person: Person, export:
         opened.rollback()
         report.failed += 1
         monitoring.log("review hold freeing failed", export=export.id, review=review.id, error=type(error).__name__)
+        note_once(opened, now, "export_hold_free_failed", f"export {export.id}", f"review {review.id}: {type(error).__name__}")
+        opened.commit()
         return False
     except Refused as refused:
         opened.rollback()
