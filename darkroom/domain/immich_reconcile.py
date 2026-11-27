@@ -8,13 +8,14 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePath
 from typing import Protocol
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
 from darkroom.domain import alerts, events, index, legacy, media, pixel_folder, pixel_source, takeout_copies
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, locks, paths, secretbox
+from darkroom.storage.schema import metadata
 from darkroom.storage.models import Event, ImmichAsset, MediaItem, Person, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 
@@ -125,6 +126,7 @@ def person_lock(settings: config.Settings, person: Person) -> Iterator[None]:
 class Run:
     done: tuple[str, ...] = ("stored",)
     retried: tuple[str, ...] = RETRIED
+    backoff = 0.0
 
     def __init__(self, opened: Session, settings: config.Settings, person: Person, client: immich.Client, key: str, queue: PixelQueue, now: float,
                  read: index.Reader) -> None:
@@ -162,27 +164,34 @@ class Run:
             raise CopyMismatch("a different file is already at the copy's name")
         return destination
 
-    def convert(self, assets: list[immich.Asset], fetched: list[Path | None]) -> None:
-        folder = f"{self.person.slug}/{pixel_source.CATALOGUE_FOLDER}/"
-        query = select(MediaItem.id).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.path.startswith(folder)).limit(1)
-        if not any(destination is not None for destination in fetched) or self.opened.execute(query).first() is None:
-            return
-        db.write_lock(self.opened)
-        for asset, destination in zip(assets, fetched, strict=True):
-            if destination is None:
+    def referenced(self, item: MediaItem) -> bool:
+        for table in metadata.tables.values():
+            if table.name == "immich_assets":
                 continue
-            target = index.relative(self.photos, destination)
-            taken = self.opened.execute(select(MediaItem.id).where(MediaItem.person_id == self.person.id, MediaItem.path == target)).first()
-            earlier = self.opened.execute(select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.sha1 == asset.sha1,
-                                                                  MediaItem.path.startswith(f"{folder}{asset.id}")).execution_options(populate_existing=True)).scalars().first()
-            if earlier is not None and taken is None:
-                earlier.path, earlier.mtime = target, None
+            for key in table.foreign_keys:
+                if key.column.table.name == "media_items" and key.column.name == "id":
+                    found = self.opened.execute(select(table.c[key.parent.name]).where(key.parent == item.id).limit(1)).first()
+                    if found is not None:
+                        return True
+        return False
+
+    def merged(self, asset: immich.Asset, item: MediaItem) -> MediaItem:
+        folder = f"{self.person.slug}/{pixel_source.CATALOGUE_FOLDER}/"
+        query = select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.sha1 == asset.sha1,
+                                        MediaItem.path.startswith(f"{folder}{asset.id}")).execution_options(populate_existing=True)
+        earlier = self.opened.execute(query).scalars().first()
+        if earlier is None or earlier.id == item.id or self.referenced(item):
+            return item
+        target = item.path
+        self.opened.delete(item)
         self.opened.flush()
+        earlier.path, earlier.mtime = target, None
+        self.opened.flush()
+        return earlier
 
     def store(self, assets: list[immich.Asset]) -> list[tuple[MediaItem, bool]]:
         fetched = [self.fetch(asset) for asset in assets]
         copies = [destination for destination in fetched if destination is not None]
-        self.convert(assets, fetched)
         report = index.index_paths(self.opened, self.photos, self.person, copies, self.now, self.read) if copies else index.IndexReport()
         if report.skipped or report.set_aside:
             raise SetAside("the index set the copy in originals aside; it is tried again in a day")
@@ -196,6 +205,7 @@ class Run:
                 item = self.opened.execute(query.execution_options(populate_existing=True)).scalar_one_or_none()
             if item is None or report.failed or item.sha1 != asset.sha1:
                 raise CopyMismatch("the copy in originals could not be checked against the Immich asset")
+            item = self.merged(asset, item)
             stored.append((item, destination is not None))
         return stored
 
@@ -278,7 +288,8 @@ class Run:
 
     def retry(self) -> None:
         waiting = self.opened.execute(
-            select(ImmichAsset.asset_id).where(ImmichAsset.person_id == self.person.id, ImmichAsset.kind == "photo", ImmichAsset.status.in_(self.retried)).order_by(ImmichAsset.id)
+            select(ImmichAsset.asset_id).where(ImmichAsset.person_id == self.person.id, ImmichAsset.kind == "photo", ImmichAsset.status.in_(self.retried),
+                                    or_(ImmichAsset.status != "failed", ImmichAsset.seen_at <= self.now - self.backoff)).order_by(ImmichAsset.id)
         ).scalars().all()
         for asset_id in waiting:
             if asset_id in self.handled:

@@ -547,7 +547,7 @@ CATALOGUE_FOLDER = "immich-catalogue"
 
 
 def on_unraid() -> ColumnElement[bool]:
-    return ~MediaItem.path.like(f"%/{CATALOGUE_FOLDER}/%")
+    return ~(MediaItem.path.like(f"%/{CATALOGUE_FOLDER}/%") & ~MediaItem.path.like("%/originals/%"))
 
 
 class LegacyFile(Base):

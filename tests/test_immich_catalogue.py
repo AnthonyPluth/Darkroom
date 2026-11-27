@@ -20,6 +20,10 @@ from tests.test_immich_reconcile import SECRET, ReconcileCase, sha1
 from tests.test_legacy import LegacyWorld
 
 
+def immich_asset_of(world, fake):
+    return next(found for found in immich.Client.at(world.settings).search_stable("key-jo", None, "2999-01-01T00:00:00.000Z") if found.id == fake.id)
+
+
 class CatalogueCase(ReconcileCase):
     def setUp(self):
         super().setUp()
@@ -318,6 +322,35 @@ class BackToOffTests(CatalogueCase):
         asset.data = good
         retried = self.run_it(at=NOW + 10800, queue=reconcile.PixelFolderQueue())
         self.assertEqual((retried.stored, self.rows()[asset.id].status, self.cataloged(), len(self.copies())), (1, "stored", [], 1))
+        self.assertTrue(pixel_source.converted(self.world.opened, self.copies()[0].id))
+
+    def test_an_original_the_indexer_already_indexed_before_the_retry_is_replaced_by_the_catalogue_item_and_each_pixel_keeps_one_copy(self):
+        asset = self.asset()
+        self.run_it()
+        (catalogue_item,) = self.cataloged()
+        self.off_again()
+        target = self.world.root / "jo" / "originals" / "immich" / reconcile.copy_name(immich_asset_of(self.world, asset))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(asset.data)
+        self.world.index_all()
+        indexed = self.world.opened.execute(select(MediaItem).where(MediaItem.path.like("jo/originals/immich/%"))).scalars().all()
+        self.assertEqual(len(indexed), 1)
+        report = self.run_it(at=NOW + 7200, queue=reconcile.PixelFolderQueue())
+        self.assertEqual((report.stored, self.rows()[asset.id].status, self.cataloged()), (1, "stored", []))
+        items = self.world.opened.execute(select(MediaItem).where(MediaItem.sha1 == sha1(asset.data), MediaItem.source == "phone")).scalars().all()
+        self.assertEqual([(item.id, item.path) for item in items], [(catalogue_item.id, f"jo/originals/immich/{target.name}")])
+        (copy,) = self.copies()
+        self.assertEqual((copy.item_id, pixel_source.converted(self.world.opened, copy.id)), (catalogue_item.id, True))
+
+    def test_a_file_the_index_sets_aside_leaves_the_catalogue_item_and_its_copy_as_they_were(self):
+        asset = self.asset(data=b"not a photo at all")
+        self.run_it()
+        (catalogue_item,) = self.cataloged()
+        self.off_again()
+        report = self.run_it(at=NOW + 7200, queue=reconcile.PixelFolderQueue())
+        self.assertEqual((report.stored, report.failed, self.rows()[asset.id].status), (0, 1, "failed"))
+        (kept,) = self.cataloged()
+        self.assertEqual((kept.id, kept.sha1, len(self.copies())), (catalogue_item.id, sha1(asset.data), 1))
         self.assertTrue(pixel_source.converted(self.world.opened, self.copies()[0].id))
 
     def test_switched_on_again_the_original_is_the_one_phone_item_and_the_catalogue_adds_no_second(self):

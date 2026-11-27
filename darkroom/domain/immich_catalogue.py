@@ -37,6 +37,7 @@ class Original:
 class CatalogueRun(immich_reconcile.Run):
     done = ("stored", CATALOGED)
     retried = ("waiting", "failed")
+    backoff = 3600.0
 
     def __init__(self, opened: Session, settings: config.Settings, person: Person, client: immich.Client, key: str, queue: immich_reconcile.PixelQueue, now: float,
                  read: index.Reader) -> None:
