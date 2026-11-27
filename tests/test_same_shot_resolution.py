@@ -8,10 +8,10 @@ from sqlalchemy import select
 
 import run
 from darkroom.domain import managed_ingest, managed_upload, pixel_source, same_shot, same_shot_resolution as resolution
-from darkroom.domain.ingest import finish_export
+from darkroom.domain.ingest import finish_export, hold_apply, same_shot_apply
 from darkroom.providers import immich
 from darkroom.storage import db
-from darkroom.storage.models import (Event, ManagedAssetOrigin, ManagedAssetVersion, ManagedBackfillItem, ManagedImportReceipt,
+from darkroom.storage.models import (Alert, Event, ManagedAssetOrigin, ManagedAssetVersion, ManagedBackfillItem, ManagedImportReceipt,
                                      MediaItem)
 from tests.import_world import DAY, NOW
 from tests.privacy import no_leaks
@@ -126,6 +126,30 @@ class UploadTests(Held, unittest.TestCase):
         finish_export.finish_ready(world.opened, world.settings, LATER + DAY + 20, world.tools)
         self.assertEqual(world.receipts(), {"IMG_5001.JPG": ("committed", "created", None)})
         self.assertIsNotNone(world.alert(f"managed:same-shot-upload:{hold.id}").closed)
+
+    def test_an_unreadable_copy_or_an_unreachable_immich_keeps_the_hold_released_and_alerts_once_after_a_day(self):
+        world, _, _, hold = self.held()
+        self.act(world, hold, "upload")
+        tick = {"unreadable": mock.patch.object(hold_apply, "source_of", side_effect=hold_apply.UnreadableSource),
+                "unreachable": mock.patch.object(managed_ingest, "reader_of", side_effect=immich.ImmichFailed("down"))}
+        for number, (name, patched) in enumerate(tick.items()):
+            with self.subTest(name), patched:
+                finish_export.finish_ready(world.opened, world.settings, LATER + 10 + number, world.tools)
+                self.assertIsNone(world.alert(f"managed:same-shot-upload:{hold.id}"))
+                finish_export.finish_ready(world.opened, world.settings, LATER + DAY + 10 + number, world.tools)
+                self.assertIn("could not complete the upload", world.alert(f"managed:same-shot-upload:{hold.id}").message)
+            world.opened.execute(Alert.__table__.delete())
+            world.opened.commit()
+        self.assertEqual((self.posts(world), world.receipts()), ([], {"IMG_5001.JPG": ("prepared", None, None)}))
+
+    def test_a_hold_that_is_no_longer_released_when_its_turn_comes_is_not_sent(self):
+        world, _, _, hold = self.held()
+        self.act(world, hold, "upload")
+        self.assertEqual(same_shot_apply.due(world.opened), [hold.receipt_id])
+        self.act(world, hold, "undo", at=LATER + 1)
+        same_shot_apply.send_one(world.opened, world.settings, world.photos, hold.receipt_id, LATER + 2, world.tools, mock.Mock(side_effect=AssertionError))
+        same_shot_apply.send_compound(world.opened, world.settings, world.photos, 1, hold.id, LATER + 2, world.tools)
+        self.assertEqual((same_shot_apply.due(world.opened), self.posts(world), world.receipts()), ([], [], {"IMG_5001.JPG": ("prepared", None, "same_shot")}))
 
 
 def with_asset(world):
@@ -252,6 +276,20 @@ class RepresentedTests(Held, unittest.TestCase):
         self.assertEqual(str(raised.exception), resolution.DEPENDED)
         world.opened.rollback()
         self.assertEqual((holds(world)[0].status, len(world.opened.execute(select(ManagedAssetOrigin)).all())), ("represented", 1))
+
+    def test_a_version_recorded_with_other_bytes_refuses_and_a_damaged_hold_lists_without_candidates(self):
+        world, _, found, hold = self.held()
+        world.opened.add(ManagedAssetVersion(person_id=world.ids["jo"], owner_id=OWNER, asset_id=found.id, sha1=same_shot_sha(found), bytes=1, kind="IMAGE",
+                                             state="bytes_verified", metadata_snapshot="{}", seen_at=NOW, bytes_verified_at=NOW))
+        world.opened.commit()
+        self.refused(world, hold, resolution.Conflict, resolution.CHANGED, asset=found.id)
+        hold.candidates = "not json"
+        world.opened.get(ManagedImportReceipt, hold.receipt_id).expected_metadata = " { } "
+        world.opened.commit()
+        (row,) = resolution.listing(world.opened, world.jo())
+        self.assertEqual((row["candidates"], row["taken"], row["edited"]), ([], None, False))
+        self.assertEqual(resolution.lines([row], "http://immich.test"), [f"hold {hold.id}: taken at an unknown time"])
+        self.refused(world, hold, resolution.Refused, resolution.NOT_A_CANDIDATE, asset=found.id)
 
 
 def same_shot_sha(found):

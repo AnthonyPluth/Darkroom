@@ -51,21 +51,21 @@ def source_key(hold: ManagedSameShotHold) -> str:
     return f"{same_shot.DECISION_PREFIX}{hold.id}"
 
 
-def candidates_of(hold: ManagedSameShotHold) -> dict[str, dict[str, object]]:
+def stored_of(hold: ManagedSameShotHold) -> dict[str, object]:
     try:
         stored = json.loads(hold.candidates)
     except ValueError:
         return {}
-    found = stored.get("candidates") if isinstance(stored, dict) else None
+    return stored if isinstance(stored, dict) else {}
+
+
+def candidates_of(hold: ManagedSameShotHold) -> dict[str, dict[str, object]]:
+    found = stored_of(hold).get("candidates")
     return {str(each["asset_id"]): each for each in found if isinstance(each, dict) and "asset_id" in each} if isinstance(found, list) else {}
 
 
 def crowded(hold: ManagedSameShotHold) -> bool:
-    try:
-        stored = json.loads(hold.candidates)
-    except ValueError:
-        return False
-    return isinstance(stored, dict) and stored.get("crowded") is True
+    return stored_of(hold).get("crowded") is True
 
 
 def held_of(opened: Session, person_id: int, hold_id: int) -> ManagedSameShotHold:
@@ -77,10 +77,7 @@ def held_of(opened: Session, person_id: int, hold_id: int) -> ManagedSameShotHol
 
 
 def receipt_of(opened: Session, hold: ManagedSameShotHold) -> ManagedImportReceipt:
-    found = opened.get(ManagedImportReceipt, hold.receipt_id, populate_existing=True)
-    if found is None:
-        raise NoSuchHold(hold.id)
-    return found
+    return opened.execute(select(ManagedImportReceipt).where(ManagedImportReceipt.id == hold.receipt_id).execution_options(populate_existing=True)).scalar_one()
 
 
 def unsent_held(receipt: ManagedImportReceipt) -> bool:
@@ -92,7 +89,7 @@ def listing(opened: Session, person: Person) -> list[dict[str, object]]:
     query = select(ManagedSameShotHold).where(ManagedSameShotHold.person_id == person.id, ManagedSameShotHold.status == "pending").order_by(ManagedSameShotHold.id)
     for hold in opened.execute(query).scalars():
         receipt = receipt_of(opened, hold)
-        found.append({"id": hold.id, "taken": taken_at(receipt), "edited": json.loads(hold.candidates).get("edited") is True, "crowded": crowded(hold),
+        found.append({"id": hold.id, "taken": taken_at(receipt), "edited": stored_of(hold).get("edited") is True, "crowded": crowded(hold),
                       "candidates": [{key: each[key] for key in ("asset_id", "library", "camera", "size", "more_pixels") if key in each}
                                      for each in candidates_of(hold).values()]})
     return found
@@ -157,8 +154,6 @@ def read_back(settings: config.Settings, client: immich.Client | None, person: P
         if getattr(failure, "status", None) == 404:
             raise Conflict(GONE) from None
         raise Unavailable(UNAVAILABLE) from None
-    if size <= 0:
-        raise Conflict(CHANGED)
     return found, size
 
 

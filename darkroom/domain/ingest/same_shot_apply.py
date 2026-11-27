@@ -105,13 +105,10 @@ def send_compound(opened: Session, settings: config.Settings, photos: Photos, co
     managed_ingest.send_kept_compound(opened, settings, photos, compound, now, tools.immich)
     opened.expire_all()
     compound = opened.get(ManagedCompound, compound_id)
-    hold = opened.get(ManagedSameShotHold, hold_id)
-    receipt = None if hold is None else opened.get(ManagedImportReceipt, hold.receipt_id)
-    if compound is None or hold is None or receipt is None:
-        return
-    if compound.committed_at is not None:
+    receipt = opened.get(ManagedImportReceipt, hold.receipt_id)
+    if compound is not None and compound.committed_at is not None:
         db.write_lock(opened)
         alerts.close(opened, upload_key(hold), now)
         opened.commit()
-    else:
+    elif receipt is not None:
         waiting(opened, settings, hold, receipt, now, tools)
