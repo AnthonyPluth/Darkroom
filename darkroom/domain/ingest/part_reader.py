@@ -8,7 +8,7 @@ import zipfile
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import IO, BinaryIO, Literal
+from typing import IO, BinaryIO, Literal, NamedTuple, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -308,8 +308,29 @@ def scratch_name(row: TakeoutEntry) -> str:
     return f"{row.id}{suffix if SCRATCH_SUFFIX.match(suffix) else ''}"
 
 
-def batches_of(rows: list[TakeoutEntry], files: int, size: int) -> Iterator[list[TakeoutEntry]]:
-    batch: list[TakeoutEntry] = []
+class Weighed(Protocol):
+    @property
+    def bytes(self) -> int: ...
+
+
+class Weight(NamedTuple):
+    id: int
+    bytes: int
+
+
+def listed_media_weights(opened: Session, export: Export, part: ExportPart) -> list[Weight]:
+    query = select(TakeoutEntry.id, TakeoutEntry.bytes).where(
+        TakeoutEntry.export_id == export.id, TakeoutEntry.part_number == part.number, TakeoutEntry.kind == "media", TakeoutEntry.outcome == "listed"
+    ).order_by(TakeoutEntry.id)
+    return [Weight(*found) for found in opened.execute(query)]
+
+
+def entries_by_id(opened: Session, ids: Sequence[int]) -> list[TakeoutEntry]:
+    return list(opened.execute(select(TakeoutEntry).where(TakeoutEntry.id.in_(ids)).order_by(TakeoutEntry.id)).scalars())
+
+
+def batches_of[Row: Weighed](rows: Sequence[Row], files: int, size: int) -> Iterator[list[Row]]:
+    batch: list[Row] = []
     held = 0
     for row in rows:
         if batch and (len(batch) >= files or held + row.bytes > size):
@@ -383,11 +404,11 @@ def stream_batch(opened: Session, photos: Photos, person: Person, export: Export
 
 def stream_media(opened: Session, photos: Photos, person: Person, export: Export, part: ExportPart, archive: zipfile.ZipFile,
                  listed: list[Listed], each_batch: EachBatch | None, files: int, size: int, read: PartRead) -> None:
-    rows = [row for row in recorded(opened, export, part) if row.kind == "media" and row.outcome == "listed"]
+    plan = [[weight.id for weight in batch] for batch in batches_of(listed_media_weights(opened, export, part), files, size)]
     infos = {entry.name: entry.info for entry in listed}
     folder = unpack.staging_name(export)
-    for batch in batches_of(rows, files, size):
-        streamed = stream_batch(opened, photos, person, export, archive, batch, infos, part)
+    for ids in plan:
+        streamed = stream_batch(opened, photos, person, export, archive, entries_by_id(opened, ids), infos, part)
         if each_batch is not None:
             each_batch(opened, streamed)
         paths.sweep_scratch(photos, person.slug, folder)
