@@ -449,6 +449,66 @@ rules:
       include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
       exclude: ["/darkroom/storage/paths.py"]
 
+  - id: darkroom-review-hold-one-remover
+    message: >-
+      A managed export's review hold may be the only copy of a Takeout photo outside Immich, so only
+      darkroom/storage/paths.py removes, renames or replaces one on release: remove_review_hold, which refuses anything
+      but a plain file name directly in _inbox/<person>/review/export-<id>/, through Photos.removable, through folders
+      opened without following links, and only the file whose identity the proof checked (AGENTS.md, promise 2; #545).
+      The 14-day cleanup of an old-folder import goes through paths.remove_inbox_file. Go through part_free.free_ready
+      instead.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    pattern-sources:
+      - pattern: $P.review_hold(...)
+      - pattern: paths.review_hold_path(...)
+      - pattern: paths.review_hold_at(...)
+      - pattern: paths.REVIEW_STORE
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: os.$F($D, ...)
+              - pattern: os.$F($A, $D, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(remove|unlink|rmdir|removedirs|rename|renames|replace|truncate)$
+          - focus-metavariable: $D
+      - patterns:
+          - pattern-either:
+              - pattern: shutil.move($D, ...)
+              - pattern: shutil.move($A, $D, ...)
+              - pattern: shutil.rmtree($D, ...)
+          - focus-metavariable: $D
+      - patterns:
+          - pattern: $D.$F(...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(unlink|rmdir|rename|replace|write_bytes|write_text|move|move_into)$
+          - focus-metavariable: $D
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py"]
+
+  - id: darkroom-review-hold-one-caller
+    message: >-
+      A managed export's review hold is released only by darkroom/domain/ingest/part_free.py, which proves the hold is
+      the recorded file, that no zip of the export still needs it and that its dependency set is covered by a recovery
+      point, journals the delete (freeing, then freed) and re-checks under the write lock, with a fresh Immich read, before it
+      calls paths.remove_review_hold (AGENTS.md, promise 2; #545). Call part_free.free_ready instead.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: $M.$F(...)
+          - pattern: $F(...)
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^remove_review_hold$
+    paths:
+      include: ["/darkroom/", "/darkroom_browser/", "/run.py"]
+      exclude: ["/darkroom/storage/paths.py", "/darkroom/domain/ingest/part_free.py"]
+
   - id: darkroom-absence-through-entry-absent
     message: >-
       paths.inbox_identity and paths.library_identity return None for a link, a hard-linked file or a folder as well as

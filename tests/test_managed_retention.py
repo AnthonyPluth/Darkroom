@@ -369,6 +369,48 @@ class PointTests(ProofWorld):
             self.assertIn("  release_off: 2", out)
             print(out)
 
+    def test_a_covered_resolved_hold_counts_as_release_pending_only_with_release_on(self):
+        self.owner_records()
+        self.point()
+        self.review(status="kept_both")
+        self.receipt(key="review:1")
+        photos = Photos(Path(self.environment["DARKROOM_PHOTOS_ROOT"]))
+        with db.session(self.engine, writing=True) as opened:
+            self.assertEqual(retention_gate.export_refusals(opened, 1, NOW), Counter({"release_off": 3}))
+            self.assertEqual(retention_gate.export_refusals(opened, 1, NOW, release_enabled=True), Counter({"release_pending": 3}))
+            self.assertIsNone(retention_gate.cleanup_detail(opened, 1, NOW, release_enabled=True))
+            self.assertEqual(retention_gate.cleanup_detail(opened, 1, NOW), "release_off")
+            self.assertEqual(retention_gate.recovery_status(opened, NOW, release_enabled=True),
+                             ["Latest recovery points: 1 (succeeded)", "Managed files waiting:", "  release_pending: 3"])
+            self.assertEqual(retention_gate.recovery_status(opened, NOW), ["Latest recovery points: 1 (succeeded)", "Managed files waiting:", "  release_off: 3"])
+            report = cleanup.CleanupReport()
+            cleanup.clean_export(opened, photos, opened.get_one(Export, 1), NOW, report, release_enabled=True)
+            self.assertEqual((report.kept, report.holds, report.parts), (1, 0, 0))
+            self.assertEqual(opened.execute(select(Event.detail).where(Event.type == "cleanup_kept")).all(), [])
+
+    def test_a_hold_is_counted_by_its_own_refusal_with_release_on(self):
+        self.owner_records()
+        self.point()
+        self.review(status="kept_both")
+        with db.session(self.engine, writing=True) as opened:
+            self.assertEqual(retention_gate.export_refusals(opened, 1, NOW, release_enabled=True), Counter({"receipt_not_committed": 3}))
+        self.receipt(key="review:1")
+        self.update(ReviewItem, resolved_at=NOW - 14 * DAY + 1)
+        with db.session(self.engine, writing=True) as opened:
+            self.assertEqual(retention_gate.export_refusals(opened, 1, NOW, release_enabled=True), Counter({"release_pending": 2, "retention_clock": 1}))
+
+    def test_a_skipped_review_with_a_keeper_missing_googles_place_is_pending_with_release_on_and_held_back_with_it_off(self):
+        self.owner_records()
+        self.keeper(snapshot="{}")
+        self.point()
+        self.review(status="skipped")
+        self.update(ReviewItem, sidecar_json=json.dumps(SIDECAR))
+        with db.session(self.engine, writing=True) as opened:
+            on = retention_gate.export_refusals(opened, 1, NOW, release_enabled=True)
+            off = retention_gate.export_refusals(opened, 1, NOW)
+        self.assertEqual(on, Counter({"release_pending": 3}))
+        self.assertEqual(off, Counter({"metadata_not_in_immich": 3}))
+
     def test_no_rehearsal_keeps_the_existing_cleanup_message(self):
         self.withdraw("rehearsal")
         with db.session(self.engine) as opened:

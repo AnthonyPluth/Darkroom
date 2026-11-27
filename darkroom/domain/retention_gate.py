@@ -817,9 +817,8 @@ def export_refusals(opened: Session, export_id: int, now: float, coverage: Cover
     checked = Coverage(opened, now) if coverage is None else coverage
     reasons: Counter[str] = Counter()
     for unit in units(opened, export_id):
-        can_release = release_enabled and not isinstance(unit, ReviewItem)
-        reason = unit_refusal(opened, unit, now, True, checked, confirm_metadata_live=can_release)
-        reasons[reason or (RELEASE_PENDING if can_release else RELEASE_OFF)] += 1
+        reason = unit_refusal(opened, unit, now, True, checked, confirm_metadata_live=release_enabled)
+        reasons[reason or (RELEASE_PENDING if release_enabled else RELEASE_OFF)] += 1
     return reasons
 
 

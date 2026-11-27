@@ -782,13 +782,59 @@ class MigrationTests(unittest.TestCase):
             command.downgrade(config, "0062")
             raise RuntimeError("abort downgrade")
         with self.engine.begin() as connection:
-            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0063")
+            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0064")
             for table, _, point, _ in columns:
                 self.assertIsNone(connection.exec_driver_sql(f"SELECT {point} FROM {table}").scalar_one())
             config.attributes["connection"] = connection
             command.downgrade(config, "0062")
             for table, state, _, before in columns:
                 self.assertEqual(connection.exec_driver_sql(f"SELECT {state} FROM {table}").scalar_one(), before)
+
+    def test_0064_review_hold_journal_keeps_existing_reviews_and_references_the_point(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0063")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            connection.exec_driver_sql("INSERT INTO google_accounts (id, email, default_person_id, created) VALUES (1, 'a@x.test', 1, 1.0)")
+            connection.exec_driver_sql("INSERT INTO exports (id, account_id, kind) VALUES (1, 1, 'manual')")
+            connection.exec_driver_sql("INSERT INTO dedupe_decisions (id, export_id, account_id, person_id, source_path, tier, reason, decided_by, decided_at) "
+                                       "VALUES (1, 1, 1, 1, 'a.jpg', 4, 'near', 'auto', 1.0)")
+            connection.exec_driver_sql("INSERT INTO review_items (id, decision_id, status, hold_path) VALUES (1, 1, 'pending', '_inbox/jo/review/export-1/a.jpg')")
+            connection.exec_driver_sql("INSERT INTO recovery_points (id, opened_at, state, manifest_count, manifest_sha256) "
+                                       f"VALUES (1, 1.0, 'open', 0, '{'a' * 64}')")
+        with self.assertRaisesRegex(RuntimeError, "abort upgrade"), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0064")
+            raise RuntimeError("abort upgrade")
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0063")
+            self.assertEqual({"hold_free_state", "hold_release_point_id"} & {column["name"] for column in inspect(connection).get_columns("review_items")}, set())
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(connection.exec_driver_sql("SELECT status, hold_path, hold_free_state, hold_release_point_id FROM review_items").one(),
+                             ("pending", "_inbox/jo/review/export-1/a.jpg", None, None))
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("UPDATE review_items SET hold_release_point_id = 99")
+            connection.exec_driver_sql("UPDATE review_items SET hold_free_state = 'freeing', hold_release_point_id = 1")
+        with self.assertRaises(IntegrityError), self.engine.begin() as connection:
+            connection.exec_driver_sql("DELETE FROM recovery_points WHERE id = 1")
+        with self.assertRaisesRegex(RuntimeError, "managed review hold journals are kept"), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0063")
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("UPDATE review_items SET hold_free_state = NULL, hold_release_point_id = NULL")
+        with self.assertRaisesRegex(RuntimeError, "abort downgrade"), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0063")
+            raise RuntimeError("abort downgrade")
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0064")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0063")
+            self.assertEqual(connection.exec_driver_sql("SELECT status, hold_path FROM review_items").one(), ("pending", "_inbox/jo/review/export-1/a.jpg"))
+        db.migrate(self.engine)
 
     def test_0054_retention_attestations_hold_one_active_record_of_each_kind_in_its_shape_and_keep_them_on_undo(self):
         config = db.alembic_config(self.engine)

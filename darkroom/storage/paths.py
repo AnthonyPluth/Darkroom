@@ -49,6 +49,7 @@ SHARED_FOLDER_MODE = 0o2770
 INBOX = "_inbox"
 SCRATCH = "scratch"
 HELD_STORE = "held"
+REVIEW_STORE = "review"
 HELD_FILE = re.compile(r"^[0-9]{1,18}(?:\.[a-z0-9]{1,10})?$")
 SCRATCH_FILE = re.compile(r"^(?:[0-9]{1,18}(?:\.[a-z0-9]{1,10})?|\.write-once-[0-9a-f]{16})$")
 PLACEMENTS = ".placements"
@@ -212,7 +213,7 @@ class Photos:
         return self.in_the_inbox(self.person_part(person), self.name_part(export), PLACEMENTS)
 
     def review_hold(self, person: str, export: str) -> Path:
-        return self.in_the_inbox(self.person_part(person), "review", self.name_part(export))
+        return self.in_the_inbox(self.person_part(person), REVIEW_STORE, self.name_part(export))
 
     def uploads_tmp(self, person: str) -> Path:
         return self.inside(self.person_part(person), "originals", UPLOADS_TMP)
@@ -2099,6 +2100,10 @@ class NotAHeldCopy(ValueError):
     pass
 
 
+class NotAReviewHold(ValueError):
+    pass
+
+
 Identity = tuple[int, int, int, int, int]
 PART_ZIP_SUFFIX = ".zip"
 
@@ -2124,6 +2129,19 @@ def held_copy_at(photos: Photos, relative: str, export: str) -> Path:
     if len(parts) != 5 or parts[0] != INBOX or parts[2] != HELD_STORE or parts[3] != export:
         raise NotAHeldCopy("not a held copy of this export")
     return held_copy_path(photos, parts[1], export, parts[4])
+
+
+def review_hold_path(photos: Photos, person: str, export: str, name: str) -> Path:
+    if not 0 < len(name.encode()) <= 255 or "/" in name or "\0" in name or name.startswith("."):
+        raise NotAReviewHold("not a review hold file name")
+    return photos.review_hold(person, export) / name
+
+
+def review_hold_at(photos: Photos, relative: str, export: str) -> Path:
+    parts = relative.split("/")
+    if len(parts) != 5 or parts[0] != INBOX or parts[2] != REVIEW_STORE or parts[3] != export:
+        raise NotAReviewHold("not a review hold of this export")
+    return review_hold_path(photos, parts[1], export, parts[4])
 
 
 def fingerprint(handle: BinaryIO) -> tuple[str, Identity]:
@@ -2238,6 +2256,10 @@ def remove_part_zip(photos: Photos, person: str, export: str, filename: str, exp
 
 def remove_held_copy(photos: Photos, person: str, export: str, name: str, expected: Identity) -> int | None:
     return remove_checked(photos, held_copy_path(photos, person, export, name), expected, NotAHeldCopy)
+
+
+def remove_review_hold(photos: Photos, person: str, export: str, name: str, expected: Identity) -> int | None:
+    return remove_checked(photos, review_hold_path(photos, person, export, name), expected, NotAReviewHold)
 
 
 class PlacementRefused(LinkRefused):

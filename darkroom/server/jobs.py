@@ -363,8 +363,8 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
                 part_ingest.run_queued(opened, current, at, beat=beat)
                 beat.step("finishing exports")
                 finish_export.finish_ready(opened, current, at)
-        if freed.parts or freed.held or freed.failed:
-            monitoring.log("zips freed", parts=freed.parts, held=freed.held, kept=freed.kept, failed=freed.failed, bytes=freed.bytes)
+        if freed.parts or freed.held or freed.holds or freed.failed:
+            monitoring.log("zips freed", parts=freed.parts, held=freed.held, holds=freed.holds, kept=freed.kept, failed=freed.failed, bytes=freed.bytes)
 
     def watch_imports(at: float) -> None:
         current = live()
