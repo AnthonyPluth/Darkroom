@@ -181,11 +181,20 @@ class Run:
             if (copy.sha1, copy.bytes) != (item.sha1, item.bytes):
                 continue
             if copy.pixel_id in taken:
-                self.note_duplicate(copy, taken[copy.pixel_id])
+                self.settle_pair(copy, taken[copy.pixel_id], item)
                 continue
             pixel_source.move_to_item(self.opened, copy, item)
             taken[copy.pixel_id] = copy
         self.opened.flush()
+
+    def settle_pair(self, catalogue_copy: PixelCopy, own: PixelCopy, item: MediaItem) -> None:
+        if not pixel_source.sent(catalogue_copy):
+            pixel_source.drop_unsent(self.opened, catalogue_copy)
+        elif not pixel_source.sent(own):
+            pixel_source.drop_unsent(self.opened, own)
+            pixel_source.move_to_item(self.opened, catalogue_copy, item)
+        else:
+            self.note_duplicate(catalogue_copy, own)
 
     def note_duplicate(self, catalogue_copy: PixelCopy, own: PixelCopy) -> None:
         subject, detail = f"pixel {catalogue_copy.pixel_id}", f"copies {catalogue_copy.id} and {own.id} hold the same photo"

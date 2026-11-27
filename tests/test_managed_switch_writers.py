@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import io
 import os
 import tempfile
@@ -67,11 +68,17 @@ class ReconcilePausedTests(ReconcileWorld):
                 self.assertEqual(self.world.opened.execute(select(Event).where(Event.type.in_(("immich_reconciled", "immich_reconcile_failed")))).all(), [])
 
     def test_a_run_for_an_on_or_stopped_person_is_not_paused_but_catalogue_only(self):
-        self.photo()
+        owner = "11111111-1111-4111-8111-111111111111"
+        people = self.world.fake.state.people
+        people[:] = [dataclasses.replace(person, user_id=owner) if person.slug == "jo" else person for person in people]
+        self.world.fake.state.version, self.world.fake.state.permissions = "v3.4.1", ("asset.download", "asset.read", "asset.upload", "server.about", "user.read")
+        self.jo.immich_user_id = owner
+        self.world.opened.commit()
+        self.photo().owner_id = owner
         for state in ("on", "stopped"):
             with self.subTest(state=state):
                 self.set_state(state)
-                self.assertFalse(self.run_it().paused)
+                self.assertEqual((self.run_it().paused, len(self.rows()) > 0), (False, True))
                 self.assertEqual(self.originals(), [name for name in self.originals() if "/originals/immich/" not in name])
 
     def test_a_run_with_the_switch_off_still_runs(self):

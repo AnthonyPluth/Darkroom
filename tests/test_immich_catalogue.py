@@ -536,20 +536,53 @@ class BackToOffTests(CatalogueCase):
         (copy,) = self.copies()
         self.assertEqual((copy.item_id, pixel_source.converted(self.world.opened, copy.id)), (indexed.id, True))
 
-    def test_an_indexed_original_that_already_has_a_copy_on_the_pixel_is_kept_and_nothing_is_deleted(self):
-        catalogue_item, indexed = self.indexed_original(self.asset())
-        (managed,) = self.copies()
-        self.world.opened.add(PixelCopy(pixel_id=managed.pixel_id, item_id=indexed.id, person_id=self.jo.id, state="queued", bytes=indexed.bytes, sha1=indexed.sha1, queued_at=NOW))
+    def own_copy(self, indexed, sent=False):
+        managed = self.copies()[0]
+        own = PixelCopy(pixel_id=managed.pixel_id, item_id=indexed.id, person_id=self.jo.id, state="placed" if sent else "queued", bytes=indexed.bytes, sha1=indexed.sha1,
+                        queued_at=NOW, placed_at=NOW if sent else None)
+        self.world.opened.add(own)
+        self.world.opened.commit()
+        return managed, own
+
+    def test_an_original_that_already_has_an_unsent_copy_leaves_one_copy_when_the_catalogue_copy_is_unsent(self):
+        _, indexed = self.indexed_original(self.asset())
+        self.own_copy(indexed)
+        self.finish()
+        self.world.opened.expire_all()
+        (copy,) = self.copies()
+        self.assertEqual((copy.item_id, pixel_source.converted(self.world.opened, copy.id), self.world.opened.execute(select(ManagedPixelSource)).all()), (indexed.id, False, []))
+        self.assertIsNotNone(self.world.opened.get(MediaItem, indexed.id))
+
+    def test_a_sent_catalogue_copy_stays_and_the_unsent_copy_of_the_original_is_dropped(self):
+        _, indexed = self.indexed_original(self.asset())
+        managed, _ = self.own_copy(indexed)
+        managed.state, managed.placed_at, managed.name = "placed", NOW, "immich/x.jpg"
         self.world.opened.commit()
         self.finish()
         self.world.opened.expire_all()
-        self.assertEqual(sorted(copy.item_id for copy in self.copies()), sorted([catalogue_item.id, indexed.id]))
-        self.assertTrue(pixel_source.converted(self.world.opened, managed.id))
-        self.assertIsNotNone(self.world.opened.get(MediaItem, indexed.id))
+        (copy,) = self.copies()
+        self.assertEqual((copy.id, copy.item_id, copy.name, pixel_source.converted(self.world.opened, copy.id)), (managed.id, indexed.id, "immich/x.jpg", True))
+
+    def test_two_sent_copies_of_one_photo_are_both_kept_and_it_is_recorded_once(self):
+        _, indexed = self.indexed_original(self.asset())
+        managed, own = self.own_copy(indexed, sent=True)
+        managed.state, managed.placed_at = "placed", NOW
+        self.world.opened.commit()
+        self.finish()
         again = self.finish()
         self.assertEqual(again.stored, 0)
+        self.world.opened.expire_all()
+        self.assertEqual(len(self.copies()), 2)
         found = self.world.opened.execute(select(Event.subject, Event.detail).where(Event.type == "pixel_copy_duplicate_kept")).all()
-        self.assertEqual(found, [(f"pixel {managed.pixel_id}", f"copies {managed.id} and {next(c.id for c in self.copies() if c.id != managed.id)} hold the same photo")])
+        self.assertEqual(found, [(f"pixel {managed.pixel_id}", f"copies {managed.id} and {own.id} hold the same photo")])
+        self.assertIsNotNone(self.world.opened.get(MediaItem, indexed.id))
+
+    def test_a_copy_that_was_sent_is_never_dropped(self):
+        _, indexed = self.indexed_original(self.asset())
+        managed, _ = self.own_copy(indexed)
+        managed.state, managed.placed_at = "placed", NOW
+        with self.assertRaises(pixel_source.NotManaged):
+            pixel_source.drop_unsent(self.world.opened, managed)
 
     def test_switched_on_again_the_original_is_the_one_phone_item_and_the_catalogue_adds_no_second(self):
         self.asset()

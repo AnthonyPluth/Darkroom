@@ -15,6 +15,9 @@ from tests.shared import add_person
 from tests.takeout_fixtures import standard_export
 
 
+OWNER = "11111111-1111-4111-8111-111111111111"
+
+
 class CliCase(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -314,11 +317,12 @@ class ReconcileImmichCommandTests(CliCase):
         standard_export(Photos(self.photos).manual_inbox("jo"))
         self.assertEqual(self.call("--person", "jo")[0], 0)
         data = fixtures.make_jpeg(self.root / "scratch.jpg", taken="2015:01:01 10:00:00", offset="+00:00", colour=(4, 5, 6)).read_bytes()
-        with FakeImmich([FakePerson("jo", "u-jo", "lib-jo", "key-jo")], "admin") as fake:
-            fake.add_asset(FakeAsset(id="a1", owner_id="u-jo", data=data))
+        with FakeImmich([FakePerson("jo", OWNER, "lib-jo", "key-jo")], "admin") as fake:
+            fake.state.version, fake.state.permissions = "v3.4.1", ("asset.download", "asset.read", "asset.upload", "server.about", "user.read")
+            fake.add_asset(FakeAsset(id="22222222-2222-4222-8222-222222222222", owner_id=OWNER, data=data))
             with db.session(self.engine) as opened:
                 person = opened.query(Person).filter(Person.slug == "jo").one()
-                person.immich_user_id = "u-jo"
+                person.immich_user_id = OWNER
                 person.managed_imports = "on"
                 person.immich_api_key_sealed = secretbox.seal("key-jo", "k")
             with mock.patch.dict(os.environ, {"IMMICH_URL": fake.url}):

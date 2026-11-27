@@ -23,12 +23,24 @@ class NotManaged(ValueError):
 
 def move_to_item(opened: Session, copy: PixelCopy, item: MediaItem) -> None:
     kept = [{column.name: getattr(source, column.name) for column in ManagedPixelSource.__table__.columns if column.name != "id"}
-            for source in opened.execute(select(ManagedPixelSource).where(ManagedPixelSource.copy_id == copy.id)).scalars().all()]
+            for source in opened.execute(select(ManagedPixelSource).where(ManagedPixelSource.copy_id == copy.id).order_by(ManagedPixelSource.id)).scalars().all()]
     opened.execute(delete(ManagedPixelSource).where(ManagedPixelSource.copy_id == copy.id))
     copy.item_id = item.id
     opened.flush()
     for values in kept:
         opened.add(ManagedPixelSource(**{**values, "item_id": item.id}))
+    opened.flush()
+
+
+def sent(copy: PixelCopy) -> bool:
+    return copy.placed_at is not None or copy.state == "placed"
+
+
+def drop_unsent(opened: Session, copy: PixelCopy) -> None:
+    if sent(copy):
+        raise NotManaged("a copy that was sent to a Pixel is never dropped")
+    retire(opened, select(PixelCopy.id).where(PixelCopy.id == copy.id))
+    opened.execute(delete(PixelCopy).where(PixelCopy.id == copy.id))
     opened.flush()
 
 
