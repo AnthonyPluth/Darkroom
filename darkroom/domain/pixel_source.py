@@ -4,13 +4,18 @@ import json
 import re
 from pathlib import PurePosixPath
 
-from sqlalchemy import Select, delete, select
+from typing import TYPE_CHECKING, Any, cast
+
+from sqlalchemy import Select, and_, delete, select
 from sqlalchemy.orm import Session
 
 from darkroom.storage import models, paths
 from darkroom.storage.models import (Export, GoogleAccount, ManagedAssetOrigin, ManagedAssetVersion, ManagedImportIntent, ManagedPixelSource, MediaItem, Person,
                                      Pixel, PixelCopy)
 from darkroom.storage.paths import Photos
+
+if TYPE_CHECKING:
+    from sqlalchemy import CursorResult
 
 VERIFIED = "bytes_verified"
 SUFFIX = re.compile(r"\.[a-z0-9]{1,10}")
@@ -37,11 +42,12 @@ def sent(copy: PixelCopy) -> bool:
 
 
 def drop_unsent(opened: Session, copy: PixelCopy) -> None:
-    if sent(copy):
-        raise NotManaged("a copy that was sent to a Pixel is never dropped")
-    retire(opened, select(PixelCopy.id).where(PixelCopy.id == copy.id))
-    opened.execute(delete(PixelCopy).where(PixelCopy.id == copy.id))
-    opened.flush()
+    unsent = and_(PixelCopy.id == copy.id, PixelCopy.placed_at.is_(None), PixelCopy.state.in_(("queued", "pruned")))
+    with opened.begin_nested():
+        opened.execute(delete(ManagedPixelSource).where(ManagedPixelSource.copy_id.in_(select(PixelCopy.id).where(unsent))))
+        dropped = cast("CursorResult[Any]", opened.execute(delete(PixelCopy).where(unsent))).rowcount
+        if dropped != 1:
+            raise NotManaged("a copy that was sent to a Pixel is never dropped")
 
 
 def catalogued(path: str) -> bool:

@@ -74,11 +74,11 @@ class ReconcilePausedTests(ReconcileWorld):
         self.world.fake.state.version, self.world.fake.state.permissions = "v3.4.1", ("asset.download", "asset.read", "asset.upload", "server.about", "user.read")
         self.jo.immich_user_id = owner
         self.world.opened.commit()
-        self.photo().owner_id = owner
+        self.photo(id="33333333-3333-4333-8333-333333333333").owner_id = owner
         for state in ("on", "stopped"):
             with self.subTest(state=state):
                 self.set_state(state)
-                self.assertEqual((self.run_it().paused, len(self.rows()) > 0), (False, True))
+                self.assertEqual((self.run_it().paused, {row.status for row in self.rows().values()}), (False, {"cataloged"}))
                 self.assertEqual(self.originals(), [name for name in self.originals() if "/originals/immich/" not in name])
 
     def test_a_run_with_the_switch_off_still_runs(self):

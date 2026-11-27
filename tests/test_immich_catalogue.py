@@ -5,7 +5,7 @@ import unittest
 import uuid
 from unittest import mock
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from darkroom.domain import retention_gate
 from darkroom.domain import backfill, dedupe, immich_catalogue, index, legacy, pixel_folder, pixel_source, status
@@ -576,6 +576,40 @@ class BackToOffTests(CatalogueCase):
         found = self.world.opened.execute(select(Event.subject, Event.detail).where(Event.type == "pixel_copy_duplicate_kept")).all()
         self.assertEqual(found, [(f"pixel {managed.pixel_id}", f"copies {managed.id} and {own.id} hold the same photo")])
         self.assertIsNotNone(self.world.opened.get(MediaItem, indexed.id))
+
+    def place_behind_its_back(self, copy):
+        self.world.opened.execute(update(PixelCopy).where(PixelCopy.id == copy.id).values(state="placed", placed_at=NOW))
+
+    def test_a_copy_placed_after_the_decision_to_drop_it_keeps_its_row_and_references(self):
+        _, indexed = self.indexed_original(self.asset())
+        managed, _ = self.own_copy(indexed)
+        self.world.opened.commit()
+        self.world.opened.expire_all()
+        stale = self.world.opened.get(PixelCopy, managed.id)
+        self.assertIsNone(stale.placed_at)
+        self.world.opened.execute(update(PixelCopy).where(PixelCopy.id == managed.id).values(state="placed", placed_at=NOW))
+        with self.assertRaises(pixel_source.NotManaged):
+            pixel_source.drop_unsent(self.world.opened, stale)
+        self.world.opened.commit()
+        self.world.opened.expire_all()
+        self.assertEqual(self.world.opened.get(PixelCopy, managed.id).state, "placed")
+        self.assertEqual(len(self.world.opened.execute(select(ManagedPixelSource)).all()), 1)
+
+    def test_a_placement_committed_between_the_read_and_the_drop_leaves_the_copy_and_both_stay(self):
+        _, indexed = self.indexed_original(self.asset())
+        managed, own = self.own_copy(indexed)
+        real = pixel_source.drop_unsent
+
+        def late(opened, copy):
+            if copy.id == managed.id:
+                self.place_behind_its_back(managed)
+            return real(opened, copy)
+
+        with mock.patch.object(pixel_source, "drop_unsent", late):
+            self.finish()
+        self.world.opened.expire_all()
+        self.assertEqual(sorted(copy.id for copy in self.copies()), sorted([managed.id, own.id]))
+        self.assertEqual(len(self.world.opened.execute(select(ManagedPixelSource)).all()), 1)
 
     def test_a_copy_that_was_sent_is_never_dropped(self):
         _, indexed = self.indexed_original(self.asset())
