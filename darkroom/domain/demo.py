@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import struct
 from dataclasses import dataclass
@@ -18,8 +19,8 @@ from darkroom.config import Settings, viewer_link
 from darkroom.domain import alerts, browser_jobs, events, index, media, pixel_check, renewal, share_check, transport, transport_status
 from darkroom.providers import syncthing
 from darkroom.storage import db
-from darkroom.storage.models import (Alert, BrowserJob, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, ManagedImportIntent, MediaItem, Person, Pixel, PixelPerson, PixelTransport,
-                                     ReviewItem, TakeoutEntry)
+from darkroom.storage.models import (Alert, BrowserJob, DedupeDecision, Export, ExportPart, GoogleAccount, ImportRun, ManagedImportIntent, ManagedImportReceipt, MediaItem,
+                                     Person, Pixel, PixelPerson, PixelTransport, ReviewItem, TakeoutEntry)
 from darkroom.storage.paths import Photos, write_once
 
 register_heif_opener()
@@ -353,7 +354,8 @@ def seed_kept_in_immich(opened: Session, people: dict[str, Person], now: float) 
                     expires_at=now - 12 * DAY, part_count=1, status="imported", stage="done", owner_person_id=owner.id)
     opened.add(export)
     opened.flush()
-    opened.add(ManagedImportIntent(person_id=owner.id, export_id=export.id, kind="import", owner_id="demo-immich-user", resource_manifest="[]", created_at=now - 19 * DAY))
+    intent = ManagedImportIntent(person_id=owner.id, export_id=export.id, kind="import", owner_id="demo-immich-user", resource_manifest="[]", created_at=now - 19 * DAY)
+    opened.add(intent)
     library = opened.execute(select(MediaItem).where(MediaItem.person_id == owner.id).order_by(MediaItem.id)).scalars().first()
     decision = DedupeDecision(export_id=export.id, account_id=account.id, source_path=f"Takeout/Google Photos/{KEPT_IN_IMMICH_OF}.JPG", person_id=owner.id,
                               matched_item_id=None if library is None else library.id, tier=4, decided_by="owner", decided_at=now - 3 * HOUR,
@@ -361,6 +363,26 @@ def seed_kept_in_immich(opened: Session, people: dict[str, Person], now: float) 
     opened.add(decision)
     opened.flush()
     opened.add(ReviewItem(decision_id=decision.id, status="kept_both", resolved_at=now - 2 * HOUR))
+    seed_managed_holds(opened, export, intent, now)
+
+
+def seed_managed_holds(opened: Session, export: Export, intent: ManagedImportIntent, now: float) -> None:
+    examples: list[tuple[str, str, dict[str, object]]] = [
+        ("IMG_1074.HEIC", "unwritable", {"description_length": 46}),
+        ("IMG_1078.JPG", "no_instant", {}),
+        ("IMG_1082.HEIC", "unknown_offset", {"wall_clock": "2026-09-12T14:03:22", "google_utc": datetime(2026, 9, 12, 12, 3, 22, tzinfo=UTC).timestamp(),
+                                           "place_known": False}),
+    ]
+    opened.add(ExportPart(export_id=export.id, number=1, status="done", ingest_state="ingested"))
+    opened.flush()
+    for name, hold, facts in examples:
+        entry = TakeoutEntry(export_id=export.id, part_number=1, name=f"Takeout/Google Photos/{name}", kind="media", bytes=42, crc32=0,
+                             outcome="recorded", listed_at=now - DAY)
+        opened.add(entry)
+        opened.flush()
+        key = f"takeout-entry:{entry.id}"
+        opened.add(ManagedImportReceipt(intent_id=intent.id, resource_key=key, compound_key=key, source_sha1="0" * 40, expected_bytes=entry.bytes,
+                                        expected_metadata="{}", metadata_hold=hold, hold_facts=json.dumps(facts), updated_at=now - HOUR))
 
 
 def seed_unpaired(opened: Session, people: dict[str, Person], spec: DemoPixel, now: float) -> None:

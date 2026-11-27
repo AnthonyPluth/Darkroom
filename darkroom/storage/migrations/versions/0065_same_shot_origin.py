@@ -2,8 +2,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0064"
-down_revision = "0063"
+revision = "0065"
+down_revision = "0064"
 branch_labels = None
 depends_on = None
 
@@ -55,5 +55,5 @@ def downgrade() -> None:
     origins = sa.table(TABLE, sa.column("id"), sa.column("receipt_id"), sa.column("intent_id"))
     owned = sa.select(origins.c.id).where(origins.c.receipt_id.is_(None), origins.c.intent_id.is_not(None)).limit(1)
     if connection.execute(owned).first() is not None:
-        raise RuntimeError("the owner's same-shot decisions are kept as origins; roll the schema forward instead of downgrading past 0064")
+        raise RuntimeError("the owner's same-shot decisions are kept as origins; roll the schema forward instead of downgrading past 0065")
     rules(LINK_BEFORE, TAKEOUT_BEFORE)

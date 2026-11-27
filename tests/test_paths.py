@@ -1268,6 +1268,131 @@ def swap(path):
     os.replace(twin, path)
 
 
+class RemoveReviewHoldTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name).resolve()
+        self.photos = paths.Photos(self.root)
+        self.photos.ensure_person_tree("jo")
+        self.originals = self.root / "jo/originals"
+        self.kept = self.originals / "IMG_1.JPG"
+        self.kept.write_bytes(b"an original")
+        self.folder = self.root / "_inbox/jo/review/export-1"
+        self.folder.mkdir(parents=True)
+        self.hold = self.folder / "IMG_1005.JPG"
+        self.hold.write_bytes(b"a made-up hold")
+        self.zip = self.root / "_inbox/jo/export-1/takeout-001.zip"
+        self.zip.parent.mkdir()
+        self.zip.write_bytes(b"a made-up part")
+
+    def identity(self, path):
+        return paths.file_identity(path.lstat())
+
+    def everything(self):
+        return {str(p.relative_to(self.root)): p.read_bytes() for p in self.root.rglob("*") if p.is_file() and not p.is_symlink()}
+
+    def remove(self, name="IMG_1005.JPG", identity=None, person="jo", export="export-1"):
+        return paths.remove_review_hold(self.photos, person, export, name, self.identity(self.hold) if identity is None else identity)
+
+    def test_the_checked_hold_directly_in_the_exports_review_folder_is_removed_and_its_size_returned(self):
+        before = self.everything()
+        self.assertEqual(self.remove(), len(b"a made-up hold"))
+        self.assertEqual(self.everything(), {key: value for key, value in before.items() if key != "_inbox/jo/review/export-1/IMG_1005.JPG"})
+        self.assertTrue(paths.inbox_entry_absent(self.photos, self.hold))
+        self.assertIsNone(self.remove(identity=self.identity(self.kept)))
+
+    def test_any_name_but_a_plain_file_name_directly_in_the_review_folder_is_refused(self):
+        before = self.everything()
+        for name in ("../IMG_1005.JPG", "a/IMG_1005.JPG", ".IMG_1005.JPG", "", "..", "a\0.JPG", "x" * 256):
+            with self.subTest(name=name), self.assertRaises((paths.NotAReviewHold, paths.OutsideRoot, FileNotFoundError)):
+                self.remove(name=name)
+        for person, export in (("../jo", "export-1"), ("jo", "../export-1"), ("jo", "held"), ("jo", ".")):
+            with self.subTest(person=person, export=export), self.assertRaises((paths.NotAReviewHold, paths.OutsideRoot, FileNotFoundError)):
+                self.remove(person=person, export=export)
+        self.assertIsNone(paths.remove_review_hold(self.photos, "jo", "export-1", "takeout-001.zip", self.identity(self.zip)))
+        self.assertEqual(self.everything(), before)
+
+    def test_a_hold_swapped_or_changed_since_it_was_checked_is_left_alone(self):
+        checked = self.identity(self.hold)
+        swapped = self.folder / "swap.JPG"
+        swapped.write_bytes(b"another hold!!")
+        swapped.replace(self.hold)
+        with self.assertRaises(paths.NotAReviewHold):
+            self.remove(identity=checked)
+        self.assertEqual(self.hold.read_bytes(), b"another hold!!")
+        checked = self.identity(self.hold)
+        os.utime(self.hold, ns=(1, 1))
+        with self.assertRaises(paths.NotAReviewHold):
+            self.remove(identity=checked)
+        self.assertTrue(self.hold.exists())
+
+    def test_a_link_on_the_way_or_at_the_hold_or_a_hard_link_is_refused(self):
+        os.link(self.hold, self.folder / "linked.JPG")
+        with self.assertRaises(paths.NotAReviewHold):
+            self.remove()
+        (self.folder / "linked.JPG").unlink()
+        self.hold.unlink()
+        self.hold.symlink_to(self.kept)
+        with self.assertRaises((paths.NotAReviewHold, paths.NotInTheInbox)):
+            self.remove(identity=self.identity(self.kept))
+        self.hold.unlink()
+        self.folder.rmdir()
+        self.folder.symlink_to(self.originals, target_is_directory=True)
+        (self.originals / "IMG_1005.JPG").write_bytes(b"not a hold")
+        with self.assertRaises(paths.OutsideRoot):
+            self.remove(identity=self.identity(self.originals / "IMG_1005.JPG"))
+        self.assertEqual((self.kept.read_bytes(), (self.originals / "IMG_1005.JPG").read_bytes()), (b"an original", b"not a hold"))
+
+    def test_a_hold_replaced_at_the_moment_it_is_claimed_survives_and_nothing_is_removed(self):
+        real = paths.rename_no_replace
+        calls = []
+
+        def claiming(source, target, folder, into=None):
+            if not calls:
+                swap = self.hold.with_name("swap.JPG")
+                swap.write_bytes(b"a replacement!")
+                os.replace(swap, self.hold)
+            calls.append(source)
+            return real(source, target, folder, into)
+
+        checked = self.identity(self.hold)
+        with mock.patch.object(paths, "rename_no_replace", side_effect=claiming), self.assertRaises(paths.NotAReviewHold):
+            self.remove(identity=checked)
+        self.assertEqual((self.hold.read_bytes(), [p.name for p in self.folder.iterdir()]), (b"a replacement!", ["IMG_1005.JPG"]))
+
+    def test_a_crash_after_the_claim_leaves_the_hold_counted_present_and_it_is_put_back(self):
+        class Crash(BaseException):
+            pass
+
+        real = paths.rename_no_replace
+
+        def claim_then_crash(source, target, folder, into=None):
+            real(source, target, folder, into)
+            raise Crash()
+
+        checked = self.identity(self.hold)
+        with mock.patch.object(paths, "rename_no_replace", side_effect=claim_then_crash), self.assertRaises(Crash):
+            self.remove(identity=checked)
+        self.assertFalse(self.hold.exists())
+        self.assertFalse(paths.inbox_entry_absent(self.photos, self.hold))
+        self.assertTrue(paths.claims_left_in(self.photos, self.folder))
+        with self.assertRaises(paths.NotAReviewHold):
+            self.remove(identity=checked)
+        self.assertEqual(self.hold.read_bytes(), b"a made-up hold")
+        self.assertFalse(paths.claims_left_in(self.photos, self.folder))
+        self.assertEqual(self.remove(), len(b"a made-up hold"))
+        self.assertTrue(paths.inbox_entry_absent(self.photos, self.hold))
+
+    def test_the_review_folder_of_another_export_or_person_is_never_touched(self):
+        other = self.root / "_inbox/jo/review/export-2"
+        other.mkdir()
+        (other / "IMG_1005.JPG").write_bytes(b"another export's hold")
+        before = self.everything()
+        self.remove()
+        self.assertEqual(self.everything(), {key: value for key, value in before.items() if key != "_inbox/jo/review/export-1/IMG_1005.JPG"})
+
+
 class PartZipRemoverTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()

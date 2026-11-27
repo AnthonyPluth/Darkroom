@@ -174,6 +174,12 @@ The alert says how many of a person's originals still have no match in Google a 
 
 If the folder is on and the count stays, the items may differ from Google's copy (an edit, or a format Google converts); they stay in the library, and nothing is lost: the permanent copy is in the person's `originals/`.
 
+### Managed review holds (#545)
+
+With `DARKROOM_MANAGED_RELEASE=1` and the owner's records in place (the restore rehearsal, the accepted boundary and the backup hook; the recovery-point section of this runbook says how to record them), Darkroom also releases a managed export's resolved review hold. It is released 14 days after the review was resolved, once every zip of that export that needs the hold has been released, and only after the same checks as for a zip: a covering recovery point, the file proof, and a fresh read of the photo in Immich right before the delete. A review that is still pending is never released. Release is off by default; with it off, or while any check fails, the hold stays in `_inbox/<person>/review/export-<id>/` and the status page's `cleanup_kept` events (and `retention status`) say which check kept it.
+
+The kept reasons specific to holds, in the events `export_hold_kept` (`review <id>: <reason>`): `zip_needs_hold` (a zip of the export still needs it; it goes after the zip), `hold_shared` (another review item names the same file; it stays), `hold_differs`, `review_differs` and `hash_differs` (the file is not the one Darkroom recorded; nothing is deleted, look at the file), and `owner_action` (a review undo or move is in progress, or a claim from an interrupted release is being put back). A hold never goes while Immich cannot confirm the photo: `immich_unconfirmed` is retried on a later tick, and a day of it opens the existing "Immich verification waiting" alert. To keep a hold for good, withdraw an attestation or turn the setting off; Darkroom removes nothing else.
+
 ### Where alerts arrive
 
 Every alert in this runbook is recorded as an event and shown on the status page. When Resend is set up ([docs/deploy/alerts-email.md](deploy/alerts-email.md)) each one is also emailed to the owner's address, with only its title and a link back to Darkroom; without it, nothing is sent and the status page is the only place. Either way, look at the status page after a scheduled export is due, a sign-in session expires or a schedule nears its end. `python run.py check-config` says which of the two is in force.
@@ -267,3 +273,30 @@ Then add the person again. Shared-group details are in `docs/deploy/browser.md`.
 ## Immich reconcile
 
 The `immich.reconcile` job (every 15 minutes, or `python run.py reconcile-immich [--person SLUG]`) reads each person's phone uploads from Immich with that person's own API key (`POST /api/search/metadata` on `updatedAt`, the cursor being an SQL offset, so a window is re-read with a 5 minute overlap and every step is idempotent) and runs only after that person's Takeout and, when a legacy folder is set, their legacy import. A phone upload is an asset with the `mobile-app` metadata key, no library, owned by the person's Immich user; a Live Photo's hidden video is stored with its still, and a video or still whose other half has not arrived waits and is retried. Each new original is downloaded once, checked against Immich's base64 SHA-1 and written once to `<person>/originals/immich/` (the file is finished under a temporary name and linked into place, so a failed download leaves nothing), then queued for every Pixel that serves the person with `always_send`, even if a Takeout already matches. A photo whose SHA-1 is already in the person's originals is not written again. Darkroom only reads Immich through its API and never changes anything there or on a phone. Known gap: a Takeout copy already in `google-only/` stays next to the new original until #234 resolves such duplicates. A failing run is recorded as `immich_reconcile_failed` and opens one alert until a run succeeds; `immich_reconciled` events and the log line count what was listed, stored, ignored, waiting and failed.
+
+## Recovery points for managed inbox files
+
+Darkroom keeps managed inbox files by default. With `DARKROOM_MANAGED_RELEASE=1`, a Takeout ZIP or held copy can be released once its import is at least 14 days old and the recovery point, local file and fresh Immich checks all pass. Managed review holds stay in the inbox.
+
+1. Run the [restore rehearsal on a disposable copy](spikes/immich-owner-runbook.md#row-8-the-restore-test) and post the result on [#266](https://github.com/AnthonyPluth/Darkroom/issues/266). After a successful rehearsal, record that comment's URL, the date, the versions you restored and the Darkroom database type. Replace the placeholders and use `postgresql` for Darkroom on PostgreSQL.
+
+   ```sh
+   docker exec darkroom python run.py retention record-rehearsal \
+       --evidence '<restore rehearsal comment URL on #266>' \
+       --rehearsed-on '<YYYY-MM-DD>' \
+       --immich-version '<Immich version with leading v>' \
+       --darkroom-version '<Darkroom release tag>' --database sqlite
+   ```
+
+2. Read the remote-deletion boundary the installed version prints. Darkroom checks Immich just before removing an inbox file. Immich users can still change the asset between that check and removal, so the recovery point provides the fallback. If you accept the boundary, post the decision on [#266](https://github.com/AnthonyPluth/Darkroom/issues/266) and repeat the command with the acceptance comment URL and `--accept`. Darkroom records acceptance for the exact text it displayed.
+
+   ```sh
+   docker exec darkroom python run.py retention accept-boundary \
+       --evidence '<boundary decision comment URL on #266>'
+   ```
+
+3. Set up the [backup hook](deploy/backup-hook.md) in the scheduler that runs your backups. The hook reports when each backup starts, whether it succeeded, what it covers and how long the backup tool keeps it.
+
+Run `docker exec darkroom python run.py retention status` to see the active records, the latest open and finished recovery points, and why files past the 14-day retention period are waiting. `release_pending` means the recorded prerequisites passed and Darkroom still needs the on-disk proof and the fresh Immich read. If a backup failed, check the backup job and run it through the hook again. A newer failed backup blocks release even if an older backup still covers the photos.
+
+To pause release, set `DARKROOM_MANAGED_RELEASE=0` and restart Darkroom. To withdraw an attestation, use `docker exec darkroom python run.py retention withdraw rehearsal` or `docker exec darkroom python run.py retention withdraw boundary`. A withdrawn attestation stops counting immediately. If `status` reports the boundary text has changed, read the new text and record a new decision before release can resume.

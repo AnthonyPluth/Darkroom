@@ -2,7 +2,7 @@
 import { render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ReviewDetail, ReviewSummary } from "$lib/api-types";
+import type { HoldView, ReviewDetail, ReviewSummary } from "$lib/api-types";
 import { pending as waiting } from "$lib/pending.svelte";
 import { viewport } from "$lib/viewport.svelte";
 import { jo, reply, sam, serve } from "../test/server";
@@ -37,6 +37,7 @@ function routes(extra: Record<string, unknown> = {}) {
     "GET /api/review?status=pending": { reviews: [pending], pending: 1, before: 0 },
     "GET /api/review?status=kept_both": { reviews: [old, kept], pending: 1, before: 0 },
     "GET /api/people": { people: [jo, sam] },
+    "GET /api/holds": { holds: [], total: 0 },
     "GET /api/review/7": detail,
     ...extra,
   };
@@ -48,6 +49,19 @@ function show(extra: Record<string, unknown> = {}) {
   render(Review);
   return server;
 }
+
+it("links to held photos without adding them to the pending-pair badge", async () => {
+  const held: HoldView = {
+    id: 6, source: "backfill", person_id: jo.id, export_id: null, name: "Held.jpg", hold: "no_instant",
+    reason: "Nothing in the photo says when it was taken.", actions: ["capture_time", "skip"],
+    facts: null, bytes_verified_at: null, updated_at: NOW, resolution: null,
+  };
+  show({ "GET /api/review?status=pending": { reviews: [], pending: 0, before: 0 }, "GET /api/holds": { holds: [held], total: 1 } });
+  expect(await screen.findByRole("link", { name: "1 held photo" })).toHaveAttribute("href", "#held-photos");
+  expect(within(screen.getByRole("region", { name: "Held photos" })).getByText("Held.jpg")).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Current pair" })).not.toBeInTheDocument();
+  await waitFor(() => expect(waiting.count).toBe(0));
+});
 
 describe("the current pair", () => {
   it("shows both sides with their fields and thumbnails", async () => {

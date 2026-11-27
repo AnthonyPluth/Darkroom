@@ -9,6 +9,7 @@
   import { viewport } from "$lib/viewport.svelte";
   import { camera, canUndo, compared, decidedBy, decisionChip, decisionDetail, frame, pairLabel, personName, savedSentence, size, undoUnavailable, wallClock } from "$lib/review";
   import Chip from "../components/Chip.svelte";
+  import HeldPhotos from "../components/HeldPhotos.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
   import Table from "../components/Table.svelte";
   import FormError from "../forms/FormError.svelte";
@@ -19,6 +20,7 @@
   let busy = $state(false);
   let error = $state("");
   let reassignTo = $state("");
+  let holdCount = $state<number | null>(null);
   let skipped: number[] = [];
   let after: number | null = null;
 
@@ -124,6 +126,9 @@
           : `${count === 1 ? "1 pair looks" : `${count} pairs look`} like the same photo saved twice. Nothing is removed until you decide.`}
       </p>
     {/if}
+    {#if holdCount !== null && holdCount > 0}
+      <a class="inline-flex items-center self-start text-ink underline underline-offset-4 max-md:min-h-[44px]" href="#held-photos">{holdCount} held {holdCount === 1 ? "photo" : "photos"}</a>
+    {/if}
   </div>
 
   {#if saved}
@@ -212,7 +217,12 @@
         {#if !pair.export.held}<p class="text-sm text-ink-muted">The export's held copy is gone, so both files can't be kept.</p>{/if}
       </section>
     {/if}
+  {/if}
 
+  <HeldPhotos people={loader.current.kind === "ready" ? loader.current.data.people : []} onCount={(total) => (holdCount = total)} />
+
+  {#if loader.current.kind === "ready"}
+    {@const data = loader.current.data}
     <section class="card md:p-5" aria-label="Past decisions">
       <h2 class="text-md font-semibold">Past decisions</h2>
       {#if viewport.desktop}
