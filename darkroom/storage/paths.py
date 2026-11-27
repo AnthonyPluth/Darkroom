@@ -2332,9 +2332,25 @@ class StagedPlacement:
                 monitoring.log(COPIED_UNDER_THE_LOCK, reason=errno.errorcode.get(error.errno or 0, "unknown"))
                 return write_once(destination, self.chunks())
             self.published = True
-            if not own_copy_at(folder, destination.name, self.fd):
-                raise ChangedWhileCopied("another file took the copy's place while it was moved")
+            self.verify_published(folder, destination.name)
         return self.sha1
+
+    def verify_published(self, folder: int, name: str) -> None:
+        held = os.fstat(self.fd)
+        if not plain_file(held):
+            raise ChangedWhileCopied("the placed copy is hard-linked elsewhere")
+        found = entry_at(name, folder)
+        if found is None or not stat.S_ISREG(found.st_mode) or not os.path.samestat(found, held):
+            raise ChangedWhileCopied("another file took the copy's place while it was moved")
+        try:
+            placed = open_entry(name, folder, os.O_RDONLY)
+        except (OSError, LinkRefused) as error:
+            raise ChangedWhileCopied("the placed copy could not be opened") from error
+        try:
+            if not stat.S_ISREG(os.fstat(placed).st_mode) or fd_sha1(placed) != self.sha1:
+                raise ChangedWhileCopied("the placed file is not the bytes Darkroom copied")
+        finally:
+            os.close(placed)
 
 
 def drop_own_copy(folder: int, name: str, fd: int) -> None:

@@ -1,7 +1,10 @@
 import contextlib
+import ctypes
+import errno
 import json
 import hashlib
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -1825,6 +1828,101 @@ class StagedPlacementTests(unittest.TestCase):
                 ahead.publish(self.month / "IMG_1.JPG")
         self.assertFalse((self.month / "IMG_1.JPG").exists())
         self.assertEqual(swapped.read_bytes(), b"not Darkroom's copy")
+
+    def after_rename(self, action):
+        real = paths.rename_no_replace
+
+        def renaming(source, target, folder, into=None):
+            real(source, target, folder, into)
+            action(self.month / target)
+
+        return mock.patch.object(paths, "rename_no_replace", side_effect=renaming)
+
+    def einval_renameat2(self):
+        def refusing(*arguments):
+            ctypes.set_errno(errno.EINVAL)
+            return -1
+
+        return mock.patch.object(paths, "LIBC", mock.Mock(renameat2=refusing))
+
+    def stale_hard_link_count(self, name):
+        real = paths.entry_at
+
+        def stale(entry, folder):
+            found = real(entry, folder)
+            if entry == name and found is not None:
+                fields = list(found)
+                fields[stat.ST_NLINK] = 2
+                return os.stat_result(fields)
+            return found
+
+        return mock.patch.object(paths, "entry_at", side_effect=stale)
+
+    def test_a_stale_hard_link_count_on_the_path_after_the_link_fallback_is_accepted(self):
+        with self.einval_renameat2(), self.staged() as ahead, self.stale_hard_link_count("IMG_1.JPG"):
+            self.assertEqual(ahead.publish(self.month / "IMG_1.JPG"), self.sha1)
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
+        self.assertEqual(sorted(p.name for p in self.month.iterdir()), ["IMG_1.JPG"])
+        self.assertFalse(self.stage.exists())
+
+    def test_a_stale_hard_link_count_on_the_path_after_renameat2_is_accepted(self):
+        with self.staged() as ahead, self.stale_hard_link_count("IMG_1.JPG"):
+            self.assertEqual(ahead.publish(self.month / "IMG_1.JPG"), self.sha1)
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
+
+    def test_a_placed_copy_hard_linked_elsewhere_is_refused_and_nothing_is_removed(self):
+        other = self.root / "other-name"
+        with self.einval_renameat2(), self.staged() as ahead, self.after_rename(lambda placed: os.link(placed, other)):
+            with self.assertRaises(paths.ChangedWhileCopied):
+                ahead.publish(self.month / "IMG_1.JPG")
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
+        self.assertEqual(other.read_bytes(), self.data)
+
+    def test_other_bytes_at_the_name_after_the_rename_are_refused_and_not_removed(self):
+        def swap(placed):
+            placed.unlink()
+            placed.write_bytes(b"other bytes")
+
+        with self.staged() as ahead, self.after_rename(swap), self.assertRaises(paths.ChangedWhileCopied):
+            ahead.publish(self.month / "IMG_1.JPG")
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), b"other bytes")
+
+    def test_the_same_bytes_in_another_file_after_the_rename_are_refused_and_not_removed(self):
+        def swap(placed):
+            placed.unlink()
+            placed.write_bytes(self.data)
+
+        with self.staged() as ahead, self.after_rename(swap), self.assertRaises(paths.ChangedWhileCopied):
+            ahead.publish(self.month / "IMG_1.JPG")
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), self.data)
+
+    def test_other_bytes_in_the_same_file_after_the_rename_are_refused_and_not_removed(self):
+        with self.staged() as ahead, self.after_rename(lambda placed: placed.write_bytes(b"rewritten")):
+            with self.assertRaises(paths.ChangedWhileCopied):
+                ahead.publish(self.month / "IMG_1.JPG")
+        self.assertEqual((self.month / "IMG_1.JPG").read_bytes(), b"rewritten")
+
+    def test_a_link_at_the_name_after_the_rename_is_refused_and_not_followed_or_removed(self):
+        target = self.root / "elsewhere.jpg"
+        target.write_bytes(self.data)
+
+        def swap(placed):
+            placed.unlink()
+            placed.symlink_to(target)
+
+        with self.staged() as ahead, self.after_rename(swap), self.assertRaises(paths.ChangedWhileCopied):
+            ahead.publish(self.month / "IMG_1.JPG")
+        self.assertTrue((self.month / "IMG_1.JPG").is_symlink())
+        self.assertEqual(target.read_bytes(), self.data)
+
+    def test_a_file_that_is_not_regular_at_the_name_after_the_rename_is_refused_and_not_removed(self):
+        def swap(placed):
+            placed.unlink()
+            os.mkfifo(placed)
+
+        with self.staged() as ahead, self.after_rename(swap), self.assertRaises(paths.ChangedWhileCopied):
+            ahead.publish(self.month / "IMG_1.JPG")
+        self.assertTrue(stat.S_ISFIFO((self.month / "IMG_1.JPG").lstat().st_mode))
 
     def test_another_filesystem_falls_back_to_writing_the_copy_once(self):
         cross = OSError(18, "Invalid cross-device link")
