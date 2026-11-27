@@ -2,8 +2,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0065"
-down_revision = "0064"
+revision = "0066"
+down_revision = "0065"
 branch_labels = None
 depends_on = None
 
@@ -31,5 +31,5 @@ def upgrade() -> None:
 def downgrade() -> None:
     assets = sa.table(TABLE, sa.column("id"), sa.column("status"))
     if op.get_bind().execute(sa.select(assets.c.id).where(assets.c.status == "cataloged").limit(1)).first() is not None:
-        raise RuntimeError("phone assets are catalogued without a copy in originals; roll the schema forward instead of downgrading past 0065")
+        raise RuntimeError("phone assets are catalogued without a copy in originals; roll the schema forward instead of downgrading past 0066")
     replace_check(BEFORE)
