@@ -2382,8 +2382,15 @@ def sweep_placements(photos: Photos, person: str, export: str) -> int:
         return 0
 
 
+def catalogue_scratch(data_dir: Path, slug: str) -> Path:
+    return data_dir / "catalogue" / slug
+
+
 def clear_catalogue_scratch(data_dir: Path, slug: str) -> None:
-    for folder in data_dir.glob(f"catalogue-{slug}-*"):
+    root = catalogue_scratch(data_dir, slug)
+    if root.is_symlink() or not root.is_dir():
+        return
+    for folder in root.iterdir():
         if folder.is_symlink() or not folder.is_dir():
             continue
         for entry in folder.iterdir():

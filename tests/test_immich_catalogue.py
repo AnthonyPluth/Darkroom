@@ -73,7 +73,7 @@ class CataloguingTests(CatalogueCase):
         self.assertTrue(all(value is not None for value in (item.captured_utc, item.captured_local, item.offset_minutes, item.width, item.height, item.phash, item.dhash)))
         self.assertEqual((item.time_source, item.mtime), ("exif_offset", None))
         self.assertIn(item.id, [shot.id for shot in dedupe.PersonIndex.load(self.world.opened, self.world.account).phone])
-        self.assertEqual(list(self.settings.data_dir.glob("catalogue-*")), [])
+        self.assertEqual(list((self.settings.data_dir / "catalogue" / "jo").glob("run-*")), [])
 
     def test_a_file_exiftool_cannot_use_is_catalogued_by_its_bytes_alone(self):
         asset = self.asset(data=b"not a photo at all")
@@ -89,7 +89,7 @@ class CataloguingTests(CatalogueCase):
 
         report = reconcile.reconcile_person(self.world.opened, self.settings, self.jo, NOW, read=unreadable)
         self.assertEqual((report.cataloged, report.failed, self.cataloged(), self.rows()[asset.id].status), (0, 1, [], "failed"))
-        self.assertEqual(list(self.settings.data_dir.glob("catalogue-*")), [])
+        self.assertEqual(list((self.settings.data_dir / "catalogue" / "jo").glob("run-*")), [])
         self.assertEqual(self.run_it(at=NOW + 3600).cataloged, 1)
 
     def test_the_stored_window_and_the_event_are_kept_and_the_event_says_what_was_catalogued(self):
@@ -214,13 +214,14 @@ class RefusalTests(CatalogueCase):
 
 
 class ScratchTests(CatalogueCase):
-    def test_a_scratch_folder_left_by_a_crash_is_removed_when_the_next_run_starts_and_another_persons_is_not(self):
-        mine, theirs = self.settings.data_dir / "catalogue-jo-old", self.settings.data_dir / "catalogue-sam-old"
+    def test_a_scratch_folder_left_by_a_crash_is_removed_when_the_next_run_starts_and_a_prefix_related_persons_is_not(self):
+        base = self.settings.data_dir / "catalogue"
+        mine, theirs = base / "jo" / "run-old", base / "jo-smith" / "run-live"
         for folder in (mine, theirs):
             folder.mkdir(parents=True)
             (folder / "original.jpg").write_bytes(b"x")
         self.run_it()
-        self.assertEqual((mine.exists(), theirs.exists()), (False, True))
+        self.assertEqual((mine.exists(), theirs.exists(), (theirs / "original.jpg").exists()), (False, True, True))
 
     def test_metadata_that_cannot_be_read_now_is_its_own_reason(self):
         self.asset()

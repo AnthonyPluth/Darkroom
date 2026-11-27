@@ -306,3 +306,23 @@ class ReconcileImmichCommandTests(CliCase):
                 code, out, _ = self.reconcile("--person", "jo")
         self.assertEqual(code, 0)
         self.assertIn("jo: 1 listed, 1 stored (1 copied to originals, 0 already there), 0 queued for the Pixel folder, 0 not phone uploads, 0 waiting, 0 failed", out)
+
+    def test_catalogues_a_phone_upload_of_a_person_switched_to_immich_and_says_nothing_was_copied(self):
+        from tests.fakes.immich import FakeAsset, FakeImmich, FakePerson
+        from tests.fixtures import media as fixtures
+
+        standard_export(Photos(self.photos).manual_inbox("jo"))
+        self.assertEqual(self.call("--person", "jo")[0], 0)
+        data = fixtures.make_jpeg(self.root / "scratch.jpg", taken="2015:01:01 10:00:00", offset="+00:00", colour=(4, 5, 6)).read_bytes()
+        with FakeImmich([FakePerson("jo", "u-jo", "lib-jo", "key-jo")], "admin") as fake:
+            fake.add_asset(FakeAsset(id="a1", owner_id="u-jo", data=data))
+            with db.session(self.engine) as opened:
+                person = opened.query(Person).filter(Person.slug == "jo").one()
+                person.immich_user_id = "u-jo"
+                person.managed_imports = "on"
+                person.immich_api_key_sealed = secretbox.seal("key-jo", "k")
+            with mock.patch.dict(os.environ, {"IMMICH_URL": fake.url}):
+                code, out, _ = self.reconcile("--person", "jo")
+        self.assertEqual(code, 0)
+        self.assertIn("jo: 1 listed, 0 stored (0 copied to originals, 0 already there), 0 queued for the Pixel folder, 0 not phone uploads, 0 waiting, 0 failed, 1 catalogued without a copy", out)
+        self.assertFalse(os.path.exists(os.path.join(self.photos, "jo", "originals", "immich")))

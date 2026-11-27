@@ -49,7 +49,9 @@ class CatalogueRun(immich_reconcile.Run):
         return suffix if SUFFIX.fullmatch(suffix) else ""
 
     def read_original(self, half: immich.Asset) -> Original:
-        with tempfile.TemporaryDirectory(prefix=f"catalogue-{self.person.slug}-", dir=self.settings.data_dir) as folder:
+        root = paths.catalogue_scratch(self.settings.data_dir, self.person.slug)
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="run-", dir=root) as folder:
             target = Path(folder) / f"original{self.suffix_of(half)}"
             with target.open("wb") as handle:
                 for chunk in self.client.original_chunks(self.key, half):
