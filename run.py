@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from darkroom import config, monitoring, oidc
 from darkroom.providers import exiftool, immich, resend
 from darkroom.dates import local_today, utc_now
-from darkroom.domain import demo, immich_reconcile, index, legacy, managed_switch, retention_gate, share_bind, share_check, video_times
+from darkroom.domain import demo, immich_reconcile, index, legacy, managed_switch, managed_switch_command, retention_gate, share_bind, share_check, video_times
 from darkroom.domain.ingest import run as ingest_run
 from darkroom.domain.ingest import unpack
 from darkroom.server import auth, handler, jobs, wizard
@@ -296,6 +296,36 @@ def run_import_legacy(slug: str | None, folder: str | None) -> int:
                 print(f"{slug}: {done.new} new files, {done.matched} matched in Google, {done.unmatched} not in Google "
                       f"({done.copied} copied to originals, {done.already_there} already there), {done.already_seen} seen before, {done.ignored} not photos or videos, {done.failed} could not be read")
                 code = 1 if done.failed else 0
+    engine.dispose()
+    return code
+
+
+def run_managed_imports(slug: str | None, action: str | None) -> int:
+    if not slug or action not in ("on", "off", "status"):
+        print("managed-imports needs on, off or status, and --person", file=sys.stderr)
+        return 1
+    from_environment = config.load()
+    engine = db.make_engine(db.database_url(from_environment))
+    settings = with_stored(from_environment, engine)
+    if settings is None:
+        engine.dispose()
+        return 1
+    code = 0
+    with db.session(engine) as opened:
+        person = opened.query(Person).filter(Person.slug == slug).one_or_none()
+        if person is None:
+            print(f"no person called {slug}", file=sys.stderr)
+            code = 1
+        else:
+            now = utc_now().timestamp()
+            if action == "status":
+                done = managed_switch_command.Result(True, tuple(managed_switch_command.status_lines(opened, settings, person, now)))
+            elif action == "on":
+                done = managed_switch_command.turn_on(opened, settings, person, now)
+            else:
+                done = managed_switch_command.turn_off(opened, settings, person, now)
+            print("\n".join(done.lines), file=sys.stdout if done.ok else sys.stderr)
+            code = 0 if done.ok else 1
     engine.dispose()
     return code
 
@@ -761,7 +791,7 @@ def serve() -> int:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="run.py")
     parser.add_argument("command", choices=["serve", "check-config", "migrate", "jobs", "index", "import-takeout", "import-legacy", "reconcile-immich", "reread-video-times", "legacy-report", "revoke-sessions", "demo", "seal-secret", "bind-share", "reopen-setup", "retention", "recovery-point",
-                                            "copy-browser-state"])
+                                            "copy-browser-state", "managed-imports"])
     parser.add_argument("name", nargs="?")
     parser.add_argument("--person")
     parser.add_argument("--dir")
@@ -798,6 +828,8 @@ def main(argv: list[str]) -> int:
         return run_import_takeout(args.person, args.dir, args.unpack_only, args.account)
     if args.command == "import-legacy":
         return run_import_legacy(args.person, args.dir)
+    if args.command == "managed-imports":
+        return run_managed_imports(args.person, args.name)
     if args.command == "reconcile-immich":
         return run_reconcile_immich(args.person)
     if args.command == "reread-video-times":
