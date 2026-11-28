@@ -454,6 +454,24 @@ def seed_part_import(opened: Session, now: float) -> None:
     opened.add(ExportPart(export_id=export.id, number=len(PART_IMPORT) + 1, bytes=2_000_000, bytes_done=1_240_000, downloads_used=1, attempts=1, status="downloading"))
 
 
+def seed_failed_items(opened: Session, now: float) -> None:
+    owner = opened.execute(select(Person).where(Person.slug == "avery")).scalar_one()
+    account = opened.execute(select(GoogleAccount).where(GoogleAccount.default_person_id == owner.id)).scalar_one()
+    export = Export(account_id=account.id, kind="incremental", google_id="demo-export-6", created_at=now - 10 * DAY, ready_at=now - 9 * DAY,
+                    expires_at=now - 2 * DAY, part_count=2, status="imported", stage="done", ingest_route="per_part", owner_person_id=owner.id)
+    opened.add(export)
+    opened.flush()
+    for number in (1, 2):
+        opened.add(ExportPart(export_id=export.id, number=number, filename=f"takeout-demo-6-00{number}.zip", bytes=2_000_000, bytes_done=2_000_000, downloads_used=1,
+                              attempts=1, status="done", ingest_state="ingested", ingest_queued_at=now - 9 * DAY, entries=900, entries_done=900,
+                              failed_items=3 if number == 2 else 0))
+    opened.flush()
+    for failed in range(3):
+        opened.add(TakeoutEntry(export_id=export.id, part_number=2, name=f"Takeout/Google Photos/Demo/failed-{failed}.jpg", kind="media", bytes=1000, crc32=failed,
+                                outcome="failed", sha1=f"{failed:040x}", listed_at=now - 9 * DAY))
+    opened.add(ImportRun(export_id=export.id, started=now - 9 * DAY, finished=now - 9 * DAY + 600, stage="done", added=1797, failed=3, status="done"))
+
+
 def seed_transport(opened: Session, now: float) -> None:
     for spec in TRANSPORT:
         pixel = opened.execute(select(Pixel).where(Pixel.name == spec.pixel)).scalar_one()
@@ -514,6 +532,7 @@ def seed(opened: Session, photos: Photos, settings: Settings, today: date) -> Su
     seed_failed_download(opened, now)
     seed_failed_download(opened, now, "casey", 4)
     seed_part_import(opened, now)
+    seed_failed_items(opened, now)
     seed_kept_in_immich(opened, people, now)
     events.record(opened, now - 3 * HOUR, transport.RECOVERED, transport.SUBJECT)
     seed_transport(opened, now)

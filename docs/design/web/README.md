@@ -67,6 +67,8 @@ Approved departures (#27), approved by the owner and recorded on #16 (https://gi
 
 Approved departure (#548), approved by the owner on 2026-11-24 and recorded on #548 (https://github.com/AnthonyPluth/Darkroom/issues/548#issuecomment-7122813221): Review, a pair kept in an Immich-managed export shows "Kept in Immich, so it can't be undone" in place of "Too late to undo".
 
+Approved departure (#529), the owner waived the design sign-off on 2026-11-27 (https://github.com/AnthonyPluth/Darkroom/issues/529#issuecomment-7228671645, recorded in `docs/DECISIONS.md`): Exports, Earlier exports, an imported per-part export with failed items shows a sentence and a **Retry failed items** button in its Result cell, the pattern of Retry download in that table. The `04-exports-*` boards are not re-exported for it. Also not on the boards: the **Retry import** note and button on the current export (#551).
+
 ## Held photos on Review (#548, draft for sign-off)
 
 The [desktop board](06-review-holds-desktop.dc.html) and [phone board](06-review-holds-phone.dc.html) draw the section proposed in the [terminal holds design](../terminal-holds.md#4-showing-holds-for-review-a-requirement-not-a-screen). The app view ends after Past decisions. The examples below the dashed line show alternate states of the held-photo section.

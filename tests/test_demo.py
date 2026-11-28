@@ -161,9 +161,9 @@ class SeededDemo(unittest.TestCase):
     def test_one_imported_export_shows_a_run_and_one_pending_review_pair_with_its_held_copy(self):
         exports = self.rows(Export)
         self.assertEqual([(e.status, e.kind) for e in exports], [("imported", "incremental"), ("downloading", "incremental"), ("failed", "incremental"), ("failed", "incremental"),
-                                                                ("downloading", "incremental"), ("imported", "incremental")])
+                                                                ("downloading", "incremental"), ("imported", "incremental"), ("imported", "incremental")])
         runs = self.rows(ImportRun)
-        self.assertEqual([(r.status, r.added, r.review, r.missing_gps) for r in runs], [("done", 2, 1, 3)])
+        self.assertEqual([(r.status, r.added, r.review, r.missing_gps) for r in runs], [("done", 2, 1, 3), ("done", 1797, 0, 0)])
         reviews = self.rows(ReviewItem)
         self.assertEqual([r.status for r in reviews], ["pending", "kept_both"])
         hold = Photos(self.root / "photos").root / reviews[0].hold_path
@@ -257,10 +257,16 @@ class SeededDemo(unittest.TestCase):
         self.assertEqual([part["freed"] for part in shown["parts"]], [True] + [False] * 7)
         self.assertEqual([part["progress"] for part in shown["parts"]][-1], 62)
 
+    def test_one_imported_per_part_export_has_failed_items_that_can_be_retried(self):
+        with db.session(self.engine) as opened:
+            export = opened.query(Export).filter(Export.google_id == "demo-export-6").one()
+            shown = exports.as_dict(opened, export, NOON)
+        self.assertEqual((shown["status"], shown["failed_items"], shown["item_retry_allowed"], shown["import_retry_allowed"]), ("imported", 3, True, False))
+
     def test_every_seeded_export_is_pinned_to_its_owner_whatever_the_accounts_default_person_becomes(self):
         with db.session(self.engine) as opened:
             seeded = list(opened.query(Export).order_by(Export.id))
-            self.assertEqual(len(seeded), 6)
+            self.assertEqual(len(seeded), 7)
             for export in seeded:
                 account = opened.get(GoogleAccount, export.account_id)
                 self.assertIsNotNone(export.owner_person_id)

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { seededStatus } from "../test/server";
 import { onDay } from "./format";
-import { downloadingExport, keptPartsExport, perPartExport, expiredExport, failedDownload, failedExport, olderFailedDownload, spentDownload, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
-import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, freedSize, freedTotal, heldTotal, importedPerPart, importedTotal, importFailureWords, keptSentence, partImportState, retryDownloadSentence, retryImportNote, retryImportSentence, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "./view";
+import { downloadingExport, keptPartsExport, perPartExport, expiredExport, failedDownload, failedExport, failedItemsExport, olderFailedDownload, spentDownload, familyAccount, importedExport, joAccount, preparingExport, queuedConnect, waitingConnect } from "../test/server";
+import { accountExports, alertChip, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, freedSize, freedTotal, heldTotal, importedPerPart, importedTotal, importFailureWords, keptSentence, partImportState, retryDownloadSentence, retryImportNote, retryImportSentence, retryItemsNote, jobSentence, lastExportSentence, maybeRenewed, renewNow, scheduleLive, partChip, partsLabel, reviewCount, needsAttention, needsSentence, pixelSyncthing, sessionChip, syncthingCard } from "./view";
 
 describe("sessionChip", () => {
   it("names each session state with a tone", () => {
@@ -387,12 +387,25 @@ describe("a failed download", () => {
     expect(retryImportNote({ ...failedExport, import_retry_allowed: false })).toBeNull();
   });
 
+  it("says what Retry failed items does only when it is offered", () => {
+    expect(retryItemsNote(failedItemsExport)).toBe("3 items couldn't be imported. Retry failed items tries them again and keeps everything already imported.");
+    expect(retryItemsNote({ ...failedItemsExport, failed_items: 1 })).toBe("1 item couldn't be imported. Retry failed items tries them again and keeps everything already imported.");
+    expect(retryItemsNote({ ...failedItemsExport, item_retry_allowed: false })).toBeNull();
+    expect(retryItemsNote(importedExport)).toBeNull();
+  });
+
+  it("says how many failed items pressing the button queued", () => {
+    const queued = { export_id: 47, status: "importing", stage: "unpacked", per_part: true, parts_requeued: 0, items_requeued: 3, run_requeued: true };
+    expect(retryImportSentence(queued, "jo.photos@example.com")).toBe("3 items of jo.photos@example.com's export queued to import again.");
+    expect(retryImportSentence({ ...queued, items_requeued: 1 }, "jo.photos@example.com")).toBe("1 item of jo.photos@example.com's export queued to import again.");
+  });
+
   it("says what pressing Retry import did", () => {
-    const queued = { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 2, run_requeued: false };
+    const queued = { export_id: 46, status: "downloading", stage: null, per_part: true, parts_requeued: 2, items_requeued: 0, run_requeued: false };
     expect(retryImportSentence(queued, "jo.photos@example.com")).toBe("2 parts of jo.photos@example.com's export queued to import again.");
     expect(retryImportSentence({ ...queued, parts_requeued: 1 }, "jo.photos@example.com")).toBe("1 part of jo.photos@example.com's export queued to import again.");
     expect(retryImportSentence({ ...queued, parts_requeued: 0 }, "jo.photos@example.com")).toBe("Nothing in this export was waiting for a retry.");
-    expect(retryImportSentence({ ...queued, status: "failed", parts_requeued: 0, run_requeued: true }, "jo.photos@example.com")).toBe("Finishing the import of jo.photos@example.com's export queued again.");
+    expect(retryImportSentence({ ...queued, status: "failed", parts_requeued: 0, items_requeued: 0, run_requeued: true }, "jo.photos@example.com")).toBe("Finishing the import of jo.photos@example.com's export queued again.");
     expect(retryImportSentence({ ...queued, per_part: false, parts_requeued: 0 }, "jo.photos@example.com")).toBe("Import queued again for jo.photos@example.com.");
   });
 

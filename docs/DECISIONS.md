@@ -180,3 +180,11 @@ The owner accepted the proposed defaults of `docs/design/recovery-point-gate.md`
 | A web page for the per-person switch | A page on the People page. The question was "Does the per-person switch get a web page?" and the owner answered "Page on people, no design signoff needed". This waives promise 6's design sign-off for that page; the waiver covers that page only. It is a separate slice and not built | #542, 7224479542 |
 | The reconcile at `on` | A catalogue-only reconcile runs at `on` and `stopped`, and `request(on)` is refused while `DARKROOM_PIXEL_IMMICH_SOURCE` is off | #542, 2026-11-27 |
 | Failed and expired old-way exports; cleanup and freeing; a stopped person's new export | The switch does not wait for failed or expired exports; cleanup and part freeing stay kept until cutover; a stopped person's fresh export waits with one alert and is never imported the old way | #542, 2026-11-27 |
+
+## Retrying a per-part export's failed items from the Exports page (#529, 2026-11-27)
+
+| Question | Decision | Where recorded |
+| --- | --- | --- |
+| Design sign-off | The owner waived promise 6's design sign-off for #529: "Skip the design sign-off, you have my permission". It covers this one control (its placement, words and states) and nothing else. The comment was posted by the agent on the owner's behalf, quoting the owner | #529, https://github.com/AnthonyPluth/Darkroom/issues/529#issuecomment-7228671645 |
+| The control | In Earlier exports, an imported per-part export with failed items shows "N items couldn't be imported. Retry failed items tries them again and keeps everything already imported." and a **Retry failed items** button. It calls `POST /api/exports/{id}/import` and retries all the export's failed items at once; it has no confirmation step because it deletes nothing | #529 |
+| Refused parts | Unchanged: an explicit import request re-queues failed parts only, never refused ones (#551). "It doesn't try again on its own" stays on the refused and failed sentences, which are still true | #529, #551 |

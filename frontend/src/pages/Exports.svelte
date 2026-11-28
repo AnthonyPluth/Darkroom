@@ -6,7 +6,7 @@
   import { nowSeconds, onDay, onDayAt, untilDay, when } from "$lib/format";
   import { Loader } from "$lib/loader.svelte";
   import { followLink } from "$lib/nav.svelte";
-  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, freedTotal, heldTotal, importedPerPart, importedTotal, keptSentence, partImportState, retryDownloadSentence, retryImportNote, retryImportSentence, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, renewNow, scheduleLive, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
+  import { accountExports, checkNowSentence, currentExport, earlierExports, exportChip, failedCaptures, failedDownloadSentence, freedTotal, heldTotal, importedPerPart, importedTotal, keptSentence, partImportState, retryDownloadSentence, retryImportNote, retryImportSentence, retryItemsNote, JOB_NAMES, jobSentence, lastExportSentence, latestJob, maybeCreated, maybeRenewed, openJob, renewNow, scheduleLive, partChip, partsLabel, reviewCount, sessionChip } from "$lib/view";
   import Chip from "../components/Chip.svelte";
   import LoadFailed from "../components/LoadFailed.svelte";
   import Table from "../components/Table.svelte";
@@ -316,6 +316,7 @@
               {@const review = reviewCount(data.imports, item.id)}
               {@const retryNote = failedDownloadSentence(item)}
               {@const importNote = retryImportNote(item)}
+              {@const itemsNote = retryItemsNote(item)}
               <tr>
                 <td data-label="Exported">{onDay(item.created_at ?? 0)}</td>
                 <td data-label="Parts">{item.part_count ?? "None"}</td>
@@ -330,6 +331,9 @@
                     {:else if importNote}
                       <span id="import-retry-note-{item.id}">{importNote}</span>
                       <button type="button" class="btn" disabled={busy > 0} aria-describedby="import-retry-note-{item.id}" onclick={() => retryImport(item.id, account.email)}>Retry import</button>
+                    {:else if itemsNote}
+                      <span id="import-items-note-{item.id}">{itemsNote}</span>
+                      <button type="button" class="btn" disabled={busy > 0} aria-describedby="import-items-note-{item.id}" onclick={() => retryImport(item.id, account.email)}>Retry failed items</button>
                     {:else if item.status === "failed" && item.retry_refusal}
                       <span>{item.retry_refusal}</span>
                     {:else if review > 0}

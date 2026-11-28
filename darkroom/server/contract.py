@@ -411,6 +411,8 @@ class ExportView(TypedDict):
     retry_allowed: bool
     retry_refusal: str | None
     import_retry_allowed: bool
+    failed_items: int
+    item_retry_allowed: bool
 
 
 class ExportSchedule(TypedDict):
@@ -480,6 +482,7 @@ class ImportQueued(TypedDict):
     stage: str | None
     per_part: bool
     parts_requeued: int
+    items_requeued: int
     run_requeued: bool
 
 
