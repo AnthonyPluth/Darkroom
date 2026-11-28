@@ -39,6 +39,9 @@ class Member(Protocol):
     @property
     def root(self) -> TakeoutEntry: ...
 
+    @property
+    def root_id(self) -> int: ...
+
 
 class Canonical(Protocol):
     @property
@@ -58,7 +61,7 @@ class Pair:
 
     @property
     def key(self) -> str:
-        return f"{TAKEOUT_LIVE}{self.still.root.id}"
+        return f"{TAKEOUT_LIVE}{self.still.root_id}"
 
 
 @dataclass(frozen=True)
@@ -97,13 +100,13 @@ def ambiguous(canon: Canonical) -> set[int]:
             continue
         stills = pairing.live_candidates(unit.item, index)
         if len(stills) > 1:
-            found |= {unit.root.id, *(by_path[path].root.id for path in stills if path in by_path)}
+            found |= {unit.root_id, *(by_path[path].root_id for path in stills if path in by_path)}
     return found
 
 
 def groups(canon: Canonical) -> Grouping:
     by_path = {unit.item.path: unit for unit in canon.units}
-    trashed = {unit.root.id for unit in canon.trashed}
+    trashed = {unit.root_id for unit in canon.trashed}
     claims: dict[Path, list[Member]] = {}
     for unit in (*canon.units, *canon.trashed):
         if is_video(unit) and unit.item.live_pair_of is not None:
@@ -113,24 +116,24 @@ def groups(canon: Canonical) -> Grouping:
     candidates: list[Pair] = []
     for path, videos in sorted(claims.items()):
         still = by_path.get(path)
-        alive = [video for video in videos if video.root.id not in trashed]
+        alive = [video for video in videos if video.root_id not in trashed]
         if len(videos) > 1:
-            tangled |= {video.root.id for video in alive} | ({still.root.id} if still is not None else set())
+            tangled |= {video.root_id for video in alive} | ({still.root_id} if still is not None else set())
         elif still is None:
-            partial |= {video.root.id for video in alive}
+            partial |= {video.root_id for video in alive}
         elif not alive:
-            partial.add(still.root.id)
+            partial.add(still.root_id)
         else:
             candidates.append(Pair(still, alive[0]))
     pairs = []
     for pair in candidates:
-        if {pair.still.root.id, pair.video.root.id} & tangled:
-            tangled |= {pair.still.root.id, pair.video.root.id}
+        if {pair.still.root_id, pair.video.root_id} & tangled:
+            tangled |= {pair.still.root_id, pair.video.root_id}
         else:
             pairs.append(pair)
     held: dict[int, Hold] = {root: "live_partial" for root in partial - tangled}
     held |= {root: "live_ambiguous" for root in tangled}
-    return Grouping(tuple(sorted(pairs, key=lambda pair: pair.still.root.id)), held)
+    return Grouping(tuple(sorted(pairs, key=lambda pair: pair.still.root_id)), held)
 
 
 def embedded_motion(tags: Mapping[str, object]) -> bool:

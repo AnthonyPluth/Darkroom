@@ -3,12 +3,13 @@ from __future__ import annotations
 import contextlib
 import json
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final
+from itertools import batched
+from typing import Final, NamedTuple
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select, update
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
@@ -25,10 +26,23 @@ ACTIONS: Final[dict[int, dedupe.Action]] = {1: "skip", 2: "skip", 3: "skip", 4: 
 UNDECIDED: Final = frozenset({part_ingest.WAITING_SIDECAR, part_ingest.WAITING_EXPORT, part_ingest.LISTED})
 STILL_OPEN: Final = ("downloading", "downloaded", "importing")
 GAVE_UP: Final = ("failed", "expired")
+FETCH_ROWS: Final = 5000
+ROWS_AT_A_TIME: Final = 200
 
 
 class UploadsPending(RuntimeError):
     pass
+
+
+class Row(NamedTuple):
+    id: int
+    name: str
+    kind: str
+    bytes: int
+    sha1: str | None
+    copy_of_id: int | None
+    decision_id: int | None
+    sidecar_entry_id: int | None
 
 
 @dataclass(frozen=True)
@@ -36,11 +50,45 @@ class Unit:
     item: pairing.TakeoutItem
     root: TakeoutEntry
     sidecar_id: int | None
-    sidecar_entry: TakeoutEntry | None = None
+    sidecar_entry_id: int | None = None
 
     @property
     def path(self) -> str:
         return str(self.item.path)
+
+    @property
+    def root_id(self) -> int:
+        return self.root.id
+
+    @property
+    def bytes(self) -> int:
+        return self.root.bytes
+
+
+class Listed(Unit):
+    opened: Session
+    row: Row
+
+    def __init__(self, item: pairing.TakeoutItem, sidecar_id: int | None, opened: Session, row: Row, sidecar_entry_id: int | None = None) -> None:
+        object.__setattr__(self, "item", item)
+        object.__setattr__(self, "sidecar_id", sidecar_id)
+        object.__setattr__(self, "sidecar_entry_id", sidecar_entry_id)
+        object.__setattr__(self, "opened", opened)
+        object.__setattr__(self, "row", row)
+
+    @property
+    def root(self) -> TakeoutEntry:
+        found = self.opened.get(TakeoutEntry, self.row.id)
+        assert found is not None
+        return found
+
+    @property
+    def root_id(self) -> int:
+        return self.row.id
+
+    @property
+    def bytes(self) -> int:
+        return self.row.bytes
 
 
 @dataclass(frozen=True)
@@ -54,27 +102,34 @@ def is_listed(name: str) -> bool:
     return not name.endswith("/") and not any(part.startswith(".") for part in name.split("/")[:-1])
 
 
-def entries_of(opened: Session, export: Export) -> list[TakeoutEntry]:
-    rows = opened.execute(select(TakeoutEntry).where(TakeoutEntry.export_id == export.id).order_by(TakeoutEntry.id)).scalars()
-    return [row for row in rows if is_listed(row.name)]
+def listed_rows(opened: Session, export: Export) -> list[Row]:
+    query = select(TakeoutEntry.id, TakeoutEntry.name, TakeoutEntry.kind, TakeoutEntry.bytes, TakeoutEntry.sha1, TakeoutEntry.copy_of_id,
+                   TakeoutEntry.decision_id, TakeoutEntry.sidecar_entry_id).where(TakeoutEntry.export_id == export.id).order_by(TakeoutEntry.id)
+    return [Row(*found) for found in opened.execute(query.execution_options(yield_per=FETCH_ROWS)) if is_listed(found.name)]
 
 
 def canonical(opened: Session, export: Export) -> Canon:
-    rows = entries_of(opened, export)
-    texts = {found.entry_id: found.text for found in opened.execute(select(TakeoutSidecar).where(TakeoutSidecar.export_id == export.id)).scalars()}
+    rows = listed_rows(opened, export)
+    stored = set(opened.execute(select(TakeoutSidecar.entry_id).where(TakeoutSidecar.export_id == export.id)).scalars())
     folders: dict[Path, list[str]] = {}
     by_path = {Path(row.name): row for row in rows}
     for path in by_path:
         folders.setdefault(path.parent, []).append(path.name)
     digests = {path: row.sha1 for path, row in by_path.items() if row.kind == "media" and row.sha1 is not None}
-    read = {path: texts[row.id] for path, row in by_path.items() if row.kind == "sidecar" and row.id in texts}
-    report = pairing.pair_names([(folder, sorted(names)) for folder, names in sorted(folders.items())], digests, reading=read.get)
-    owners = {path: row.id for path, row in by_path.items() if row.id in texts}
+
+    def reading(path: Path) -> str | None:
+        row = by_path.get(path)
+        if row is None or row.kind != "sidecar" or row.id not in stored:
+            return None
+        return opened.scalars(select(TakeoutSidecar.text).where(TakeoutSidecar.entry_id == row.id)).first()
+
+    report = pairing.pair_names([(folder, sorted(names)) for folder, names in sorted(folders.items())], digests, reading=reading)
+    owners = {path: row.id for path, row in by_path.items() if row.id in stored}
     units: list[Unit] = []
     trashed: list[Unit] = []
     roots = [row for row in rows if row.kind == "media" and row.copy_of_id is None and row.sha1 is not None]
     taken: set[int] = set()
-    pending: list[tuple[pairing.TakeoutItem, TakeoutEntry | None]] = []
+    pending: list[tuple[pairing.TakeoutItem, Row | None]] = []
     for item in report.items:
         own = [row for path in item.copies if (row := by_path.get(path)) is not None and row.copy_of_id is None and row.id not in taken]
         found = min(own, key=lambda row: (row.name != str(item.path), row.decision_id is None, row.id)) if own else None
@@ -89,12 +144,13 @@ def canonical(opened: Session, export: Export) -> Canon:
                 taken.add(found.id)
         if found is not None:
             chosen = None if item.sidecar is None or item.sidecar_from_still else owners.get(item.sidecar)
-            (trashed if item.special == pairing.TRASHED else units).append(Unit(item, found, chosen, None if item.sidecar is None else by_path.get(item.sidecar)))
+            beside = None if item.sidecar is None else by_path.get(item.sidecar)
+            (trashed if item.special == pairing.TRASHED else units).append(Listed(item, chosen, opened, found, None if beside is None else beside.id))
     for row in roots:
         if row.id not in taken:
             alone = pairing.TakeoutItem(Path(row.name), row.sha1 or "", (Path(row.name),), None)
-            units.append(Unit(alone, row, row.sidecar_entry_id))
-    return Canon(report, tuple(sorted(units, key=lambda unit: unit.root.id)), tuple(sorted(trashed, key=lambda unit: unit.root.id)))
+            units.append(Listed(alone, row.sidecar_entry_id, opened, row))
+    return Canon(report, tuple(sorted(units, key=lambda unit: unit.root_id)), tuple(sorted(trashed, key=lambda unit: unit.root_id)))
 
 
 def needs_decision(root: TakeoutEntry) -> bool:
@@ -115,12 +171,33 @@ def same_json(first: str | None, second: str | None) -> bool:
         return False
 
 
+class StoredTexts:
+    def __init__(self, opened: Session) -> None:
+        self.opened = opened
+        self.loaded: dict[int, str] = {}
+
+    def load(self, entry_ids: Iterable[int]) -> None:
+        wanted = [entry_id for entry_id in entry_ids if entry_id not in self.loaded]
+        for chunk in batched(wanted, ROWS_AT_A_TIME, strict=False):
+            rows = self.opened.execute(select(TakeoutSidecar.entry_id, TakeoutSidecar.text).where(TakeoutSidecar.entry_id.in_(chunk)))
+            self.loaded.update({entry_id: text for entry_id, text in rows})
+
+    def clear(self) -> None:
+        self.loaded.clear()
+
+    def get(self, entry_id: int, /) -> str | None:
+        found = self.loaded.get(entry_id)
+        return found if found is not None else self.opened.scalars(select(TakeoutSidecar.text).where(TakeoutSidecar.entry_id == entry_id)).first()
+
+
 class Finish(part_ingest.Ingest):
     def __init__(self, opened: Session, settings: config.Settings, photos: Photos, export: Export, part: ExportPart, person: Person, now: float,
                  tools: run.Tools, stack: contextlib.ExitStack, row: ImportRun) -> None:
         super().__init__(opened, settings, photos, export, part, person, now, tools, stack)
         self.row = row
         self.before = {int(each) for each in json.loads(row.changed_people or "[]")}
+        self.texts = self.stored = StoredTexts(opened)
+        self.canon: Canon | None = None
         stack.callback(self.release_scratch)
 
     def commit(self) -> None:
@@ -129,34 +206,52 @@ class Finish(part_ingest.Ingest):
         self.row.changed_people = json.dumps(sorted(self.before | self.changed))
         self.opened.commit()
 
+    def release_scratch(self) -> None:
+        super().release_scratch()
+        self.stored.clear()
+
+    def picture(self) -> Canon:
+        if self.canon is None:
+            self.canon = canonical(self.opened, self.export)
+        return self.canon
+
     def text_of(self, entry_id: int | None) -> str | None:
         return None if entry_id is None else self.texts.get(entry_id)
 
+    def entry_ids(self, *conditions: ColumnElement[bool]) -> set[int]:
+        return set(self.opened.scalars(select(TakeoutEntry.id).where(TakeoutEntry.export_id == self.export.id, *conditions)))
+
+    def loaded(self, units: Sequence[Unit]) -> list[TakeoutEntry]:
+        return self.entries_by_id([unit.root_id for unit in units])
+
     def remeasure(self, held: Sequence[Unit]) -> None:
-        for unit in held:
-            unit.root.sidecar_entry_id = unit.sidecar_id
+        for chunk in batched(held, FETCH_ROWS, strict=False):
+            self.opened.execute(update(TakeoutEntry), [{"id": unit.root_id, "sidecar_entry_id": unit.sidecar_id} for unit in chunk])
+        self.opened.expire_all()
         self.commit()
         self.measure_in_batches(held, restore=False)
 
     def measure_in_batches(self, units: Sequence[Unit], restore: bool) -> None:
-        by_id = {unit.root.id: unit for unit in units}
-        kept = {unit.root.id: (unit.root.outcome, unit.root.done_at, unit.root.metadata_pending) for unit in units}
         try:
-            for chunk in self.in_batches([unit.root for unit in units]):
+            for chunk in self.weighed_batches(units):
                 self.release_scratch()
-                self.measure([part_ingest.Target(entry, by_id[entry.id].sidecar_id) for entry in chunk])
+                rows = self.loaded(chunk)
+                by_id = {unit.root_id: unit for unit in chunk}
+                kept = {row.id: (row.outcome, row.done_at, row.metadata_pending) for row in rows}
+                self.stored.load(unit.sidecar_id for unit in chunk if unit.sidecar_id is not None)
+                self.measure([part_ingest.Target(row, by_id[row.id].sidecar_id) for row in rows])
                 if restore:
-                    for entry in chunk:
-                        entry.outcome, entry.done_at, entry.metadata_pending = kept[entry.id]
+                    for row in rows:
+                        row.outcome, row.done_at, row.metadata_pending = kept[row.id]
                 self.commit()
         finally:
             self.close_archive()
             self.release_scratch()
 
     def refresh_peers(self, canon: Canon, held: Sequence[Unit]) -> None:
-        waiting = {unit.root.id for unit in held}
-        stale = [unit for unit in canon.units if unit.root.id not in waiting and unit.root.decision_id is not None and unit.sidecar_id is not None
-                 and unit.root.sha1 is not None and unit.root.captured_utc is None]
+        waiting = {unit.root_id for unit in held}
+        decided = self.entry_ids(TakeoutEntry.decision_id.is_not(None), TakeoutEntry.sha1.is_not(None), TakeoutEntry.captured_utc.is_(None))
+        stale = [unit for unit in canon.units if unit.root_id not in waiting and unit.root_id in decided and unit.sidecar_id is not None]
         if stale:
             self.measure_in_batches(stale, restore=True)
 
@@ -166,18 +261,25 @@ class Finish(part_ingest.Ingest):
         return replace(part_pairing.candidate_of(unit.root), source_path=unit.path, is_edited=edited, edited_of=edited_of)
 
     def judge(self, canon: Canon, held: Sequence[Unit]) -> dict[str, dedupe.Decision]:
-        live = [unit for unit in canon.units if unit.root.outcome != part_ingest.FAILED or unit.root.decision_id is not None]
-        candidates = {unit.path: self.candidate(unit) for unit in live}
+        candidates: dict[str, dedupe.TakeoutCandidate] = {}
+        live: list[tuple[str, int | None]] = []
+        for chunk in batched(canon.units, ROWS_AT_A_TIME, strict=False):
+            rows = {row.id: row for row in self.loaded(chunk)}
+            for unit in chunk:
+                root = rows[unit.root_id]
+                if root.outcome != part_ingest.FAILED or root.decision_id is not None:
+                    candidates[unit.path] = self.candidate(unit)
+                    live.append((unit.path, root.decision_id))
         with_peers = replace(self.index, peers=tuple(candidates.values()), decided={})
         originals: dict[str, dedupe.Decision] = {}
-        for unit in live:
-            if candidates[unit.path].is_edited:
+        for path, decision_id in live:
+            if candidates[path].is_edited:
                 continue
-            stored = None if unit.root.decision_id is None else self.opened.get(DedupeDecision, unit.root.decision_id)
+            stored = None if decision_id is None else self.opened.get(DedupeDecision, decision_id)
             if stored is None:
-                originals[unit.path] = dedupe.decide(with_peers, candidates[unit.path], self.dedupe_settings)
+                originals[path] = dedupe.decide(with_peers, candidates[path], self.dedupe_settings)
             elif stored.reversed_at is None:
-                originals[unit.path] = decision_from(stored, self.index.default_person_id)
+                originals[path] = decision_from(stored, self.index.default_person_id)
         with_originals = replace(with_peers, decided=originals)
         wanted = {unit.path for unit in held}
         return {path: originals.get(path) or dedupe.decide(with_originals, candidates[path], self.dedupe_settings) for path in candidates if path in wanted}
@@ -201,57 +303,64 @@ class Finish(part_ingest.Ingest):
         self.place_decided(entry, row, Path(unit.path))
 
     def decide_held(self, canon: Canon) -> None:
-        self.sidecar_rows()
-        held = [unit for unit in canon.units if needs_decision(unit.root)]
+        waiting = self.entry_ids(TakeoutEntry.decision_id.is_(None), TakeoutEntry.sha1.is_not(None), TakeoutEntry.outcome.in_(sorted(UNDECIDED)))
+        held = [unit for unit in canon.units if unit.root_id in waiting]
         if not held:
             return
+        self.canon = None
         self.remeasure(held)
         self.refresh_peers(canon, held)
         self.lock()
         judged = self.judge(canon, held)
-        by_id = {unit.root.id: unit for unit in held}
-        for chunk in self.in_batches([unit.root for unit in held]):
+        for chunk in self.weighed_batches(held):
+            rows = {row.id: row for row in self.loaded(chunk)}
+            self.stored.load(unit.sidecar_id for unit in chunk if unit.sidecar_id is not None)
             try:
-                for entry in chunk:
-                    unit = by_id[entry.id]
-                    if unit.path in judged and needs_decision(unit.root):
+                for unit in chunk:
+                    if unit.path in judged and needs_decision(rows[unit.root_id]):
                         self.settle(unit, judged[unit.path])
             finally:
                 self.close_archive()
                 self.release_scratch()
 
     def fill_pending(self, canon: Canon) -> None:
-        self.sidecar_rows()
+        pending = self.entry_ids(TakeoutEntry.metadata_pending.is_(True))
         for unit in canon.units:
+            if unit.root_id not in pending:
+                continue
+            self.lock()
             root = unit.root
             if not root.metadata_pending:
                 continue
-            self.lock()
             root.sidecar_entry_id = unit.sidecar_id
             if unit.sidecar_id is None:
                 root.metadata_pending = False
                 self.commit()
             else:
                 self.opened.flush()
+                self.stored.load([unit.sidecar_id])
                 self.fill(root)
+                self.stored.clear()
 
     def canonicalise(self, canon: Canon) -> None:
         self.lock()
-        self.sidecar_rows()
-        held = {row.source_path: row.id for row in self.opened.execute(select(DedupeDecision).where(DedupeDecision.export_id == self.export.id)).scalars()}
+        held = {source_path: decision_id for decision_id, source_path in self.opened.execute(
+            select(DedupeDecision.id, DedupeDecision.source_path).where(DedupeDecision.export_id == self.export.id))}
         renamed = differ = 0
-        for unit in canon.units:
-            root = unit.root
-            row = None if root.decision_id is None else self.opened.get(DedupeDecision, root.decision_id)
-            if row is not None:
-                if row.source_path != unit.path and unit.path not in held:
-                    held.pop(row.source_path, None)
-                    row.source_path = unit.path
-                    held[unit.path] = row.id
-                    self.opened.flush()
-                renamed += row.source_path != root.name
-            if root.sidecar_entry_id != unit.sidecar_id and not same_json(self.text_of(root.sidecar_entry_id), self.text_of(unit.sidecar_id)):
-                differ += 1
+        for chunk in batched(canon.units, ROWS_AT_A_TIME, strict=False):
+            rows = {row.id: row for row in self.loaded(chunk)}
+            for unit in chunk:
+                root = rows[unit.root_id]
+                row = None if root.decision_id is None else self.opened.get(DedupeDecision, root.decision_id)
+                if row is not None:
+                    if row.source_path != unit.path and unit.path not in held:
+                        held.pop(row.source_path, None)
+                        row.source_path = unit.path
+                        held[unit.path] = row.id
+                        self.opened.flush()
+                    renamed += row.source_path != root.name
+                if root.sidecar_entry_id != unit.sidecar_id and not same_json(self.text_of(root.sidecar_entry_id), self.text_of(unit.sidecar_id)):
+                    differ += 1
         self.row.paths_renamed, self.row.sidecars_differ = renamed, differ
         if differ:
             events.record(self.opened, self.now, "export_sidecar_choices_differ", f"export {self.export.id}", f"{differ} items")
@@ -259,33 +368,47 @@ class Finish(part_ingest.Ingest):
         self.commit()
 
     def sidecar_counts(self, canon: Canon) -> tuple[int, int]:
-        paired = sorted((unit.sidecar_entry for unit in canon.units
-                         if unit.sidecar_entry is not None and (unit.root.outcome != part_ingest.FAILED or unit.root.decision_id is not None)),
-                        key=lambda entry: (entry.part_number, entry.id))
+        wanted: list[int] = []
+        beside = [unit for unit in canon.units if unit.sidecar_entry_id is not None]
+        for chunk in batched(beside, ROWS_AT_A_TIME, strict=False):
+            rows = {row.id: row for row in self.loaded(chunk)}
+            wanted.extend(unit.sidecar_entry_id for unit in chunk
+                          if unit.sidecar_entry_id is not None and (rows[unit.root_id].outcome != part_ingest.FAILED or rows[unit.root_id].decision_id is not None))
+        numbers: dict[int, int] = {}
+        for known in batched(set(wanted), FETCH_ROWS, strict=False):
+            numbers.update({entry_id: number for entry_id, number in self.opened.execute(
+                select(TakeoutEntry.id, TakeoutEntry.part_number).where(TakeoutEntry.id.in_(known)))})
+        wanted.sort(key=lambda entry_id: (numbers[entry_id], entry_id))
         states: Counter[str] = Counter()
         try:
-            for entry in paired:
-                states[self.sidecar_state(entry)] += 1
+            for ids in batched(wanted, ROWS_AT_A_TIME, strict=False):
+                entries = {entry.id: entry for entry in self.entries_by_id(ids)}
+                for entry_id in ids:
+                    states[self.sidecar_state(entries[entry_id])] += 1
         finally:
             self.close_archive()
         return states["unreadable"], states["repaired"]
 
     def leave_out(self, canon: Canon) -> None:
         self.lock()
-        for unit in canon.trashed:
-            if unit.root.outcome in UNDECIDED:
-                unit.root.outcome, unit.root.done_at = part_ingest.SKIPPED, self.now
-        still = [entry.id for entry in entries_of(self.opened, self.export) if entry.kind == "media" and entry.copy_of_id is None
-                 and entry.sha1 is not None and entry.outcome in UNDECIDED]
+        for chunk in batched([unit.root_id for unit in canon.trashed], FETCH_ROWS, strict=False):
+            self.opened.execute(update(TakeoutEntry).where(TakeoutEntry.id.in_(chunk), TakeoutEntry.outcome.in_(sorted(UNDECIDED)))
+                                .values(outcome=part_ingest.SKIPPED, done_at=self.now).execution_options(synchronize_session=False))
+        undecided = self.opened.execute(select(TakeoutEntry.name).where(
+            TakeoutEntry.export_id == self.export.id, TakeoutEntry.kind == "media", TakeoutEntry.copy_of_id.is_(None), TakeoutEntry.sha1.is_not(None),
+            TakeoutEntry.outcome.in_(sorted(UNDECIDED))).execution_options(yield_per=FETCH_ROWS))
+        still = sum(1 for name in undecided.scalars() if is_listed(name))
         if still:
             self.commit()
-            raise run.StageFailed(f"{len(still)} held items could not be decided")
+            raise run.StageFailed(f"{still} held items could not be decided")
         kinds = dict(canon.report.not_imported)
         if canon.trashed:
             kinds[pairing.TRASHED] = len(canon.trashed)
-        media = [entry for entry in entries_of(self.opened, self.export) if entry.kind == "media" and entry.copy_of_id is None]
-        self.row.failed = sum(1 for entry in media if entry.outcome == part_ingest.FAILED)
-        self.row.repeated = sum(1 for unit in canon.units if unit.root.outcome == part_ingest.SKIPPED and unit.root.decision_id is None)
+        media = self.opened.execute(select(TakeoutEntry.name, TakeoutEntry.outcome).where(
+            TakeoutEntry.export_id == self.export.id, TakeoutEntry.kind == "media", TakeoutEntry.copy_of_id.is_(None)).execution_options(yield_per=FETCH_ROWS))
+        self.row.failed = sum(1 for name, outcome in media if outcome == part_ingest.FAILED and is_listed(name))
+        unrepeated = self.entry_ids(TakeoutEntry.outcome == part_ingest.SKIPPED, TakeoutEntry.decision_id.is_(None))
+        self.row.repeated = sum(1 for unit in canon.units if unit.root_id in unrepeated)
         self.row.not_imported = json.dumps(kinds, sort_keys=True)
         self.row.orphan_sidecars, self.row.unpaired_media = len(canon.report.orphan_sidecars), len(canon.report.unpaired_media)
         self.row.sidecars_unreadable, self.row.sidecars_repaired = self.sidecar_counts(canon)
@@ -297,12 +420,11 @@ class Finish(part_ingest.Ingest):
         intent = managed_ingest.intent_of(self.opened, self.export)
         if intent is None:
             return
-        self.sidecar_rows()
         due: list[tuple[managed_ingest.Item, ...]] = []
         try:
             reader = managed_ingest.reader_of(self.settings, self.person, intent, self.tools.immich)
             uploads = managed_ingest.Uploads(self.opened, self.photos, self.export, intent, reader, self.now)
-            due = uploads.due(upload_items(canonical(self.opened, self.export), self.texts))
+            due = uploads.due(upload_items(self.picture(), self.texts))
             if due:
                 reader.check_access()
         except immich.ImmichFailed as error:
@@ -336,23 +458,23 @@ class Finish(part_ingest.Ingest):
 
 def live_roots(canon: Canon) -> set[int]:
     stills = {str(item.live_pair_of) for item in canon.report.items if item.live_pair_of is not None}
-    return {unit.root.id for unit in canon.units if unit.item.live_pair_of is not None or unit.path in stills}
+    return {unit.root_id for unit in canon.units if unit.item.live_pair_of is not None or unit.path in stills}
 
 
-def upload_items(canon: Canon, texts: Mapping[int, str]) -> list[managed_ingest.Item]:
+def upload_items(canon: Canon, texts: part_ingest.Texts) -> list[managed_ingest.Item]:
     live = live_roots(canon)
     grouping = managed_compound.groups(canon)
     pairs: dict[int, tuple[managed_compound.Pair, managed_compound.MemberRole]] = {}
     for each in grouping.pairs:
-        pairs[each.still.root.id], pairs[each.video.root.id] = (each, "live_still"), (each, "live_video")
-    sidecars = {unit.root.id: unit.sidecar_id for unit in canon.units}
+        pairs[each.still.root_id], pairs[each.video.root_id] = (each, "live_still"), (each, "live_video")
+    sidecars = {unit.root_id: unit.sidecar_id for unit in canon.units}
     found = []
     for unit in canon.units:
-        pair, role = pairs.get(unit.root.id, (None, None))
-        sidecar_id = sidecars[pair.still.root.id] if pair is not None and role == "live_video" and unit.item.sidecar_from_still else unit.sidecar_id
+        pair, role = pairs.get(unit.root_id, (None, None))
+        sidecar_id = sidecars[pair.still.root_id] if pair is not None and role == "live_video" and unit.item.sidecar_from_still else unit.sidecar_id
         sidecar = None if sidecar_id is None else texts.get(sidecar_id)
-        reason = grouping.held.get(unit.root.id)
-        found.append(managed_ingest.Item(unit.root, unit.path, sidecar, unit.root.id in live or reason is not None, unit.item.sidecar_from_still, pair, role,
+        reason = grouping.held.get(unit.root_id)
+        found.append(managed_ingest.Item(unit.root, unit.path, sidecar, unit.root_id in live or reason is not None, unit.item.sidecar_from_still, pair, role,
                                          reason))
     return found
 
@@ -360,14 +482,16 @@ def upload_items(canon: Canon, texts: Mapping[int, str]) -> list[managed_ingest.
 def live_decisions(opened: Session, export: Export) -> set[int]:
     canon = canonical(opened, export)
     live = live_roots(canon) | managed_compound.groups(canon).held.keys()
-    return {unit.root.decision_id for unit in canon.units if unit.root.id in live and unit.root.decision_id is not None}
+    found: set[int] = set()
+    for chunk in batched([unit.root_id for unit in canon.units if unit.root_id in live], FETCH_ROWS, strict=False):
+        found.update(opened.scalars(select(TakeoutEntry.decision_id).where(TakeoutEntry.id.in_(chunk), TakeoutEntry.decision_id.is_not(None))))
+    return found
 
 
 def live_review_items(opened: Session, export: Export, decision_id: int) -> tuple[managed_ingest.Item, managed_ingest.Item]:
     if not complete(opened, export) or run.before(export, "placed"):
         raise managed_ingest.Refused("the Live Photo can be reviewed once all parts of the export have been processed")
-    rows = opened.execute(select(TakeoutSidecar.entry_id, TakeoutSidecar.text).where(TakeoutSidecar.export_id == export.id)).all()
-    items = upload_items(canonical(opened, export), {entry_id: text for entry_id, text in rows})
+    items = upload_items(canonical(opened, export), StoredTexts(opened))
     chosen = next((item for item in items if item.root.decision_id == decision_id), None)
     if chosen is None or chosen.pair is None:
         if chosen is not None and chosen.hold == "live_ambiguous":
@@ -409,12 +533,11 @@ def stages(opened: Session, settings: config.Settings, export: Export, now: floa
         with contextlib.ExitStack() as stack:
             finishing = Finish(opened, settings, photos, export, part, person, now, tools, stack, row)
             if run.before(export, "deduped"):
-                canon = canonical(opened, export)
-                finishing.fill_pending(canon)
-                finishing.decide_held(canon)
-                finishing.canonicalise(canonical(opened, export))
+                finishing.fill_pending(finishing.picture())
+                finishing.decide_held(finishing.picture())
+                finishing.canonicalise(finishing.picture())
             if run.before(export, "placed"):
-                finishing.leave_out(canonical(opened, export))
+                finishing.leave_out(finishing.picture())
             if finishing.managed and run.before(export, "counted"):
                 finishing.send_to_immich()
             if run.before(export, "counted"):
@@ -500,11 +623,22 @@ def alert_unfinished(opened: Session, settings: config.Settings, now: float, too
     return opened_now
 
 
-def ready_exports(opened: Session) -> list[int]:
+def open_exports(opened: Session) -> list[Export]:
     statuses = (*STILL_OPEN, "failed")
     found = opened.execute(select(Export).join(ExportPart, ExportPart.export_id == Export.id)
                            .where(Export.status.in_(statuses), ExportPart.ingest_state == part_ingest.INGESTED).distinct().order_by(Export.id)).scalars()
-    return [export.id for export in found if ready(opened, export)]
+    return [export for export in found if export.status in STILL_OPEN or retry_asked(opened, export)]
+
+
+def ready_exports(opened: Session) -> list[int]:
+    return [export.id for export in open_exports(opened) if ready(opened, export)]
+
+
+def log_waiting(opened: Session) -> int:
+    waiting = [export.id for export in open_exports(opened) if complete(opened, export) and part_ingest.waits_for_earlier(opened, export)]
+    for export_id in waiting:
+        monitoring.log("export complete, finish waiting", export=export_id, reason="an earlier export of the account is not finished")
+    return len(waiting)
 
 
 def source_for_resolution(opened: Session, settings: config.Settings, photos: Photos, stack: contextlib.ExitStack,
@@ -527,7 +661,7 @@ def source_for_resolution(opened: Session, settings: config.Settings, photos: Ph
     return hold_apply.Source(stack.enter_context(paths.open_inbox_file(photos, source)), Path(unit.path).name, text, entry=unit.root)
 
 
-def finish_ready(opened: Session, settings: config.Settings, now: float, tools: run.Tools | None = None) -> list[int]:
+def finish_exports(opened: Session, settings: config.Settings, now: float, tools: run.Tools | None = None) -> list[int]:
     chosen = tools or run.Tools()
     done = []
     for export_id in ready_exports(opened):
@@ -540,6 +674,13 @@ def finish_ready(opened: Session, settings: config.Settings, now: float, tools: 
             monitoring.log("finish skipped", export=export_id, reason=type(error).__name__)
             continue
         done.append(export_id)
+    return done
+
+
+def finish_ready(opened: Session, settings: config.Settings, now: float, tools: run.Tools | None = None) -> list[int]:
+    chosen = tools or run.Tools()
+    done = finish_exports(opened, settings, now, chosen)
+    log_waiting(opened)
     alert_unfinished(opened, settings, now, chosen)
     photos = Photos(settings.photos_root)
     managed_ingest.send_kept(opened, settings, photos, now, chosen.immich)
