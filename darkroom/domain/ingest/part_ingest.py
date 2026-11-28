@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import BinaryIO, Final
+from typing import BinaryIO, Final, Protocol
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
@@ -158,9 +158,11 @@ def copy_archived_media(opened: Session, photos: Photos, export: Export, person:
 
 
 def run_queued(opened: Session, settings: config.Settings, now: float, tools: run.Tools | None = None,
-               beat: heartbeat.Heartbeat | None = None) -> list[tuple[int, int]]:
+               beat: heartbeat.Heartbeat | None = None, between: Callable[[], object] | None = None) -> list[tuple[int, int]]:
     ran = []
     for export_id, number in queued_parts(opened):
+        if between is not None:
+            between()
         export, part = opened.get(Export, export_id), part_of(opened, export_id, number)
         if export is None or part is None:
             continue
@@ -230,6 +232,15 @@ def load_index(opened: Session, export: Export, person: Person) -> dedupe.Person
     return replace(index, takeout=tuple(shot for shot in index.takeout if shot.id not in own))
 
 
+class Weighed(Protocol):
+    @property
+    def bytes(self) -> int: ...
+
+
+class Texts(Protocol):
+    def get(self, entry_id: int, /) -> str | None: ...
+
+
 @dataclass(frozen=True)
 class Plan:
     sourced: tuple[int, ...]
@@ -249,7 +260,7 @@ class Ingest:
         self.scratch: dict[int, Path] = {}
         self.measured: dict[int, MediaItem] = {}
         self.used: dict[int, int | None] = {}
-        self.texts: dict[int, str] = {}
+        self.texts: Texts = {}
         self.slot: tuple[int, contextlib.ExitStack, zipfile.ZipFile, dict[str, zipfile.ZipInfo]] | None = None
         self.managed = place.managed_import(opened, export)
         self.sweep_placements()
@@ -328,6 +339,12 @@ class Ingest:
 
     def in_batches(self, entries: list[TakeoutEntry]) -> Iterator[list[TakeoutEntry]]:
         return part_reader.batches_of(entries, part_reader.BATCH_FILES, part_reader.BATCH_BYTES)
+
+    def weighed_batches[Row: Weighed](self, rows: Sequence[Row]) -> Iterator[list[Row]]:
+        return part_reader.batches_of(rows, part_reader.BATCH_FILES, part_reader.BATCH_BYTES)
+
+    def entries_by_id(self, ids: Sequence[int]) -> list[TakeoutEntry]:
+        return part_reader.entries_by_id(self.opened, ids)
 
     def in_grouped_batches(self, groups: Sequence[Sequence[TakeoutEntry]]) -> Iterator[list[Sequence[TakeoutEntry]]]:
         return part_reader.grouped_batches_of(groups, part_reader.BATCH_FILES, part_reader.BATCH_BYTES)

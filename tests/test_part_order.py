@@ -17,7 +17,7 @@ from darkroom.domain import index
 from darkroom.domain.ingest import finish_export, part_free, part_ingest, run
 from darkroom.providers import exiftool
 from darkroom.storage import paths
-from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem, TakeoutEntry
+from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ExportPart, ImportRun, MediaItem, Person, ReviewItem, TakeoutEntry, TakeoutSidecar
 from tests.fixtures import media as fixtures
 from tests.import_world import DAY, INDEXED, NOW
 from tests.privacy import no_leaks
@@ -515,6 +515,10 @@ def own_part_sidecars_only(self):
     return rows
 
 
+def own_part_texts_only(self, entry_id, /):
+    return self.opened.scalars(select(TakeoutSidecar.text).where(TakeoutSidecar.entry_id == entry_id, TakeoutSidecar.part_number == 5)).first()
+
+
 def edits_as_originals(self, unit):
     return dataclasses.replace(REAL_CANDIDATE(self, unit), is_edited=False, edited_of=None)
 
@@ -529,7 +533,7 @@ class BrokenVariantTests(OrderCase):
         self.twin = self.whole(self.fixture)
 
     def test_the_gate_fails_when_a_part_pairs_only_with_its_own_sidecars(self):
-        with mock.patch.object(part_ingest.Ingest, "sidecar_rows", own_part_sidecars_only):
+        with mock.patch.object(part_ingest.Ingest, "sidecar_rows", own_part_sidecars_only), mock.patch.object(finish_export.StoredTexts, "get", own_part_texts_only):
             broken = self.per_part(OrderWorld(self), self.fixture, (1, 2, 3, 4, 5))
         self.assertNotEqual(broken.snapshot(), self.twin.snapshot())
         self.assertEqual(round(self.twin.item_decided_as("IMG_4000(1).JPG").lat, 5), 41.0)

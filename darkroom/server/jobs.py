@@ -360,7 +360,15 @@ def build(settings: Settings, engine: Engine, now: float = 0.0, pusher: Pusher |
                     monitoring.log("zip freeing skipped this tick", error=type(error).__name__)
                     freed = part_free.FreeReport()
                 beat.step("part ingest", **({"parts": queued} if queued else {}))
-                part_ingest.run_queued(opened, current, at, beat=beat)
+
+                def finish_between_parts() -> None:
+                    try:
+                        finish_export.finish_exports(opened, current, at)
+                    except Exception as error:
+                        opened.rollback()
+                        monitoring.log("finishing between parts skipped", error=type(error).__name__)
+
+                part_ingest.run_queued(opened, current, at, beat=beat, between=finish_between_parts)
                 beat.step("finishing exports")
                 finish_export.finish_ready(opened, current, at)
         if freed.parts or freed.held or freed.holds or freed.failed:

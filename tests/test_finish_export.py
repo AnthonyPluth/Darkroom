@@ -1,3 +1,4 @@
+import gc
 import json
 import unittest
 import zipfile
@@ -6,10 +7,12 @@ from unittest import mock
 
 from sqlalchemy import event, select
 
+from darkroom import monitoring
 from darkroom.domain import exports
-from darkroom.domain.ingest import finish_export, metadata, part_free, part_reader, place, run
+from darkroom.domain.ingest import finish_export, metadata, part_free, part_ingest, part_reader, place, run
+from darkroom.server import jobs
 from darkroom.storage import paths
-from darkroom.storage.models import Alert, DedupeDecision, Event, Export, ImportRun, MediaItem
+from darkroom.storage.models import Alert, DedupeDecision, Event, Export, GoogleAccount, ImportRun, MediaItem, TakeoutEntry, TakeoutSidecar
 from tests.import_world import DAY, NOW
 from tests.privacy import no_leaks
 from tests.test_part_ingest import Crash, PartWorld, recording_writes, short
@@ -817,6 +820,192 @@ class TickTests(unittest.TestCase):
         world.finish(earlier)
         self.assertEqual(earlier_export.status, "imported")
         self.assertEqual(finish_export.ready(world.opened, world.opened.get(Export, later.id)), True)
+
+
+def resident_entries(opened):
+    gc.collect()
+    return sum(1 for found in opened.identity_map.values() if isinstance(found, TakeoutEntry))
+
+
+class BoundedFinishTests(unittest.TestCase):
+    def ready(self):
+        world = FinishWorld(self)
+        export = world.create(small_scenario(world), parts=2)
+        world.ingest_all(export, (1, 2))
+        return world, export
+
+    def counting_loads(self, *models):
+        loads = []
+        for model in models:
+            def seen(target, context, name=model.__name__):
+                loads.append(name)
+
+            event.listen(model, "load", seen)
+            self.addCleanup(event.remove, model, "load", seen)
+        return loads
+
+    def test_the_canonical_picture_loads_no_entry_and_no_sidecar_text_until_a_unit_is_asked_for_its_root(self):
+        world, export = self.ready()
+        world.opened.expire_all()
+        loads = self.counting_loads(TakeoutEntry, TakeoutSidecar)
+        canon = finish_export.canonical(world.opened, world.opened.get(Export, export.id))
+        self.assertGreater(len(canon.units), 5)
+        self.assertEqual(loads, [])
+        self.assertEqual(canon.units[0].root.id, canon.units[0].root_id)
+        self.assertEqual(loads, ["TakeoutEntry"])
+
+    def test_finishing_in_batches_of_one_gives_the_result_of_the_default_batches_and_keeps_few_entries_loaded(self):
+        reference, export = self.ready()
+        reference.finish(export)
+        expected = (reference.comparable(), reference.run_row(), reference.import_done())
+        world, export = self.ready()
+        peak = [0]
+
+        def watching(name):
+            real = getattr(finish_export.Finish, name)
+
+            def wrapped(*args, **kwargs):
+                peak[0] = max(peak[0], resident_entries(world.opened))
+                return real(*args, **kwargs)
+
+            return mock.patch.object(finish_export.Finish, name, wrapped)
+
+        loads = self.counting_loads(TakeoutSidecar)
+        with (mock.patch.object(part_reader, "BATCH_FILES", 1), mock.patch.object(finish_export, "ROWS_AT_A_TIME", 1), watching("settle"),
+              watching("measure"), watching("candidate"), watching("fill")):
+            world.finish(export)
+        self.assertEqual((world.comparable(), world.run_row(), world.import_done()), expected)
+        self.assertGreater(world.count(TakeoutEntry), 12)
+        self.assertLessEqual(peak[0], 3)
+        self.assertEqual(loads, [])
+
+    def test_the_picture_is_built_at_most_twice_for_a_finish_that_decides_held_items(self):
+        world, export = self.ready()
+        with mock.patch.object(finish_export, "canonical", wraps=finish_export.canonical) as built:
+            world.finish(export)
+        self.assertEqual(built.call_count, 2)
+
+    def test_the_picture_is_built_once_for_a_finish_with_nothing_held(self):
+        world = FinishWorld(self)
+        export = world.create(lambda builder: builder.photo("IMG_3001.JPG", part=0), parts=1)
+        world.ingest_all(export, (1,))
+        with mock.patch.object(finish_export, "canonical", wraps=finish_export.canonical) as built:
+            world.finish(export)
+        self.assertEqual(built.call_count, 1)
+
+
+class FinishBetweenPartsTests(unittest.TestCase):
+    def two_exports(self):
+        world = FinishWorld(self)
+        other = GoogleAccount(email="other@x.test", default_person_id=world.ids["jo"], created=2.0)
+        world.opened.add(other)
+        world.opened.commit()
+        queued = world.create(small_scenario(world), parts=2)
+        complete = world.create(lambda builder: builder.photo("IMG_3001.JPG", part=0), parts=1, google_id="google-456", created=NOW - 2 * DAY)
+        found = world.opened.get(Export, complete.id)
+        found.account_id = other.id
+        world.opened.commit()
+        world.ingest_all(complete, (1,))
+        return world, queued, complete
+
+    def run_queue(self, world, between):
+        order = []
+        real_part, real_finish = part_ingest.ingest_part, finish_export.finish
+
+        def part(opened, settings, export, part, *args, **kwargs):
+            order.append(("part", export.id, part.number))
+            return real_part(opened, settings, export, part, *args, **kwargs)
+
+        def finishing(opened, settings, export, *args, **kwargs):
+            order.append(("finish", export.id))
+            return real_finish(opened, settings, export, *args, **kwargs)
+
+        with mock.patch.object(part_ingest, "ingest_part", part), mock.patch.object(finish_export, "finish", finishing):
+            part_ingest.run_queued(world.opened, world.settings, NOW, world.tools, between=between)
+        return order
+
+    def test_a_complete_export_of_another_account_finishes_before_the_queue_of_parts_has_run_out(self):
+        world, queued, complete = self.two_exports()
+        order = self.run_queue(world, lambda: finish_export.finish_exports(world.opened, world.settings, NOW, world.tools))
+        self.assertEqual(order[0], ("finish", complete.id))
+        self.assertEqual([entry for entry in order if entry[0] == "part"], [("part", queued.id, 1), ("part", queued.id, 2)])
+        self.assertLess(order.index(("finish", complete.id)), order.index(("part", queued.id, 1)))
+        self.assertEqual(world.opened.get(Export, complete.id).status, "imported")
+        self.assertNotEqual(world.opened.get(Export, queued.id).status, "imported")
+
+    def test_the_import_tick_finishes_a_complete_export_before_it_ingests_the_next_part(self):
+        world, queued, complete = self.two_exports()
+        scheduler = jobs.build(world.settings, world.engine, NOW)
+        order = []
+        real_part, real_finish = part_ingest.ingest_part, finish_export.finish
+
+        def part(opened, settings, export, part, *args, **kwargs):
+            order.append(("part", export.id, part.number))
+            return real_part(opened, settings, export, part, *args, **kwargs)
+
+        def finishing(opened, settings, export, *args, **kwargs):
+            order.append(("finish", export.id))
+            return real_finish(opened, settings, export, *args, **kwargs)
+
+        with mock.patch.object(part_ingest, "ingest_part", part), mock.patch.object(finish_export, "finish", finishing):
+            scheduler.run_one("imports", NOW)
+        self.assertEqual(order[:2], [("finish", complete.id), ("part", queued.id, 1)])
+        self.assertEqual(order.count(("finish", complete.id)), 1)
+        self.assertEqual(order[-1], ("finish", queued.id))
+
+    def test_without_the_hook_the_complete_export_waits_for_the_whole_queue(self):
+        world, queued, complete = self.two_exports()
+        order = self.run_queue(world, None)
+        self.assertEqual(order, [("part", queued.id, 1), ("part", queued.id, 2)])
+        self.assertEqual(world.opened.get(Export, complete.id).status, "downloading")
+
+    def test_an_export_finished_between_parts_is_not_finished_again_at_the_end_of_the_tick(self):
+        world, queued, _complete = self.two_exports()
+        self.run_queue(world, lambda: finish_export.finish_exports(world.opened, world.settings, NOW, world.tools))
+        self.assertEqual(finish_export.finish_ready(world.opened, world.settings, NOW, world.tools), [queued.id])
+        self.assertEqual(world.count(ImportRun), 2)
+
+    def test_a_busy_account_between_parts_leaves_the_queue_running(self):
+        world, queued, complete = self.two_exports()
+        with run.account_lock(world.settings, world.opened.get(Export, complete.id).account_id):
+            order = self.run_queue(world, lambda: finish_export.finish_exports(world.opened, world.settings, NOW, world.tools))
+        self.assertEqual([entry for entry in order if entry[0] == "part"], [("part", queued.id, 1), ("part", queued.id, 2)])
+        self.assertEqual(world.opened.get(Export, complete.id).status, "downloading")
+
+
+class WaitingFinishLogTests(unittest.TestCase):
+    def test_a_complete_export_that_waits_for_an_earlier_one_says_so_once_per_tick_in_fixed_words_without_names(self):
+        world = FinishWorld(self)
+        earlier = world.create(lambda builder: builder.photo("IMG_3001.JPG", part=0), parts=1, google_id="google-456", created=NOW - 2 * DAY)
+        later = world.create(small_scenario(world), parts=2)
+        world.ingest_all(later, (1, 2))
+        with mock.patch.object(monitoring, "log") as logged:
+            finish_export.finish_ready(world.opened, world.settings, NOW, world.tools)
+        waiting = [call for call in logged.call_args_list if call.args == ("export complete, finish waiting",)]
+        self.assertEqual([call.kwargs for call in waiting], [{"export": later.id, "reason": "an earlier export of the account is not finished"}])
+        world.ingest_all(earlier, (1,))
+        with mock.patch.object(monitoring, "log") as logged:
+            self.assertEqual(finish_export.finish_ready(world.opened, world.settings, NOW, world.tools), [earlier.id])
+        self.assertEqual([call for call in logged.call_args_list if call.args == ("export complete, finish waiting",)], [])
+        with mock.patch.object(monitoring, "log") as logged:
+            self.assertEqual(finish_export.finish_ready(world.opened, world.settings, NOW, world.tools), [later.id])
+        self.assertEqual([call for call in logged.call_args_list if call.args == ("export complete, finish waiting",)], [])
+
+    def test_an_export_with_parts_still_to_ingest_or_one_nothing_waits_for_logs_nothing(self):
+        world = FinishWorld(self)
+        export = world.create(small_scenario(world), parts=2)
+        world.ingest_all(export, (1,))
+        with mock.patch.object(monitoring, "log") as logged:
+            finish_export.finish_ready(world.opened, world.settings, NOW, world.tools)
+        self.assertEqual([call for call in logged.call_args_list if call.args == ("export complete, finish waiting",)], [])
+
+    def test_no_entry_name_reaches_the_log_while_a_finish_waits(self):
+        world = FinishWorld(self)
+        world.create(lambda builder: builder.photo("IMG_3001.JPG", part=0), parts=1, google_id="google-456", created=NOW - 2 * DAY)
+        later = world.create(lambda builder: builder.photo("IMG_4242_canary.JPG", part=0), parts=1)
+        world.ingest_all(later, (1,))
+        with no_leaks(self, "IMG_4242_canary.JPG"):
+            finish_export.finish_ready(world.opened, world.settings, NOW, world.tools)
 
 
 if __name__ == "__main__":
