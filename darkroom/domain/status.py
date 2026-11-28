@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from darkroom.domain import accounts, browser_jobs, index, transport_status
 from darkroom.domain.ingest import run
-from darkroom.storage.models import Alert, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, known_contents
+from darkroom.storage.models import Alert, Export, GoogleAccount, ImportRun, MediaItem, Person, Pixel, PixelPerson, known_contents, on_unraid
 
 
 def open_alerts(opened: Session) -> list[Alert]:
@@ -19,7 +19,7 @@ def alert_dict(alert: Alert) -> dict[str, object]:
 
 
 def photo_counts(opened: Session) -> dict[int, tuple[int, int, int]]:
-    phone = (MediaItem.source == "phone") & known_contents()
+    phone = (MediaItem.source == "phone") & known_contents() & on_unraid()
     query = (select(MediaItem.person_id, func.count(MediaItem.id),
                     func.sum(case((MediaItem.gps_source != "none", 1), else_=0)),
                     func.sum(case((MediaItem.time_source == "unknown", 1), else_=0)))

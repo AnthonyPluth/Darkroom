@@ -30,7 +30,7 @@ class CommandCase(unittest.TestCase):
         self.addCleanup(self.fake.stop)
         self.fake.state.version, self.fake.state.permissions = "v3.4.1", GRANTS
         values = {"DARKROOM_PHOTOS_ROOT": str(self.root / "photos"), "DARKROOM_DATA_DIR": str(self.root / "data"), "DARKROOM_SECRET_KEY": SECRET,
-                  "DARKROOM_PUBLIC_URL": "https://d.example", "IMMICH_URL": self.fake.url, "IMMICH_ADMIN_KEY": "admin-key"}
+                  "DARKROOM_PUBLIC_URL": "https://d.example", "IMMICH_URL": self.fake.url, "IMMICH_ADMIN_KEY": "admin-key", "DARKROOM_PIXEL_IMMICH_SOURCE": "1"}
         patcher = mock.patch.dict(os.environ, values, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -84,6 +84,12 @@ class CommandCase(unittest.TestCase):
 
 
 class OnTests(CommandCase):
+    def test_on_is_refused_while_pixel_copies_from_immich_are_off_and_nothing_changes(self):
+        self.keyed()
+        with mock.patch.dict(os.environ, {"DARKROOM_PIXEL_IMMICH_SOURCE": "0"}):
+            code, out, err = self.call("on", "--person", "jo")
+        self.assertEqual((code, out, managed_switch.PIXEL_SOURCE_OFF in err, self.events()), (1, "", True, []))
+
     def test_on_validates_then_switches_at_once_when_nothing_is_running(self):
         self.keyed()
         code, out, err = self.call("on", "--person", "jo")
@@ -229,7 +235,7 @@ class StatusTests(CommandCase):
         self.assertNotIn(managed_switch_command.SIDE_EFFECT, out)
         self.assertIn("Immich user and key: missing", out)
 
-    def test_pausing_and_on_show_the_side_effect_and_the_waiting_reason(self):
+    def test_pausing_shows_the_side_effect_and_the_waiting_reason_and_on_does_not(self):
         self.state("pausing")
         with db.session(self.engine, writing=True) as opened:
             opened.query(Person).one().managed_switch_waiting = "reconcile"
@@ -237,7 +243,7 @@ class StatusTests(CommandCase):
         self.assertIn(managed_switch_command.SIDE_EFFECT, out)
         self.assertIn(managed_switch.WAITING_REASONS["reconcile"], out)
         self.state("on")
-        self.assertIn(managed_switch_command.SIDE_EFFECT, self.call("status", "--person", "jo")[1])
+        self.assertNotIn(managed_switch_command.SIDE_EFFECT, self.call("status", "--person", "jo")[1])
 
     def test_pausing_before_the_first_try_and_with_an_unknown_reason(self):
         self.state("pausing")

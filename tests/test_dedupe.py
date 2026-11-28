@@ -380,6 +380,39 @@ class PureIndexTests(unittest.TestCase):
             self.assertEqual((decision.tier, decision.person_id, decision.matched_item_id), (5, 1, None))
 
 
+class CatalogueShotTests(unittest.TestCase):
+    def shot(self, number, catalogue):
+        return dedupe.Shot(number, 1, "phone", f"{number}" * 40, PHASH, MOMENT, LOCAL, 4032, 3024, None, "Apple", "iPhone 15 Pro", False, False, catalogue)
+
+    def decide(self, *shots):
+        index = dedupe.PersonIndex(account_id=1, default_person_id=1, person_ids=frozenset({1}), phone=shots, takeout=())
+        return dedupe.decide(index, World(self).candidate(sha1="c" * 40), OFF)
+
+    def test_a_catalogue_item_is_never_the_photo_of_a_review_pair(self):
+        self.assertEqual(self.decide(self.shot(1, False), self.shot(2, False)).tier, 4)
+        found = self.decide(self.shot(1, True), self.shot(2, False))
+        self.assertEqual((found.tier, found.matched_item_id), (4, 2))
+        both = self.decide(self.shot(1, True), self.shot(2, True))
+        self.assertEqual((both.tier, both.matched_item_id, both.matched_source), (5, None, None))
+
+    def test_a_catalogue_item_with_a_takeout_rival_is_neither_tier_2_nor_tier_4_and_confirms_nothing(self):
+        world = World(self)
+        rival = world.candidate(source_path="rival.jpg", sha1="d" * 40)
+        index = dedupe.PersonIndex(account_id=1, default_person_id=1, person_ids=frozenset({1}), phone=(self.shot(1, True),), takeout=(), peers=(rival,))
+        found = dedupe.decide(index, world.candidate(sha1="c" * 40), OFF)
+        self.assertEqual((found.tier, found.matched_item_id, found.matched_source), (5, None, None))
+        self.assertNotIn(found.tier, dedupe.CONFIRMING_TIERS)
+
+    def test_a_single_catalogue_item_still_matches_by_the_capture_second(self):
+        self.assertEqual(self.decide(self.shot(1, True)).tier, 2)
+
+    def test_an_item_in_the_persons_catalogue_folder_is_marked_and_one_elsewhere_is_not(self):
+        from darkroom.storage.models import MediaItem
+        for path, expected in (("jo/immich-catalogue/a.jpg", True), ("jo/originals/immich-catalogue/a.jpg", False), ("jo/originals/a.jpg", False)):
+            item = MediaItem(id=1, person_id=1, source="phone", path=path, sha1="a" * 40, bytes=1, indexed_at=1.0)
+            self.assertEqual(dedupe.shot_of(item).catalogue, expected)
+
+
 class OddValuesTests(SinglePerson):
     def test_a_non_finite_utc_time_is_treated_as_missing(self):
         self.world.item(self.jo, captured_utc=float("nan"))

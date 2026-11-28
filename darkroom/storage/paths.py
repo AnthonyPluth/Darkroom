@@ -2418,3 +2418,40 @@ def sweep_placements(photos: Photos, person: str, export: str) -> int:
             return swept
     except (FileNotFoundError, OutsideRoot):
         return 0
+
+
+def catalogue_scratch(data_dir: Path, slug: str) -> Path:
+    return data_dir / "catalogue" / slug
+
+
+def open_catalogue_scratch(data_dir: Path, slug: str) -> Path:
+    if not SLUG.fullmatch(slug):
+        raise OutsideRoot("not a person's folder name")
+    base = data_dir / "catalogue"
+    root = base / slug
+    for folder in (base, root):
+        if folder.is_symlink():
+            raise OSError("the catalogue scratch folder is a link")
+    root.mkdir(parents=True, exist_ok=True)
+    if not root.is_dir():
+        raise OSError("the catalogue scratch folder is not a folder")
+    return root
+
+
+def clear_catalogue_scratch(data_dir: Path, slug: str) -> None:
+    if not SLUG.fullmatch(slug):
+        raise OutsideRoot("not a person's folder name")
+    base = data_dir / "catalogue"
+    if base.is_symlink() or not base.is_dir():
+        return
+    root = base / slug
+    if root.is_symlink() or not root.is_dir():
+        return
+    for folder in root.iterdir():
+        if folder.is_symlink() or not folder.is_dir():
+            continue
+        for entry in folder.iterdir():
+            if entry.is_file() and not entry.is_symlink():
+                entry.unlink()
+        with contextlib.suppress(OSError):
+            folder.rmdir()

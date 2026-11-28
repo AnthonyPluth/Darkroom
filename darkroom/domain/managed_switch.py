@@ -18,6 +18,7 @@ from darkroom.storage.paths import Photos
 State = Literal["off", "pausing", "on", "stopped"]
 Outcome = Literal["run", "wait", "refuse"]
 Writer = Literal["legacy", "route", "ingest", "part_queue", "whole_import", "whole_registration", "review", "review_folder", "cleanup", "holds", "sweep", "part_free"]
+Mode = Literal["classic", "paused", "catalogue"]
 Row = dict[State, Outcome]
 STATES: Final = get_args(State)
 FINISHED: Final = frozenset({"imported", "failed", "expired"})
@@ -30,11 +31,12 @@ WAITS: Final[dict[State, str]] = {
 UNKNOWN_STATE: Final = "this person's managed-imports setting is not one Darkroom knows, so this waits"
 REFUSED: Final = "this person's imports go to Immich, so nothing is written to their old folders"
 PAUSING_REFUSED: Final = "this person's imports are being switched to Immich, so a new old-folder import cannot start"
-RECONCILE_PAUSED: Final = "the Immich reconcile is paused while this person's imports are switched to Immich, so it only finishes removals it had begun"
+RECONCILE_PAUSED: Final = "the Immich reconcile is paused while this person's imports are being switched to Immich, so it only finishes removals it had begun"
 NO_USER_WAIT: Final = "this person's imports go to Immich but they have no Immich user saved, so this waits until one is"
 NO_USER_ALERT: Final = "Immich-managed imports of {slug} are on but they have no Immich user saved, so their new Takeout export {export} waits. Open Darkroom for details."
 STOPPED_ALERT: Final = "Immich-managed imports of {slug} are stopped, so their new Takeout export {export} waits until they are on again. Open Darkroom for details."
 NO_KEY: Final = "this person has no Immich user and key saved, so their imports can't go to Immich"
+PIXEL_SOURCE_OFF: Final = "Pixel copies from Immich are not turned on (DARKROOM_PIXEL_IMMICH_SOURCE), so this person's new iPhone photos could not reach their Pixels; nothing was changed"
 UNKNOWN_REQUEST: Final = "this person's managed-imports setting is not one Darkroom knows, so it is left as it is"
 WAITING_REASONS: Final[dict[str, str]] = {
     "reconcile": "waiting for this person's Immich reconcile to finish",
@@ -44,6 +46,7 @@ WAITING_REASONS: Final[dict[str, str]] = {
     "old_way_export": "waiting for a Takeout export of this person that started the old way to be imported",
     "recovery": "an interrupted removal in this person's folders is being finished",
     "no_key": "this person's Immich user or key is missing; saving it and asking again is needed",
+    "pixel_source": "Pixel copies from Immich are not turned on (DARKROOM_PIXEL_IMMICH_SOURCE); turning them on lets the switch finish",
 }
 PAUSING_ALERT_AFTER: Final = alerts.DAY
 
@@ -127,7 +130,7 @@ def check_claimed(opened: Session, photos: Photos | None, person: Person, writer
     if found == "wait":
         raise Paused(WAITS[state])
     if found == "refuse":
-        raise Refused(PAUSING_REFUSED if state == "pausing" and writer in ("whole_import", "whole_registration") else REFUSED)
+        raise Refused(PAUSING_REFUSED if state == "pausing" else REFUSED)
 
 
 def import_route(opened: Session, photos: Photos | None, person: Person, export: Export) -> str:
@@ -145,9 +148,12 @@ def hold(opened: Session, photos: Photos | None, person: Person, writer: Writer,
         raise
 
 
-def reconcile_paused(opened: Session, person: Person) -> bool:
+def reconcile_mode(opened: Session, person: Person) -> Mode:
     claim(opened, person)
-    return state_of(person) != "off"
+    state = state_of(person)
+    if state == "off":
+        return "classic"
+    return "catalogue" if state in ("on", "stopped") else "paused"
 
 
 def note_reconcile_paused(opened: Session, person: Person, now: float) -> None:
@@ -231,7 +237,7 @@ def set_state(opened: Session, person: Person, target: State, now: float, event:
         alerts.close(opened, alert_key(person), now)
 
 
-def request(opened: Session, person: Person, want_on: bool, now: float) -> str | None:
+def request(opened: Session, person: Person, want_on: bool, now: float, settings: config.Settings) -> str | None:
     claim(opened, person)
     state = state_of(person)
     if state is None:
@@ -245,6 +251,9 @@ def request(opened: Session, person: Person, want_on: bool, now: float) -> str |
         if not has_key(person):
             opened.rollback()
             return NO_KEY
+        if not settings.pixel_immich_source:
+            opened.rollback()
+            return PIXEL_SOURCE_OFF
         target = "on" if state == "stopped" else "pausing"
     else:
         if state in ("off", "stopped"):
@@ -285,6 +294,8 @@ def flip(opened: Session, settings: config.Settings, person: Person, accounts: s
         waiting = Waiting("recovery")
     elif not has_key(person):
         waiting = Waiting("no_key")
+    elif not settings.pixel_immich_source:
+        waiting = Waiting("pixel_source")
     if waiting is not None:
         opened.rollback()
         return waiting

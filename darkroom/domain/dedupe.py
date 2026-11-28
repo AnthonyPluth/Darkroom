@@ -8,14 +8,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal, Protocol
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, exists, or_, select, update
 from sqlalchemy.orm import Session
 
-from darkroom.domain import accounts, events, media, pixel_folder
+from darkroom.domain import accounts, events, media, pixel_folder, pixel_source
 from darkroom.domain.ingest import pairing
 from darkroom.domain.ingest.pairing import TakeoutItem
 from darkroom.storage import db
-from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, MediaItem, ReviewItem, Setting, known_contents
+from darkroom.storage.models import DedupeDecision, Export, GoogleAccount, ImmichAsset, MediaItem, Person, ReviewItem, Setting, known_contents
 from darkroom.storage.settings_keys import KEEP_EDITED_COPIES
 
 PHASH_MAX_DISTANCE = 8
@@ -50,6 +50,7 @@ class Shot:
     model: str | None
     is_video: bool
     is_raw: bool
+    catalogue: bool = False
 
 
 @dataclass(frozen=True)
@@ -162,8 +163,12 @@ class PersonIndex:
         people = accounts.served_people(opened, account_id)
         if owner_person_id is not None:
             people = people | {owner_person_id}
+        catalogued = exists().where(ImmichAsset.original_item_id == MediaItem.id, ImmichAsset.status == "cataloged")
         phone = opened.execute(
-            select(MediaItem).where(MediaItem.source == "phone", MediaItem.person_id.in_(people), known_contents()).order_by(MediaItem.id)
+            select(MediaItem).join(Person, Person.id == MediaItem.person_id)
+            .where(MediaItem.source == "phone", MediaItem.person_id.in_(people), known_contents(),
+                   or_(~MediaItem.path.startswith(Person.slug.concat(f"/{pixel_source.CATALOGUE_FOLDER}/")), and_(Person.managed_imports.is_not(None), catalogued)))
+            .order_by(MediaItem.id)
         ).scalars()
         takeout = opened.execute(
             select(MediaItem).join(Export, Export.id == MediaItem.export_id)
@@ -177,7 +182,7 @@ def shot_of(item: MediaItem) -> Shot:
         id=item.id, person_id=item.person_id, source=item.source, sha1=item.sha1, phash=item.phash,
         captured_utc=item.captured_utc, captured_local=item.captured_local, width=item.width, height=item.height,
         duration_ms=item.duration_ms, make=item.make, model=item.model, is_video=Path(item.path).suffix.lower() in media.VIDEO_SUFFIXES,
-        is_raw=Path(item.path).suffix.lower() in media.CAMERA_RAW_SUFFIXES,
+        is_raw=Path(item.path).suffix.lower() in media.CAMERA_RAW_SUFFIXES, catalogue=pixel_source.catalogued(item.path),
     )
 
 
@@ -268,6 +273,8 @@ def by_sha1(index: PersonIndex, item: TakeoutCandidate) -> Shot | None:
 def nearest(index: PersonIndex, item: TakeoutCandidate) -> tuple[Shot, int, float] | None:
     found: list[tuple[int, float, int, Shot]] = []
     for shot in index.phone_times.near(item, REVIEW_SPREAD):
+        if shot.catalogue:
+            continue
         distance, apart = phash_distance(item.phash, shot.phash), seconds_apart(item, shot)
         if distance is not None and apart is not None and distance <= PHASH_MAX_DISTANCE and apart <= REVIEW_MAX_SECONDS:
             found.append((distance, apart, shot.id, shot))
@@ -289,9 +296,10 @@ def decide(index: PersonIndex, item: TakeoutCandidate, settings: DedupeSettings)
         rivals = len(rivals_of(index, item, shots))
         if len(shots) == 1 and rivals == 0:
             return made(2, "skip", "same capture second, camera and size", shots[0].person_id, shots[0])
-        if shots:
+        shown = [shot for shot in shots if not shot.catalogue]
+        if shown:
             reason = f"tier 2 is ambiguous: {len(shots)} phone items and {rivals} other Takeout items share the capture second, camera and size"
-            return made(4, "review", reason, owner_of(index, shots), shots[0])
+            return made(4, "review", reason, owner_of(index, shots), shown[0])
     original = None if item.edited_of is None else index.decided.get(item.edited_of)
     if original is not None and original.decided_by == "auto" and original.tier in CONFIRMING_TIERS and not settings.keep_edited_copies:
         matched = None if original.matched_item_id is None else index.by_id.get(original.matched_item_id)

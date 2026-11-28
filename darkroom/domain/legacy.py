@@ -190,7 +190,8 @@ def proofs(opened: Session, person: Person) -> tuple[dedupe.Shot, ...]:
     )
     matched_original = (
         select(MediaItem).join(DedupeDecision, DedupeDecision.matched_item_id == MediaItem.id)
-        .where(MediaItem.person_id == person.id, MediaItem.source == "phone", known_contents(), DedupeDecision.account_id.in_(served),
+        .where(MediaItem.person_id == person.id, MediaItem.source == "phone", known_contents(), MediaItem.path.startswith(f"{person.slug}/originals/"),
+               DedupeDecision.account_id.in_(served),
                DedupeDecision.reversed_at.is_(None), DedupeDecision.decided_by == "auto", DedupeDecision.tier.in_(dedupe.CONFIRMING_TIERS))
     )
     found = {item.id: item for query in (in_takeout, matched_original) for item in opened.execute(query).scalars()}
@@ -271,7 +272,8 @@ def copy_name(source: Path, sha1: str) -> str:
 
 def bring_in(opened: Session, photos: Photos, person: Person, seen: Seen, now: float, read: index.Reader) -> tuple[MediaItem, bool]:
     present = opened.execute(
-        select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == "phone", MediaItem.sha1 == seen.print_.sha1).order_by(MediaItem.id).limit(1)
+        select(MediaItem).where(MediaItem.person_id == person.id, MediaItem.source == "phone", MediaItem.sha1 == seen.print_.sha1,
+                                MediaItem.path.startswith(f"{person.slug}/originals/")).order_by(MediaItem.id).limit(1)
     ).scalar_one_or_none()
     if present is not None:
         return present, False

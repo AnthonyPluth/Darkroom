@@ -8,13 +8,14 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePath
 from typing import Protocol
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.orm import Session
 
 from darkroom import config, monitoring
-from darkroom.domain import alerts, events, index, legacy, media, pixel_folder, takeout_copies
+from darkroom.domain import alerts, events, index, legacy, media, pixel_folder, pixel_source, takeout_copies
 from darkroom.providers import exiftool, immich
 from darkroom.storage import db, locks, paths, secretbox
+from darkroom.storage.schema import metadata
 from darkroom.storage.models import Event, ImmichAsset, MediaItem, Person, PixelCopy, PixelPerson
 from darkroom.storage.paths import Photos
 
@@ -23,7 +24,7 @@ OVERLAP_SECONDS = 300.0
 MARGIN_SECONDS = 60.0
 STEM_LIMIT = 100
 SHA_PREFIX = 8
-RETRIED = ("waiting", "failed")
+RETRIED = ("waiting", "failed", "cataloged")
 
 
 class NotReady(RuntimeError):
@@ -76,6 +77,7 @@ class Report:
     duplicates_removed: int = 0
     duplicates_refused: int = 0
     duplicates_failed: int = 0
+    cataloged: int = 0
     paused: bool = False
 
 
@@ -122,6 +124,10 @@ def person_lock(settings: config.Settings, person: Person) -> Iterator[None]:
 
 
 class Run:
+    done: tuple[str, ...] = ("stored",)
+    retried: tuple[str, ...] = RETRIED
+    backoff = 0.0
+
     def __init__(self, opened: Session, settings: config.Settings, person: Person, client: immich.Client, key: str, queue: PixelQueue, now: float,
                  read: index.Reader) -> None:
         self.opened, self.person, self.client, self.key, self.queue, self.now, self.read = opened, person, client, key, queue, now, read
@@ -144,7 +150,8 @@ class Run:
         return row
 
     def present(self, sha1: str, fresh: bool = False) -> MediaItem | None:
-        query = select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.sha1 == sha1).order_by(MediaItem.id).limit(1)
+        query = (select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.sha1 == sha1,
+                                         MediaItem.path.startswith(f"{self.person.slug}/originals/")).order_by(MediaItem.id).limit(1))
         return self.opened.execute(query.execution_options(populate_existing=fresh)).scalar_one_or_none()
 
     def fetch(self, asset: immich.Asset) -> Path | None:
@@ -156,6 +163,69 @@ class Run:
         if media.sha1_of(destination)[0] != asset.sha1:
             raise CopyMismatch("a different file is already at the copy's name")
         return destination
+
+    def referenced(self, item: MediaItem) -> bool:
+        for table in metadata.tables.values():
+            if table.name == "immich_assets":
+                continue
+            for key in table.foreign_keys:
+                if key.column.table.name == "media_items" and key.column.name == "id":
+                    found = self.opened.execute(select(table.c[key.parent.name]).where(key.parent == item.id).limit(1)).first()
+                    if found is not None:
+                        return True
+        return False
+
+    def carry(self, earlier: MediaItem, item: MediaItem) -> None:
+        taken = {copy.pixel_id: copy for copy in self.opened.execute(select(PixelCopy).where(PixelCopy.item_id == item.id)).scalars()}
+        for copy in self.opened.execute(select(PixelCopy).where(PixelCopy.item_id == earlier.id).order_by(PixelCopy.id)).scalars().all():
+            if (copy.sha1, copy.bytes) != (item.sha1, item.bytes):
+                continue
+            if copy.pixel_id in taken:
+                self.settle_pair(copy, taken[copy.pixel_id], item)
+                continue
+            pixel_source.move_to_item(self.opened, copy, item)
+            taken[copy.pixel_id] = copy
+        self.opened.flush()
+
+    def settle_pair(self, catalogue_copy: PixelCopy, own: PixelCopy, item: MediaItem) -> None:
+        self.opened.refresh(catalogue_copy)
+        self.opened.refresh(own)
+        try:
+            if not pixel_source.sent(catalogue_copy):
+                pixel_source.drop_unsent(self.opened, catalogue_copy)
+                return
+            if not pixel_source.sent(own):
+                pixel_source.drop_unsent(self.opened, own)
+                pixel_source.move_to_item(self.opened, catalogue_copy, item)
+                return
+        except pixel_source.NotManaged:
+            self.opened.refresh(catalogue_copy)
+            self.opened.refresh(own)
+        self.note_duplicate(catalogue_copy, own)
+
+    def note_duplicate(self, catalogue_copy: PixelCopy, own: PixelCopy) -> None:
+        subject, detail = f"pixel {catalogue_copy.pixel_id}", f"copies {catalogue_copy.id} and {own.id} hold the same photo"
+        found = self.opened.execute(select(Event.id).where(Event.type == "pixel_copy_duplicate_kept", Event.subject == subject, Event.detail == detail).limit(1)).first()
+        if found is None:
+            events.record(self.opened, self.now, "pixel_copy_duplicate_kept", subject, detail)
+            monitoring.log("pixel holds two copies of one photo", pixel=catalogue_copy.pixel_id)
+
+    def merged(self, asset: immich.Asset, item: MediaItem) -> MediaItem:
+        folder = f"{self.person.slug}/{pixel_source.CATALOGUE_FOLDER}/"
+        query = select(MediaItem).where(MediaItem.person_id == self.person.id, MediaItem.source == "phone", MediaItem.sha1 == asset.sha1,
+                                        MediaItem.path.startswith(f"{folder}{asset.id}")).execution_options(populate_existing=True)
+        earlier = self.opened.execute(query).scalars().first()
+        if earlier is None or earlier.id == item.id:
+            return item
+        if self.referenced(item):
+            self.carry(earlier, item)
+            return item
+        target = item.path
+        self.opened.delete(item)
+        self.opened.flush()
+        earlier.path, earlier.mtime = target, None
+        self.opened.flush()
+        return earlier
 
     def store(self, assets: list[immich.Asset]) -> list[tuple[MediaItem, bool]]:
         fetched = [self.fetch(asset) for asset in assets]
@@ -173,6 +243,7 @@ class Run:
                 item = self.opened.execute(query.execution_options(populate_existing=True)).scalar_one_or_none()
             if item is None or report.failed or item.sha1 != asset.sha1:
                 raise CopyMismatch("the copy in originals could not be checked against the Immich asset")
+            item = self.merged(asset, item)
             stored.append((item, destination is not None))
         return stored
 
@@ -182,7 +253,7 @@ class Run:
             row.queued_at = self.now
             self.report.queued += 1
 
-    def photo(self, asset: immich.Asset) -> None:
+    def halves(self, asset: immich.Asset) -> list[tuple[immich.Asset, str, str | None]] | None:
         self.handled.add(asset.id)
         halves = [(asset, "photo", asset.live_video_id)]
         if asset.live_video_id:
@@ -193,12 +264,20 @@ class Run:
                     raise
                 self.mark(asset, "photo", "waiting", asset.live_video_id)
                 self.opened.commit()
-                return
+                return None
             if video.owner_id != asset.owner_id:
                 self.fail(asset, "photo", "LiveVideoOwner")
-                return
+                return None
             halves.append((video, "live_video", asset.id))
             self.handled.add(video.id)
+        return halves
+
+    def photo(self, asset: immich.Asset) -> None:
+        halves = self.halves(asset)
+        if halves is not None:
+            self.keep(asset, halves)
+
+    def keep(self, asset: immich.Asset, halves: list[tuple[immich.Asset, str, str | None]]) -> None:
         try:
             results = self.store([half for half, _, _ in halves])
             stored = [(half, kind, linked, item, copied) for (half, kind, linked), (item, copied) in zip(halves, results, strict=True)]
@@ -228,7 +307,7 @@ class Run:
 
     def listed(self, asset: immich.Asset) -> None:
         row = self.row(asset.id)
-        if row is not None and row.status == "stored":
+        if row is not None and row.status in self.done:
             self.report.already_seen += 1
         elif asset.owner_id != self.person.immich_user_id:
             return
@@ -247,7 +326,8 @@ class Run:
 
     def retry(self) -> None:
         waiting = self.opened.execute(
-            select(ImmichAsset.asset_id).where(ImmichAsset.person_id == self.person.id, ImmichAsset.kind == "photo", ImmichAsset.status.in_(RETRIED)).order_by(ImmichAsset.id)
+            select(ImmichAsset.asset_id).where(ImmichAsset.person_id == self.person.id, ImmichAsset.kind == "photo", ImmichAsset.status.in_(self.retried),
+                                    or_(ImmichAsset.status != "failed", ImmichAsset.seen_at <= self.now - self.backoff)).order_by(ImmichAsset.id)
         ).scalars().all()
         for asset_id in waiting:
             if asset_id in self.handled:
@@ -257,6 +337,11 @@ class Run:
             except immich.ImmichFailed as error:
                 if error.status in (401, 403):
                     raise
+
+    def summary(self) -> str:
+        report = self.report
+        return (f"{report.listed} listed, {report.stored} stored, {report.ignored} ignored, {report.waiting} waiting, {report.failed} failed, "
+                f"{report.duplicates_removed} duplicates removed, {report.duplicates_refused} refused, {report.duplicates_failed} failed to remove")
 
     def settle(self) -> None:
         resolved = takeout_copies.resolve_person(self.opened, self.photos, self.person, self.now, takeout_copies.Tools(read=self.read))
@@ -286,16 +371,18 @@ def reconcile_person(opened: Session, settings: config.Settings, person: Person,
                      queue: PixelQueue | None = None, read: index.Reader = exiftool.read) -> Report:
     key = person_key(settings, person)
     require_earlier_imports(opened, person)
-    run = Run(opened, settings, person, client or immich.Client.at(settings), key, queue or NoQueue(), now, read)
     until = now - MARGIN_SECONDS
     since = None if person.immich_reconciled_until is None else person.immich_reconciled_until - OVERLAP_SECONDS
     with person_lock(settings, person):
-        from darkroom.domain import managed_switch
+        from darkroom.domain import immich_catalogue, managed_switch
 
         opened.commit()
-        if managed_switch.reconcile_paused(opened, person):
+        mode = managed_switch.reconcile_mode(opened, person)
+        if mode == "paused":
             return paused_run(opened, settings, person, now, read)
         opened.commit()
+        kind = immich_catalogue.CatalogueRun if mode == "catalogue" else Run
+        run = kind(opened, settings, person, client or immich.Client.at(settings), key, queue or NoQueue(), now, read)
         if run.client.user_id(key) != person.immich_user_id:
             raise immich.ImmichFailed("the Immich key belongs to a different user than the person's")
         listing = run.client.search_stable(key, None if since is None else stamp(since), stamp(until))
@@ -312,12 +399,11 @@ def reconcile_person(opened: Session, settings: config.Settings, person: Person,
         run.report.waiting = opened.query(ImmichAsset).filter(ImmichAsset.person_id == person.id, ImmichAsset.status == "waiting").count()
         person.immich_reconciled_until = max(until, person.immich_reconciled_until or 0.0)
         report = run.report
-        events.record(opened, now, "immich_reconciled", person.slug,
-                      f"{report.listed} listed, {report.stored} stored, {report.ignored} ignored, {report.waiting} waiting, {report.failed} failed, "
-                      f"{report.duplicates_removed} duplicates removed, {report.duplicates_refused} refused, {report.duplicates_failed} failed to remove")
+        events.record(opened, now, "immich_reconciled", person.slug, run.summary())
         opened.commit()
-    monitoring.log("immich reconciled", person=person.slug, listed=report.listed, stored=report.stored, ignored=report.ignored, waiting=report.waiting, failed=report.failed,
-                   duplicates_removed=report.duplicates_removed, duplicates_refused=report.duplicates_refused, duplicates_failed=report.duplicates_failed)
+    monitoring.log("immich reconciled", person=person.slug, listed=report.listed, stored=report.stored, cataloged=report.cataloged, ignored=report.ignored,
+                   waiting=report.waiting, failed=report.failed, duplicates_removed=report.duplicates_removed, duplicates_refused=report.duplicates_refused,
+                   duplicates_failed=report.duplicates_failed)
     return report
 
 

@@ -782,7 +782,7 @@ class MigrationTests(unittest.TestCase):
             command.downgrade(config, "0062")
             raise RuntimeError("abort downgrade")
         with self.engine.begin() as connection:
-            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0065")
+            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0066")
             for table, _, point, _ in columns:
                 self.assertIsNone(connection.exec_driver_sql(f"SELECT {point} FROM {table}").scalar_one())
             config.attributes["connection"] = connection
@@ -830,10 +830,43 @@ class MigrationTests(unittest.TestCase):
             command.downgrade(config, "0063")
             raise RuntimeError("abort downgrade")
         with self.engine.begin() as connection:
-            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0065")
+            self.assertEqual(connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), "0066")
             config.attributes["connection"] = connection
             command.downgrade(config, "0063")
             self.assertEqual(connection.exec_driver_sql("SELECT status, hold_path FROM review_items").one(), ("pending", "_inbox/jo/review/export-1/a.jpg"))
+        db.migrate(self.engine)
+
+    def test_0066_immich_assets_may_be_cataloged_keep_every_row_and_refuse_an_undo_while_one_is_cataloged(self):
+        config = db.alembic_config(self.engine)
+        with self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "0065")
+            connection.exec_driver_sql("INSERT INTO people (id, name, slug, originals_path, google_only_path, created) VALUES (1, 'Jo', 'jo', 'o', 'g', 1.0)")
+            for number, status in enumerate(("stored", "waiting", "ignored", "failed"), 1):
+                connection.exec_driver_sql("INSERT INTO immich_assets (id, person_id, asset_id, kind, status, sha1, seen_at) "
+                                           f"VALUES ({number}, 1, 'asset-{number}', 'photo', '{status}', '{'a' * 40}', 2.0)")
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("UPDATE immich_assets SET status = 'cataloged' WHERE id = 1")
+            before = snapshot(connection, ("immich_assets",), " ORDER BY id")
+        db.migrate(self.engine)
+        with self.engine.begin() as connection:
+            self.assertEqual(compare_metadata(MigrationContext.configure(connection), metadata), [])
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+            connection.exec_driver_sql("UPDATE immich_assets SET status = 'cataloged' WHERE id = 1")
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("UPDATE immich_assets SET status = 'invented' WHERE id = 2")
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("INSERT INTO immich_assets (person_id, asset_id, kind, status, sha1, seen_at) VALUES (1, 'x', 'other', 'stored', 'a', 1.0)")
+        with self.assertRaisesRegex(RuntimeError, "catalogued without a copy"), self.engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0065")
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql("UPDATE immich_assets SET status = 'stored' WHERE id = 1")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0065")
+            self.assertEqual(snapshot(connection, before, " ORDER BY id"), before)
+            with self.assertRaises(IntegrityError), connection.begin_nested():
+                connection.exec_driver_sql("UPDATE immich_assets SET status = 'cataloged' WHERE id = 1")
         db.migrate(self.engine)
 
     def test_0054_retention_attestations_hold_one_active_record_of_each_kind_in_its_shape_and_keep_them_on_undo(self):

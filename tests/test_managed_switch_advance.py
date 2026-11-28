@@ -1,3 +1,4 @@
+import dataclasses
 import unittest
 import uuid
 from unittest import mock
@@ -22,6 +23,7 @@ SECOND_ACCOUNT = "second@x.test"
 class SwitchWorld(WayWorld):
     def __init__(self, test, **kwargs):
         super().__init__(test, **kwargs)
+        self.settings = dataclasses.replace(self.settings, pixel_immich_source=True)
         for slug in self.people:
             self.give_key(slug)
 
@@ -45,7 +47,7 @@ class SwitchWorld(WayWorld):
         self.opened.commit()
 
     def request(self, want_on, at=NOW, slug="jo"):
-        return managed_switch.request(self.opened, self.person(slug), want_on, at)
+        return managed_switch.request(self.opened, self.person(slug), want_on, at, self.settings)
 
     def advance(self, at=NOW, slug="jo"):
         return managed_switch.advance(self.opened, self.settings, self.person(slug), at)
@@ -301,6 +303,31 @@ class AdvanceTests(unittest.TestCase):
         self.world.give_key("jo")
         self.flips()
 
+    def test_on_is_refused_while_pixel_copies_from_immich_are_off_and_nothing_changes(self):
+        self.world.settings = dataclasses.replace(self.world.settings, pixel_immich_source=False)
+        for state in (None, "stopped"):
+            with self.subTest(state=state):
+                self.world.set_state(state, since=None)
+                self.assertEqual(self.world.request(True), managed_switch.PIXEL_SOURCE_OFF)
+                self.assertEqual(self.world.state(), (state, None, None))
+                self.assertEqual(self.world.events("managed_imports_set"), [])
+        self.assertIsNone(self.world.request(False))
+
+    def test_a_person_already_on_or_pausing_may_ask_again_while_the_pixel_source_is_off(self):
+        self.world.settings = dataclasses.replace(self.world.settings, pixel_immich_source=False)
+        for state in ("pausing", "on"):
+            self.world.set_state(state)
+            self.assertIsNone(self.world.request(True))
+            self.assertEqual(self.world.state()[0], state)
+
+    def test_the_flip_waits_while_the_pixel_source_is_off_and_goes_through_once_it_is_on(self):
+        self.world.set_state("pausing")
+        self.world.settings = dataclasses.replace(self.world.settings, pixel_immich_source=False)
+        self.waits("pixel_source")
+        self.assertEqual(self.world.state()[0], "pausing")
+        self.world.settings = dataclasses.replace(self.world.settings, pixel_immich_source=True)
+        self.flips()
+
     def test_a_request_off_that_commits_before_the_write_lock_wins(self):
         real = writer_locks.hold
 
@@ -422,11 +449,11 @@ class TickTests(unittest.TestCase):
 
 class ReasonTests(unittest.TestCase):
     def test_every_reason_the_flip_can_give_has_a_fixed_sentence_without_a_name_or_a_path(self):
-        for reason in ("reconcile", "legacy", "account", "accounts_changed", "old_way_export", "recovery", "no_key"):
+        for reason in ("reconcile", "legacy", "account", "accounts_changed", "old_way_export", "recovery", "no_key", "pixel_source"):
             sentence = managed_switch.Waiting(reason).sentence
             self.assertTrue(sentence)
             self.assertNotIn("/", sentence)
-        self.assertEqual(set(managed_switch.WAITING_REASONS), {"reconcile", "legacy", "account", "accounts_changed", "old_way_export", "recovery", "no_key"})
+        self.assertEqual(set(managed_switch.WAITING_REASONS), {"reconcile", "legacy", "account", "accounts_changed", "old_way_export", "recovery", "no_key", "pixel_source"})
 
 
 if __name__ == "__main__":

@@ -4,20 +4,54 @@ import json
 import re
 from pathlib import PurePosixPath
 
-from sqlalchemy import Select, delete, select
+from typing import TYPE_CHECKING, Any, cast
+
+from sqlalchemy import Select, and_, delete, select
 from sqlalchemy.orm import Session
 
-from darkroom.storage import paths
+from darkroom.storage import models, paths
 from darkroom.storage.models import (Export, GoogleAccount, ManagedAssetOrigin, ManagedAssetVersion, ManagedImportIntent, ManagedPixelSource, MediaItem, Person,
                                      Pixel, PixelCopy)
 from darkroom.storage.paths import Photos
 
+if TYPE_CHECKING:
+    from sqlalchemy import CursorResult
+
 VERIFIED = "bytes_verified"
 SUFFIX = re.compile(r"\.[a-z0-9]{1,10}")
+CATALOGUE_FOLDER = models.CATALOGUE_FOLDER
 
 
 class NotManaged(ValueError):
     pass
+
+
+def move_to_item(opened: Session, copy: PixelCopy, item: MediaItem) -> None:
+    kept = [{column.name: getattr(source, column.name) for column in ManagedPixelSource.__table__.columns if column.name != "id"}
+            for source in opened.execute(select(ManagedPixelSource).where(ManagedPixelSource.copy_id == copy.id).order_by(ManagedPixelSource.id)).scalars().all()]
+    opened.execute(delete(ManagedPixelSource).where(ManagedPixelSource.copy_id == copy.id))
+    copy.item_id = item.id
+    opened.flush()
+    for values in kept:
+        opened.add(ManagedPixelSource(**{**values, "item_id": item.id}))
+    opened.flush()
+
+
+def sent(copy: PixelCopy) -> bool:
+    return copy.placed_at is not None or copy.state == "placed"
+
+
+def drop_unsent(opened: Session, copy: PixelCopy) -> None:
+    unsent = and_(PixelCopy.id == copy.id, PixelCopy.placed_at.is_(None), PixelCopy.state.in_(("queued", "pruned")))
+    with opened.begin_nested():
+        opened.execute(delete(ManagedPixelSource).where(ManagedPixelSource.copy_id.in_(select(PixelCopy.id).where(unsent))))
+        dropped = cast("CursorResult[Any]", opened.execute(delete(PixelCopy).where(unsent))).rowcount
+        if dropped != 1:
+            raise NotManaged("a copy that was sent to a Pixel is never dropped")
+
+
+def catalogued(path: str) -> bool:
+    return PurePosixPath(path).parts[1:2] == (CATALOGUE_FOLDER,)
 
 
 def retire(opened: Session, copies: Select[int]) -> None:

@@ -22,7 +22,7 @@ PAUSED: Final[dict[managed_switch.State, str]] = {
     "off": "No old-folder writer is paused.",
     "pausing": ("Paused: new Immich reconcile runs (only removals already begun finish), new legacy imports, new Takeout exports, cleanup and freeing for this person's old-way exports. "
                 "Old-way exports already started finish."),
-    "on": "Paused: Immich reconcile, legacy imports, old-folder writes of imports and reviews, cleanup and freeing for this person's old-way exports. New Takeout exports go to Immich.",
+    "on": "Paused: legacy imports, old-folder writes of imports and reviews, cleanup and freeing for this person's old-way exports. New Takeout exports go to Immich. The Immich reconcile only catalogues new iPhone photos and queues their Pixel copies; it copies nothing to originals/immich.",
     "stopped": ("Paused: as for on, and new Takeout exports wait until the imports are on again. Exports that already have an import intent finish."),
 }
 CHECK_TRIES: Final = 3
@@ -73,7 +73,7 @@ def status_lines(opened: Session, settings: config.Settings, person: Person, now
             lines.append(f"Waiting: {managed_switch.WAITING_REASONS.get(person.managed_switch_waiting, UNKNOWN_WAITING)}")
             if person.managed_switch_waiting == "old_way_export":
                 lines.append(f"Exports waited for: {ids_of(managed_switch.old_way_exports(opened, photos, person, accounts))}")
-    if state in ("pausing", "on"):
+    if state == "pausing":
         lines.append(SIDE_EFFECT)
     if state in ("off", "pausing"):
         given_up = managed_switch.old_way_exports(opened, photos, person, accounts, given_up=True)
@@ -103,7 +103,7 @@ def turn_on(opened: Session, settings: config.Settings, person: Person, now: flo
     else:
         opened.rollback()
         return Result(False, (f"{person.slug}: {CHANGED}",))
-    refused = managed_switch.request(opened, person, True, now)
+    refused = managed_switch.request(opened, person, True, now, settings)
     if refused is not None:
         return Result(False, (f"{person.slug}: {refused}",))
     opened.refresh(person)
@@ -114,7 +114,7 @@ def turn_on(opened: Session, settings: config.Settings, person: Person, now: flo
 
 
 def turn_off(opened: Session, settings: config.Settings, person: Person, now: float) -> Result:
-    refused = managed_switch.request(opened, person, False, now)
+    refused = managed_switch.request(opened, person, False, now, settings)
     if refused is not None:
         return Result(False, (f"{person.slug}: {refused}",))
     opened.refresh(person)

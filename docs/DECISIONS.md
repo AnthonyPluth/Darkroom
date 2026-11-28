@@ -171,6 +171,16 @@ The owner accepted the proposed defaults of `docs/design/recovery-point-gate.md`
 | `not_enriched` holds | Keep working as designed ([design](design/terminal-holds.md), section 3): shown for review and resolved by the owner (accept the asset as it is with Google's values kept recorded in Darkroom, record an offset in Darkroom, or check again after fixing it in Immich by hand). Enrichment, once built and on, is another way such a hold ends; it does not remove the owner's resolutions | #548, #574 |
 | Superseded | The earlier 2026-11-24 decision "no `asset.update` grant, and no enrichment" and its rows "Existing-asset enrichment: Not built" and "A duplicate whose existing asset lacks Google's values: owner resolution only"; the managed-storage design's statement that the key never holds `asset.update`; promise 2's clause that the scheduled job's reader accepts only the read or import grants (the owner's decision of 2026-11-23 on #535), for a person who opts in, when the design's slices 0 and 2 land | #548, #574 |
 
+## The per-person switch's page (#542, 2026-11-27)
+
+**Recorded by the agent from the owner's answer given in session** ([#542 comment 7224479542](https://github.com/AnthonyPluth/Darkroom/issues/542#issuecomment-7224479542)).
+
+| Decision | Answer | Source |
+| --- | --- | --- |
+| A web page for the per-person switch | A page on the People page. The question was "Does the per-person switch get a web page?" and the owner answered "Page on people, no design signoff needed". This waives promise 6's design sign-off for that page; the waiver covers that page only. It is a separate slice and not built | #542, 7224479542 |
+| The reconcile at `on` | A catalogue-only reconcile runs at `on` and `stopped`, and `request(on)` is refused while `DARKROOM_PIXEL_IMMICH_SOURCE` is off | #542, 2026-11-27 |
+| Failed and expired old-way exports; cleanup and freeing; a stopped person's new export | The switch does not wait for failed or expired exports; cleanup and part freeing stay kept until cutover; a stopped person's fresh export waits with one alert and is never imported the old way | #542, 2026-11-27 |
+
 ## Retrying a per-part export's failed items from the Exports page (#529, 2026-11-27)
 
 | Question | Decision | Where recorded |
